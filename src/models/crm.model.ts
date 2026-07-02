@@ -1,161 +1,161 @@
 import { db } from '../config/db.js';
 
-export interface Cliente {
-  telefone: string;
-  nome: string | null;
+export interface Customer {
+  phone: string;
+  name: string | null;
   nif: string | null;
-  morada: string | null;
+  address: string | null;
   email: string | null;
-  estado_registo: string;
-  primeiro_contacto: Date;
-  ultimo_contacto: Date;
-  registado_em: Date | null;
-  total_contactos: number;
-  activo: boolean;
+  registration_status: string;
+  first_contact_at: Date;
+  last_contact_at: Date;
+  registered_at: Date | null;
+  contact_count: number;
+  active: boolean;
 }
 
 export interface CRMStats {
-  total_clientes: number;
-  registados: number;
-  activos_30dias: number;
-  novos_semana: number;
-  com_nif: number;
-  com_morada: number;
+  total_customers: number;
+  registered: number;
+  active_30_days: number;
+  new_this_week: number;
+  with_nif: number;
+  with_address: number;
 }
 
 /**
- * Retrieves a client by phone number and updates their last contact date & total contact count.
+ * Retrieves a customer by phone number and updates their last contact date & total contact count.
  */
-export async function obterEActualizarCliente(telefone: string): Promise<Cliente | null> {
+export async function getAndUpdateCustomer(phone: string): Promise<Customer | null> {
   const { rows } = await db.query(
-    `SELECT * FROM clientes WHERE telefone = $1`,
-    [telefone]
+    `SELECT * FROM customers WHERE phone = $1`,
+    [phone]
   );
   if (!rows.length) return null;
 
-  // Update last contact timestamp and increment total contacts count
+  // Update last contact timestamp and increment contact count
   await db.query(
-    `UPDATE clientes
-     SET ultimo_contacto = NOW(),
-         total_contactos = total_contactos + 1
-     WHERE telefone = $1`,
-    [telefone]
+    `UPDATE customers
+     SET last_contact_at = NOW(),
+         contact_count = contact_count + 1
+     WHERE phone = $1`,
+    [phone]
   );
 
   return rows[0];
 }
 
 /**
- * Retrieves a client by phone number without updating metadata.
+ * Retrieves a customer by phone number without updating metadata.
  */
-export async function obterClientePorTelefone(telefone: string): Promise<Cliente | null> {
+export async function getCustomerByPhone(phone: string): Promise<Customer | null> {
   const { rows } = await db.query(
-    `SELECT * FROM clientes WHERE telefone = $1`,
-    [telefone]
+    `SELECT * FROM customers WHERE phone = $1`,
+    [phone]
   );
   return rows.length ? rows[0] : null;
 }
 
 /**
- * Creates a pre-registration entry for a new client.
+ * Creates a pre-registration entry for a new customer.
  */
-export async function criarPreRegistoCliente(telefone: string, estadoRegisto: string): Promise<void> {
+export async function createCustomerPreRegistration(phone: string, registrationStatus: string): Promise<void> {
   await db.query(
-    `INSERT INTO clientes (telefone, estado_registo, primeiro_contacto, ultimo_contacto)
+    `INSERT INTO customers (phone, registration_status, first_contact_at, last_contact_at)
      VALUES ($1, $2, NOW(), NOW())
-     ON CONFLICT (telefone) DO NOTHING`,
-    [telefone, estadoRegisto]
+     ON CONFLICT (phone) DO NOTHING`,
+    [phone, registrationStatus]
   );
 }
 
 /**
- * Updates columns for a client record.
+ * Updates columns for a customer record.
  */
-export async function actualizarCliente(telefone: string, campos: Partial<Cliente>): Promise<void> {
-  const chaves = Object.keys(campos);
-  if (!chaves.length) return;
+export async function updateCustomer(phone: string, fields: Partial<Customer>): Promise<void> {
+  const keys = Object.keys(fields);
+  if (!keys.length) return;
 
-  const setClauses = chaves.map((chave, index) => `"${chave}" = $${index + 2}`).join(', ');
-  const valores = chaves.map((chave) => (campos as any)[chave]);
+  const setClauses = keys.map((key, index) => `"${key}" = $${index + 2}`).join(', ');
+  const values = keys.map((key) => (fields as any)[key]);
 
   await db.query(
-    `UPDATE clientes SET ${setClauses} WHERE telefone = $1`,
-    [telefone, ...valores]
+    `UPDATE customers SET ${setClauses} WHERE phone = $1`,
+    [phone, ...values]
   );
 }
 
 /**
- * Retrieves clients based on segment rules.
+ * Retrieves customers based on segment rules.
  */
-export async function obterClientesPorSegmento(segmento: string, limite: number): Promise<{ telefone: string; nome: string | null }[]> {
+export async function getCustomersBySegment(segment: string, limit: number): Promise<{ phone: string; name: string | null }[]> {
   const queries: { [key: string]: { sql: string; hasParams: boolean } } = {
-    todos: {
-      sql: `SELECT telefone, nome FROM clientes WHERE estado_registo = 'completo' AND activo = true ORDER BY ultimo_contacto DESC LIMIT $1`,
+    all: {
+      sql: `SELECT phone, name FROM customers WHERE registration_status = 'complete' AND active = true ORDER BY last_contact_at DESC LIMIT $1`,
       hasParams: true
     },
-    inativos_30dias: {
-      sql: `SELECT telefone, nome FROM clientes WHERE estado_registo = 'completo' AND activo = true AND ultimo_contacto < NOW() - INTERVAL '30 days' LIMIT $1`,
+    inactive_30_days: {
+      sql: `SELECT phone, name FROM customers WHERE registration_status = 'complete' AND active = true AND last_contact_at < NOW() - INTERVAL '30 days' LIMIT $1`,
       hasParams: true
     },
     diesel: {
-      sql: `SELECT DISTINCT c.telefone, c.nome FROM clientes c JOIN sessoes_viatura sv ON sv.telefone = c.telefone WHERE c.estado_registo = 'completo' AND sv.combustivel ILIKE '%diesel%' LIMIT $1`,
+      sql: `SELECT DISTINCT c.phone, c.name FROM customers c JOIN vehicle_sessions vs ON vs.phone = c.phone WHERE c.registration_status = 'complete' AND vs.fuel_type ILIKE '%diesel%' LIMIT $1`,
       hasParams: true
     },
     luanda: {
-      sql: `SELECT telefone, nome FROM clientes WHERE estado_registo = 'completo' AND activo = true AND morada ILIKE '%luanda%' LIMIT $1`,
+      sql: `SELECT phone, name FROM customers WHERE registration_status = 'complete' AND active = true AND address ILIKE '%luanda%' LIMIT $1`,
       hasParams: true
     },
-    frequentes: {
-      sql: `SELECT c.telefone, c.nome, COUNT(p.id) AS total_pedidos FROM clientes c JOIN pedidos p ON p.telefone_cliente = c.telefone WHERE c.estado_registo = 'completo' GROUP BY c.telefone, c.nome HAVING COUNT(p.id) >= 3 ORDER BY total_pedidos DESC LIMIT $1`,
+    frequent_buyers: {
+      sql: `SELECT c.phone, c.name, COUNT(o.id) AS total_orders FROM customers c JOIN orders o ON o.customer_phone = c.phone WHERE c.registration_status = 'complete' GROUP BY c.phone, c.name HAVING COUNT(o.id) >= 3 ORDER BY total_orders DESC LIMIT $1`,
       hasParams: true
     },
-    sem_pedidos: {
-      sql: `SELECT c.telefone, c.nome FROM clientes c WHERE c.estado_registo = 'completo' AND c.activo = true AND NOT EXISTS (SELECT 1 FROM pedidos p WHERE p.telefone_cliente = c.telefone) LIMIT $1`,
+    no_orders: {
+      sql: `SELECT c.phone, c.name FROM customers c WHERE c.registration_status = 'complete' AND c.active = true AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_phone = c.phone) LIMIT $1`,
       hasParams: true
     },
     toyota: {
-      sql: `SELECT DISTINCT c.telefone, c.nome FROM clientes c JOIN sessoes_viatura sv ON sv.telefone = c.telefone WHERE c.estado_registo = 'completo' AND sv.marca ILIKE '%toyota%' LIMIT $1`,
+      sql: `SELECT DISTINCT c.phone, c.name FROM customers c JOIN vehicle_sessions vs ON vs.phone = c.phone WHERE c.registration_status = 'complete' AND vs.make ILIKE '%toyota%' LIMIT $1`,
       hasParams: true
     },
-    novos_7dias: {
-      sql: `SELECT telefone, nome FROM clientes WHERE estado_registo = 'completo' AND registado_em > NOW() - INTERVAL '7 days' LIMIT $1`,
+    new_7_days: {
+      sql: `SELECT phone, name FROM customers WHERE registration_status = 'complete' AND registered_at > NOW() - INTERVAL '7 days' LIMIT $1`,
       hasParams: true
     }
   };
 
-  const queryObj = queries[segmento] || queries.todos;
-  const { rows } = await db.query(queryObj.sql, [limite]);
+  const queryObj = queries[segment] || queries.all;
+  const { rows } = await db.query(queryObj.sql, [limit]);
   return rows;
 }
 
 /**
  * Registers an outbound campaign message send record.
  */
-export async function registarCampanhaEnviada(telefone: string, segmento: string): Promise<void> {
+export async function logCampaignSend(phone: string, segment: string): Promise<void> {
   await db.query(
-    `INSERT INTO campanhas_enviadas (telefone, segmento, enviado_em)
+    `INSERT INTO campaign_sends (phone, segment, sent_at)
      VALUES ($1, $2, NOW())`,
-    [telefone, segmento]
+    [phone, segment]
   );
 }
 
 /**
  * Aggregates analytical statistics for CRM dashboard.
  */
-export async function obterEstatisticasCRM(): Promise<CRMStats> {
+export async function getCRMStats(): Promise<CRMStats> {
   const { rows } = await db.query(`
     SELECT
-      COUNT(*)::int                                               AS total_clientes,
-      COUNT(*) FILTER (WHERE estado_registo = 'completo')::int    AS registados,
+      COUNT(*)::int                                                     AS total_customers,
+      COUNT(*) FILTER (WHERE registration_status = 'complete')::int     AS registered,
       COUNT(*) FILTER (
-        WHERE ultimo_contacto > NOW() - INTERVAL '30 days'
-      )::int                                                      AS activos_30dias,
+        WHERE last_contact_at > NOW() - INTERVAL '30 days'
+      )::int                                                            AS active_30_days,
       COUNT(*) FILTER (
-        WHERE registado_em > NOW() - INTERVAL '7 days'
-      )::int                                                      AS novos_semana,
-      COUNT(*) FILTER (WHERE nif IS NOT NULL)::int                AS com_nif,
-      COUNT(*) FILTER (WHERE morada IS NOT NULL)::int             AS com_morada
-    FROM clientes
+        WHERE registered_at > NOW() - INTERVAL '7 days'
+      )::int                                                            AS new_this_week,
+      COUNT(*) FILTER (WHERE nif IS NOT NULL)::int                      AS with_nif,
+      COUNT(*) FILTER (WHERE address IS NOT NULL)::int                  AS with_address
+    FROM customers
   `);
   return rows[0];
 }

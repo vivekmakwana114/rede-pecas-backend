@@ -6,9 +6,9 @@ const WHATSAPP_API_URL = `https://graph.facebook.com/v19.0/${config.whatsapp.pho
 /**
  * Sends a standard text message via Meta WhatsApp Business API.
  */
-export async function enviarMensagemWhatsApp(telefone: string, texto: string): Promise<any> {
+export async function sendWhatsAppMessage(phone: string, text: string): Promise<any> {
   try {
-    const resposta = await fetch(WHATSAPP_API_URL, {
+    const response = await fetch(WHATSAPP_API_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${config.whatsapp.token}`,
@@ -16,21 +16,21 @@ export async function enviarMensagemWhatsApp(telefone: string, texto: string): P
       },
       body: JSON.stringify({
         messaging_product: "whatsapp",
-        to: telefone,
+        to: phone,
         type: "text",
-        text: { body: texto },
+        text: { body: text },
       }),
     });
 
-    if (!resposta.ok) {
-      const erro = await resposta.json();
-      logger.error('WhatsApp API sending error', erro);
-      throw new Error(`WhatsApp API error: ${resposta.status}`);
+    if (!response.ok) {
+      const error = await response.json();
+      logger.error('WhatsApp API sending error', error);
+      throw new Error(`WhatsApp API error: ${response.status}`);
     }
 
-    return resposta.json();
+    return response.json();
   } catch (error: any) {
-    logger.error(`Error sending message to ${telefone}: ${error.message}`);
+    logger.error(`Error sending message to ${phone}: ${error.message}`);
     throw error;
   }
 }
@@ -38,20 +38,20 @@ export async function enviarMensagemWhatsApp(telefone: string, texto: string): P
 /**
  * Sends an interactive message containing up to 3 quick-reply buttons.
  */
-export async function enviarMensagemComBotoes(
-  telefone: string,
-  corpo: string,
-  botoes: string[]
+export async function sendWhatsAppButtons(
+  phone: string,
+  body: string,
+  buttons: string[]
 ): Promise<any> {
   const payload = {
     messaging_product: "whatsapp",
-    to: telefone,
+    to: phone,
     type: "interactive",
     interactive: {
       type: "button",
-      body: { text: corpo },
+      body: { text: body },
       action: {
-        buttons: botoes.slice(0, 3).map((b, i) => ({
+        buttons: buttons.slice(0, 3).map((b, i) => ({
           type: "reply",
           reply: { id: `btn_${i}`, title: b },
         })),
@@ -60,7 +60,7 @@ export async function enviarMensagemComBotoes(
   };
 
   try {
-    const resposta = await fetch(WHATSAPP_API_URL, {
+    const response = await fetch(WHATSAPP_API_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${config.whatsapp.token}`,
@@ -69,15 +69,15 @@ export async function enviarMensagemComBotoes(
       body: JSON.stringify(payload),
     });
 
-    if (!resposta.ok) {
-      const erro = await resposta.json();
-      logger.error('WhatsApp API sending buttons error', erro);
-      throw new Error(`WhatsApp API button error: ${resposta.status}`);
+    if (!response.ok) {
+      const error = await response.json();
+      logger.error('WhatsApp API sending buttons error', error);
+      throw new Error(`WhatsApp API button error: ${response.status}`);
     }
 
-    return resposta.json();
+    return response.json();
   } catch (error: any) {
-    logger.error(`Error sending buttons to ${telefone}: ${error.message}`);
+    logger.error(`Error sending buttons to ${phone}: ${error.message}`);
     throw error;
   }
 }

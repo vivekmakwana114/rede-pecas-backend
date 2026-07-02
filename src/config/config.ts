@@ -27,6 +27,7 @@ for (const envVar of requiredEnvVars) {
 export const config = {
   env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000', 10),
+  appUrl: process.env.APP_URL || 'http://localhost:3000',
   db: {
     url: process.env.DATABASE_URL
   },
@@ -47,6 +48,10 @@ export const config = {
   },
   admin: {
     password: process.env.ADMIN_PASSWORD || 'redepecas2025',
-    telefoneFuncionario: process.env.TELEFONE_FUNCIONARIO_REDE_PECAS || ''
+    staffPhone: process.env.STAFF_PHONE_NUMBER || ''
+  },
+  primavera: {
+    apiUrl: process.env.PRIMAVERA_API_URL || 'https://api.primavera-angola.ao',
+    token: process.env.PRIMAVERA_API_TOKEN || ''
   }
 };

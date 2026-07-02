@@ -1,66 +1,66 @@
 import { logger } from '../config/logger.js';
-import { capitalizar } from '../utils/helpers.js';
+import { capitalize } from '../utils/helpers.js';
 
 const NHTSA_URL = "https://vpic.nhtsa.dot.gov/api/vehicles/decodevin";
 
 export interface VINInfo {
   vin: string;
-  marca: string;
-  modelo: string;
-  ano: string;
-  tipo?: string | null;
-  motorizacao?: string | null;
-  combustivel?: string | null;
-  pais_fabrico?: string | null;
+  make: string;
+  model: string;
+  year: string;
+  vehicle_type?: string | null;
+  engine?: string | null;
+  fuel_type?: string | null;
+  manufacture_country?: string | null;
 }
 
 /**
  * Checks if a text string matches the 17-character alphanumeric VIN format (excluding letters I, O, Q).
  */
-export function isVIN(texto: string): boolean {
-  const vin = texto.trim().toUpperCase();
+export function isVIN(text: string): boolean {
+  const vin = text.trim().toUpperCase();
   return /^[A-HJ-NPR-Z0-9]{17}$/.test(vin);
 }
 
 /**
  * Calls the public NHTSA API to decode the 17-character VIN.
  */
-export async function descodificarVIN(vin: string): Promise<VINInfo | null> {
+export async function decodeVIN(vin: string): Promise<VINInfo | null> {
   try {
     const res = await fetch(
       `${NHTSA_URL}/${vin.toUpperCase()}?format=json`,
       { signal: AbortSignal.timeout(8000) } // Timeout after 8 seconds
     );
 
-    const dados = await res.json();
-    if (!dados?.Results) return null;
+    const data = await res.json() as any;
+    if (!data?.Results) return null;
 
-    const extrair = (variavel: string) =>
-      dados.Results.find((r: any) => r.Variable === variavel)?.Value || null;
+    const extract = (variable: string) =>
+      data.Results.find((r: any) => r.Variable === variable)?.Value || null;
 
-    const marca = extrair("Make");
-    const modelo = extrair("Model");
-    const ano = extrair("Model Year");
-    const tipo = extrair("Body Class");
-    const motorizacao = extrair("Displacement (L)");
-    const combustivel = extrair("Fuel Type - Primary");
-    const pais = extrair("Plant Country");
-    const erros = extrair("Error Text");
+    const make = extract("Make");
+    const model = extract("Model");
+    const year = extract("Model Year");
+    const vehicleType = extract("Body Class");
+    const displacement = extract("Displacement (L)");
+    const fuelType = extract("Fuel Type - Primary");
+    const country = extract("Plant Country");
+    const errors = extract("Error Text");
 
     // Invalid VIN if critical fields are missing
-    if (!marca || !modelo || !ano || erros?.includes("No candidates")) {
+    if (!make || !model || !year || errors?.includes("No candidates")) {
       return null;
     }
 
     return {
       vin: vin.toUpperCase(),
-      marca: capitalizar(marca),
-      modelo: capitalizar(modelo),
-      ano: ano,
-      tipo: tipo || null,
-      motorizacao: motorizacao ? `${motorizacao}L` : null,
-      combustivel: traduzirCombustivel(combustivel),
-      pais_fabrico: pais || null,
+      make: capitalize(make),
+      model: capitalize(model),
+      year: year,
+      vehicle_type: vehicleType || null,
+      engine: displacement ? `${displacement}L` : null,
+      fuel_type: translateFuelType(fuelType),
+      manufacture_country: country || null,
     };
 
   } catch (error: any) {
@@ -70,11 +70,12 @@ export async function descodificarVIN(vin: string): Promise<VINInfo | null> {
 }
 
 /**
- * Translates primary fuel type responses to Portuguese equivalents.
+ * Translates primary fuel type responses to Portuguese equivalents
+ * (fuel type is shown to the customer, so the value stays Portuguese).
  */
-function traduzirCombustivel(combustivel: string | null): string | null {
-  if (!combustivel) return null;
-  const mapa: { [key: string]: string } = {
+function translateFuelType(fuelType: string | null): string | null {
+  if (!fuelType) return null;
+  const map: { [key: string]: string } = {
     "Gasoline": "Gasolina",
     "Diesel": "Diesel",
     "Electric": "Eléctrico",
@@ -82,5 +83,5 @@ function traduzirCombustivel(combustivel: string | null): string | null {
     "Flex Fuel": "Flex (gasolina/etanol)",
     "Natural Gas": "Gás Natural",
   };
-  return mapa[combustivel] || combustivel;
+  return map[fuelType] || fuelType;
 }

@@ -1,106 +1,105 @@
 import { db } from '../config/db.js';
 
-export interface PecaItem {
+export interface PartItem {
   id?: number;
-  nome: string;
-  referencia: string;
-  preco: number;
-  quantidade: number;
-  prazo_entrega: string;
-  fornecedor?: string;
-  fornecedor_id?: number;
-  avaliacao_fornecedor?: number;
+  name: string;
+  reference: string;
+  price: number;
+  quantity: number;
+  delivery_time: string;
+  supplier?: string;
+  supplier_id?: number;
+  supplier_rating?: number;
 }
 
-export interface ViaturaSessao {
-  telefone: string;
+export interface VehicleSession {
+  phone: string;
   vin: string | null;
-  marca: string;
-  modelo: string;
-  ano: string;
-  numero_motor: string | null;
-  matricula: string | null;
-  cilindrada: string | null;
-  combustivel: string | null;
-  actualizado_em: Date;
+  make: string;
+  model: string;
+  year: string;
+  engine_number: string | null;
+  license_plate: string | null;
+  engine_size: string | null;
+  fuel_type: string | null;
+  updated_at: Date;
 }
 
-export interface ViaturaRecolha {
-  telefone: string;
-  estado: string;
-  vin_tentado: string | null;
-  marca: string | null;
-  modelo: string | null;
-  ano: string | null;
-  numero_motor: string | null;
-  criado_em: Date;
+export interface ManualCollection {
+  phone: string;
+  status: string;
+  attempted_vin: string | null;
+  make: string | null;
+  model: string | null;
+  year: string | null;
+  engine_number: string | null;
+  created_at: Date;
 }
 
-export interface PedidoAdminInfo {
-  numero: string;
-  cliente: string;
-  peca: string;
-  referencia: string;
-  fornecedor: string;
-  preco: number;
-  criado_em: Date;
-  hora: string;
-  tem_comprovativo: boolean;
-  metodo_pagamento?: string;
-  requer_comprovativo?: boolean;
+export interface AdminOrderInfo {
+  number: string;
+  customer: string;
+  part: string;
+  reference: string;
+  supplier: string;
+  price: number;
+  created_at: Date;
+  time: string;
+  has_proof: boolean;
+  payment_method?: string;
+  requires_proof?: boolean;
 }
 
 /**
  * Searches the unified inventory for compatible parts.
  * Limits result to top 5 cheapest parts.
  */
-export async function buscarPecasNoInventario({
-  peca,
-  marca_veiculo,
-  modelo,
-  ano,
+export async function searchPartsInInventory({
+  part,
+  vehicle_make,
+  model,
+  year,
 }: {
-  peca: string;
-  marca_veiculo?: string | null;
-  modelo?: string | null;
-  ano?: string | null;
-}): Promise<PecaItem[]> {
+  part: string;
+  vehicle_make?: string | null;
+  model?: string | null;
+  year?: string | null;
+}): Promise<PartItem[]> {
   const { rows } = await db.query(
     `
     SELECT
       p.id,
-      p.nome,
-      p.referencia,
-      p.preco,
-      p.quantidade,
-      p.prazo_entrega,
-      f.nome AS fornecedor,
-      f.avaliacao AS avaliacao_fornecedor
-    FROM pecas p
-    JOIN fornecedores f ON f.id = p.fornecedor_id
-    JOIN compatibilidades c ON c.peca_id = p.id
-    JOIN veiculos v ON v.id = c.veiculo_id
+      p.name,
+      p.reference,
+      p.price,
+      p.quantity,
+      p.delivery_time,
+      s.name AS supplier,
+      s.rating AS supplier_rating
+    FROM parts p
+    JOIN suppliers s ON s.id = p.supplier_id
+    JOIN compatibilities c ON c.part_id = p.id
+    JOIN vehicles v ON v.id = c.vehicle_id
     WHERE
-      p.quantidade > 0
-      AND p.activo = true
-      AND to_tsvector('portuguese', p.nome || ' ' || p.categoria || ' ' || COALESCE(p.sinonimos, ''))
-          @@ plainto_tsquery('portuguese', $1)
+      p.quantity > 0
+      AND p.active = true
+      AND p.search_vector @@ plainto_tsquery('portuguese', unaccent($1))
       AND (
-        v.marca ILIKE $2 OR $2 IS NULL
+        v.make ILIKE $2 OR $2 IS NULL
       )
       AND (
-        v.modelo ILIKE $3 OR $3 IS NULL
+        v.model ILIKE $3 OR $3 IS NULL
       )
       AND (
-        v.ano_inicio <= $4::int AND v.ano_fim >= $4::int
+        v.year_from <= $4::int AND v.year_to >= $4::int
         OR $4 IS NULL
       )
     ORDER BY
-      p.preco ASC,
-      f.avaliacao DESC
+      p.price ASC,
+      s.rating DESC
     LIMIT 5
     `,
-    [peca, marca_veiculo || null, modelo || null, ano ? parseInt(ano, 10) : null]
+    [part, vehicle_make || null, model || null, year ? parseInt(year, 10) : null]
   );
   return rows;
 }
@@ -108,73 +107,73 @@ export async function buscarPecasNoInventario({
 /**
  * Registers a waitlist entry when a part is out of stock.
  */
-export async function registarPedidoPendente({
-  telefone,
-  peca,
-  marca_veiculo,
-  modelo,
-  ano,
-  numeroMotor
+export async function addToWaitlist({
+  phone,
+  part,
+  vehicle_make,
+  model,
+  year,
+  engineNumber
 }: {
-  telefone: string;
-  peca: string;
-  marca_veiculo?: string | null;
-  modelo?: string | null;
-  ano?: string | null;
-  numeroMotor?: string | null;
+  phone: string;
+  part: string;
+  vehicle_make?: string | null;
+  model?: string | null;
+  year?: string | null;
+  engineNumber?: string | null;
 }): Promise<void> {
   await db.query(
-    `INSERT INTO pedidos_pendentes (telefone, peca, marca_veiculo, modelo, ano, numero_motor, criado_em)
+    `INSERT INTO waitlist_requests (phone, part_name, vehicle_make, vehicle_model, vehicle_year, engine_number, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-    [telefone, peca, marca_veiculo || null, modelo || null, ano || null, numeroMotor || null]
+    [phone, part, vehicle_make || null, model || null, year || null, engineNumber || null]
   );
 }
 
 /**
- * Retrieves the client's active vehicle session (expires after 4 hours).
+ * Retrieves the customer's active vehicle session (expires after 4 hours).
  */
-export async function obterViaturaCliente(telefone: string): Promise<ViaturaSessao | null> {
+export async function getCustomerVehicle(phone: string): Promise<VehicleSession | null> {
   const { rows } = await db.query(
-    `SELECT * FROM sessoes_viatura
-     WHERE telefone = $1
-       AND actualizado_em > NOW() - INTERVAL '4 hours'`,
-    [telefone]
+    `SELECT * FROM vehicle_sessions
+     WHERE phone = $1
+       AND updated_at > NOW() - INTERVAL '4 hours'`,
+    [phone]
   );
   return rows.length ? rows[0] : null;
 }
 
 /**
- * Saves/updates a vehicle session for a client.
+ * Saves/updates a vehicle session for a customer.
  */
-export async function salvarSessaoViatura(
-  telefone: string,
-  dados: Partial<ViaturaSessao>
+export async function saveVehicleSession(
+  phone: string,
+  data: Partial<VehicleSession>
 ): Promise<void> {
   await db.query(
-    `INSERT INTO sessoes_viatura
-       (telefone, vin, marca, modelo, ano, numero_motor, matricula, cilindrada, combustivel, actualizado_em)
+    `INSERT INTO vehicle_sessions
+       (phone, vin, make, model, year, engine_number, license_plate, engine_size, fuel_type, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-     ON CONFLICT (telefone)
+     ON CONFLICT (phone)
      DO UPDATE SET
-       vin = COALESCE($2, sessoes_viatura.vin),
-       marca = COALESCE($3, sessoes_viatura.marca),
-       modelo = COALESCE($4, sessoes_viatura.modelo),
-       ano = COALESCE($5, sessoes_viatura.ano),
-       numero_motor = COALESCE($6, sessoes_viatura.numero_motor),
-       matricula = COALESCE($7, sessoes_viatura.matricula),
-       cilindrada = COALESCE($8, sessoes_viatura.cilindrada),
-       combustivel = COALESCE($9, sessoes_viatura.combustivel),
-       actualizado_em = NOW()`,
+       vin = COALESCE($2, vehicle_sessions.vin),
+       make = COALESCE($3, vehicle_sessions.make),
+       model = COALESCE($4, vehicle_sessions.model),
+       year = COALESCE($5, vehicle_sessions.year),
+       engine_number = COALESCE($6, vehicle_sessions.engine_number),
+       license_plate = COALESCE($7, vehicle_sessions.license_plate),
+       engine_size = COALESCE($8, vehicle_sessions.engine_size),
+       fuel_type = COALESCE($9, vehicle_sessions.fuel_type),
+       updated_at = NOW()`,
     [
-      telefone,
-      dados.vin || null,
-      dados.marca || null,
-      dados.modelo || null,
-      dados.ano || null,
-      dados.numero_motor || null,
-      dados.matricula || null,
-      dados.cilindrada || null,
-      dados.combustivel || null,
+      phone,
+      data.vin || null,
+      data.make || null,
+      data.model || null,
+      data.year || null,
+      data.engine_number || null,
+      data.license_plate || null,
+      data.engine_size || null,
+      data.fuel_type || null,
     ]
   );
 }
@@ -182,38 +181,38 @@ export async function salvarSessaoViatura(
 /**
  * Deletes vehicle session.
  */
-export async function limparSessaoViatura(telefone: string): Promise<void> {
-  await db.query("DELETE FROM sessoes_viatura WHERE telefone = $1", [telefone]);
+export async function clearVehicleSession(phone: string): Promise<void> {
+  await db.query("DELETE FROM vehicle_sessions WHERE phone = $1", [phone]);
 }
 
 /**
  * Saves a decoded VIN response in cache.
  */
-export async function salvarVinCache(
+export async function saveVinCache(
   vin: string,
-  dados: {
-    marca: string;
-    modelo: string;
-    ano: string;
-    tipo?: string | null;
-    motorizacao?: string | null;
-    combustivel?: string | null;
-    pais_fabrico?: string | null;
+  data: {
+    make: string;
+    model: string;
+    year: string;
+    vehicle_type?: string | null;
+    engine?: string | null;
+    fuel_type?: string | null;
+    manufacture_country?: string | null;
   }
 ): Promise<void> {
   await db.query(
-    `INSERT INTO vin_cache (vin, marca, modelo, ano, tipo, motorizacao, combustivel, pais_fabrico)
+    `INSERT INTO vin_cache (vin, make, model, year, vehicle_type, engine, fuel_type, manufacture_country)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (vin) DO NOTHING`,
     [
       vin.toUpperCase(),
-      dados.marca,
-      dados.modelo,
-      dados.ano,
-      dados.tipo || null,
-      dados.motorizacao || null,
-      dados.combustivel || null,
-      dados.pais_fabrico || null,
+      data.make,
+      data.model,
+      data.year,
+      data.vehicle_type || null,
+      data.engine || null,
+      data.fuel_type || null,
+      data.manufacture_country || null,
     ]
   );
 }
@@ -221,7 +220,7 @@ export async function salvarVinCache(
 /**
  * Fetches cached VIN response.
  */
-export async function obterVinCache(vin: string): Promise<any | null> {
+export async function getVinCache(vin: string): Promise<any | null> {
   const { rows } = await db.query(
     "SELECT * FROM vin_cache WHERE vin = $1",
     [vin.toUpperCase()]
@@ -232,28 +231,28 @@ export async function obterVinCache(vin: string): Promise<any | null> {
 /**
  * Begins a manual vehicle details collection process.
  */
-export async function iniciarRecolhaManual(telefone: string, estado: string, vinTentado: string | null = null): Promise<void> {
+export async function startManualCollection(phone: string, status: string, attemptedVin: string | null = null): Promise<void> {
   await db.query(
-    `INSERT INTO recolha_viatura (telefone, estado, vin_tentado, criado_em)
+    `INSERT INTO manual_vehicle_collections (phone, status, attempted_vin, created_at)
      VALUES ($1, $2, $3, NOW())
-     ON CONFLICT (telefone)
-     DO UPDATE SET estado = $2, vin_tentado = $3, marca = NULL,
-                   modelo = NULL, ano = NULL, numero_motor = NULL,
-                   criado_em = NOW()`,
-    [telefone, estado, vinTentado]
+     ON CONFLICT (phone)
+     DO UPDATE SET status = $2, attempted_vin = $3, make = NULL,
+                   model = NULL, year = NULL, engine_number = NULL,
+                   created_at = NOW()`,
+    [phone, status, attemptedVin]
   );
 }
 
 /**
  * Returns ongoing manual details collection process state.
  */
-export async function obterRecolhaManualActiva(telefone: string): Promise<ViaturaRecolha | null> {
+export async function getActiveManualCollection(phone: string): Promise<ManualCollection | null> {
   const { rows } = await db.query(
-    `SELECT * FROM recolha_viatura
-     WHERE telefone = $1
-       AND estado != 'completo'
-       AND criado_em > NOW() - INTERVAL '30 minutes'`,
-    [telefone]
+    `SELECT * FROM manual_vehicle_collections
+     WHERE phone = $1
+       AND status != 'complete'
+       AND created_at > NOW() - INTERVAL '30 minutes'`,
+    [phone]
   );
   return rows.length ? rows[0] : null;
 }
@@ -261,122 +260,122 @@ export async function obterRecolhaManualActiva(telefone: string): Promise<Viatur
 /**
  * Updates manual collection state values.
  */
-export async function actualizarRecolhaManual(telefone: string, campos: Partial<ViaturaRecolha>): Promise<void> {
-  const chaves = Object.keys(campos);
-  if (!chaves.length) return;
+export async function updateManualCollection(phone: string, fields: Partial<ManualCollection>): Promise<void> {
+  const keys = Object.keys(fields);
+  if (!keys.length) return;
 
-  const setClauses = chaves.map((chave, index) => `"${chave}" = $${index + 2}`).join(', ');
-  const valores = chaves.map((chave) => (campos as any)[chave]);
+  const setClauses = keys.map((key, index) => `"${key}" = $${index + 2}`).join(', ');
+  const values = keys.map((key) => (fields as any)[key]);
 
   await db.query(
-    `UPDATE recolha_viatura SET ${setClauses} WHERE telefone = $1`,
-    [telefone, ...valores]
+    `UPDATE manual_vehicle_collections SET ${setClauses} WHERE phone = $1`,
+    [phone, ...values]
   );
 }
 
 /**
  * Inserts a new order into the orders log.
  */
-export async function criarPedido(
-  numeroPedido: string,
-  telefone: string,
-  item: PecaItem
+export async function createOrder(
+  orderNumber: string,
+  phone: string,
+  item: PartItem
 ): Promise<void> {
   await db.query(
-    `INSERT INTO pedidos (numero, telefone_cliente, peca_id, fornecedor_id, quantidade, preco_unitario, estado, criado_em)
-     VALUES ($1, $2, $3, $4, 1, $5, 'aguarda_pagamento', NOW())`,
-    [numeroPedido, telefone, item.id, item.fornecedor_id, item.preco]
+    `INSERT INTO orders (number, customer_phone, part_id, supplier_id, quantity, unit_price, status, created_at)
+     VALUES ($1, $2, $3, $4, 1, $5, 'awaiting_payment', NOW())`,
+    [orderNumber, phone, item.id, item.supplier_id, item.price]
   );
 }
 
 /**
  * Fetches last pending order waiting for billing selection or verification.
  */
-export async function obterUltimoPedidoPorEstado(telefone: string, estados: string[]): Promise<any | null> {
+export async function getLatestOrderByStatus(phone: string, statuses: string[]): Promise<any | null> {
   const { rows } = await db.query(
-    `SELECT * FROM pedidos
-     WHERE telefone_cliente = $1
-       AND estado = ANY($2::text[])
-     ORDER BY criado_em DESC LIMIT 1`,
-    [telefone, estados]
+    `SELECT * FROM orders
+     WHERE customer_phone = $1
+       AND status = ANY($2::text[])
+     ORDER BY created_at DESC LIMIT 1`,
+    [phone, statuses]
   );
   return rows.length ? rows[0] : null;
 }
 
 /**
- * Updates state of a given order.
+ * Updates status of a given order.
  */
-export async function actualizarEstadoPedido(numeroPedido: string, estado: string, camposAdicionais: any = {}): Promise<void> {
-  const setClauses = [`estado = $2`, `actualizado_em = NOW()`];
-  const params: any[] = [numeroPedido, estado];
+export async function updateOrderStatus(orderNumber: string, status: string, additionalFields: any = {}): Promise<void> {
+  const setClauses = [`status = $2`, `updated_at = NOW()`];
+  const params: any[] = [orderNumber, status];
 
-  if (camposAdicionais.aprovado_por) {
-    setClauses.push(`aprovado_por = $${setClauses.length + 2}`);
-    params.push(camposAdicionais.aprovado_por);
-    setClauses.push(`aprovado_em = NOW()`);
+  if (additionalFields.approved_by) {
+    setClauses.push(`approved_by = $${setClauses.length + 2}`);
+    params.push(additionalFields.approved_by);
+    setClauses.push(`approved_at = NOW()`);
   }
 
-  if (camposAdicionais.metodo_pagamento) {
-    setClauses.push(`metodo_pagamento = $${setClauses.length + 2}`);
-    params.push(camposAdicionais.metodo_pagamento);
+  if (additionalFields.payment_method) {
+    setClauses.push(`payment_method = $${setClauses.length + 2}`);
+    params.push(additionalFields.payment_method);
   }
 
   await db.query(
-    `UPDATE pedidos SET ${setClauses.join(', ')} WHERE numero = $1`,
+    `UPDATE orders SET ${setClauses.join(', ')} WHERE number = $1`,
     params
   );
 }
 
 /**
- * Registers user payment proof metadata.
+ * Registers customer payment proof metadata.
  */
-export async function registarComprovativo(pedidoNumero: string, mediaId: string, tipoMedia: string | null = null): Promise<void> {
+export async function savePaymentProof(orderNumber: string, mediaId: string, mediaType: string | null = null): Promise<void> {
   await db.query(
-    `INSERT INTO comprovativos (pedido_numero, media_id, tipo_media, criado_em)
+    `INSERT INTO payment_proofs (order_number, media_id, media_type, created_at)
      VALUES ($1, $2, $3, NOW())
-     ON CONFLICT (pedido_numero) DO UPDATE SET media_id = $2, tipo_media = $3`,
-    [pedidoNumero, mediaId, tipoMedia]
+     ON CONFLICT (order_number) DO UPDATE SET media_id = $2, media_type = $3`,
+    [orderNumber, mediaId, mediaType]
   );
 }
 
 /**
  * Increments and issues a unique order document serial (RP-YYYY-XXXXX).
  */
-export async function gerarNumeroPedido(): Promise<string> {
-  const ano = new Date().getFullYear();
-  const resultado = await db.query(
-    `INSERT INTO contadores_pedido (ano, ultimo_numero)
+export async function generateOrderNumber(): Promise<string> {
+  const year = new Date().getFullYear();
+  const result = await db.query(
+    `INSERT INTO order_counters (year, last_number)
      VALUES ($1, 1)
-     ON CONFLICT (ano)
-     DO UPDATE SET ultimo_numero = contadores_pedido.ultimo_numero + 1
-     RETURNING ultimo_numero`,
-    [ano]
+     ON CONFLICT (year)
+     DO UPDATE SET last_number = order_counters.last_number + 1
+     RETURNING last_number`,
+    [year]
   );
-  const numero = resultado.rows[0].ultimo_numero;
-  return `RP-${ano}-${String(numero).padStart(5, "0")}`;
+  const sequence = result.rows[0].last_number;
+  return `RP-${year}-${String(sequence).padStart(5, "0")}`;
 }
 
 /**
  * Retrieves orders awaiting approval.
  */
-export async function obterPedidosPendentesAprovacao(): Promise<PedidoAdminInfo[]> {
+export async function getOrdersPendingApproval(): Promise<AdminOrderInfo[]> {
   const { rows } = await db.query(`
     SELECT
-      p.numero, p.telefone_cliente AS cliente,
-      p.preco_unitario AS preco, p.criado_em,
-      pc.nome AS peca, pc.referencia,
-      f.nome AS fornecedor,
-      p.metodo_pagamento,
-      to_char(p.criado_em, 'HH24:MI') AS hora,
+      o.number, o.customer_phone AS customer,
+      o.unit_price AS price, o.created_at,
+      p.name AS part, p.reference,
+      s.name AS supplier,
+      o.payment_method,
+      to_char(o.created_at, 'HH24:MI') AS time,
       EXISTS (
-        SELECT 1 FROM comprovativos c WHERE c.pedido_numero = p.numero
-      ) AS tem_comprovativo,
-      (p.metodo_pagamento = 'transferencia' OR p.metodo_pagamento = 'deposito' OR p.metodo_pagamento = 'multicaixa_express') AS requer_comprovativo
-    FROM pedidos p
-    JOIN pecas pc ON pc.id = p.peca_id
-    JOIN fornecedores f ON f.id = p.fornecedor_id
-    WHERE p.estado IN ('aguarda_pagamento', 'comprovativo_recebido', 'aguarda_comprovativo', 'aguarda_confirmacao_agente')
-    ORDER BY p.criado_em DESC
+        SELECT 1 FROM payment_proofs pp WHERE pp.order_number = o.number
+      ) AS has_proof,
+      (o.payment_method = 'bank_transfer' OR o.payment_method = 'bank_deposit' OR o.payment_method = 'multicaixa_express') AS requires_proof
+    FROM orders o
+    JOIN parts p ON p.id = o.part_id
+    JOIN suppliers s ON s.id = o.supplier_id
+    WHERE o.status IN ('awaiting_payment', 'payment_proof_received', 'awaiting_payment_proof', 'awaiting_agent_confirmation')
+    ORDER BY o.created_at DESC
   `);
   return rows;
 }
@@ -384,18 +383,18 @@ export async function obterPedidosPendentesAprovacao(): Promise<PedidoAdminInfo[
 /**
  * Retrieves orders approved on the current date.
  */
-export async function obterPedidosAprovadosHoje(): Promise<any[]> {
+export async function getOrdersApprovedToday(): Promise<any[]> {
   const { rows } = await db.query(`
     SELECT
-      p.numero, p.telefone_cliente AS cliente,
-      p.preco_unitario AS preco,
-      pc.nome AS peca,
-      to_char(p.aprovado_em, 'HH24:MI') AS hora
-    FROM pedidos p
-    JOIN pecas pc ON pc.id = p.peca_id
-    WHERE p.estado = 'aprovado'
-      AND p.aprovado_em::date = CURRENT_DATE
-    ORDER BY p.aprovado_em DESC
+      o.number, o.customer_phone AS customer,
+      o.unit_price AS price,
+      p.name AS part,
+      to_char(o.approved_at, 'HH24:MI') AS time
+    FROM orders o
+    JOIN parts p ON p.id = o.part_id
+    WHERE o.status = 'approved'
+      AND o.approved_at::date = CURRENT_DATE
+    ORDER BY o.approved_at DESC
   `);
   return rows;
 }
@@ -403,81 +402,81 @@ export async function obterPedidosAprovadosHoje(): Promise<any[]> {
 /**
  * Details of a single order.
  */
-export async function obterPedidoPorNumero(numero: string): Promise<any | null> {
+export async function getOrderByNumber(number: string): Promise<any | null> {
   const { rows } = await db.query(
-    `SELECT p.*, pc.nome as nome_peca, pc.referencia, f.nome as nome_fornecedor
-     FROM pedidos p
-     JOIN pecas pc ON pc.id = p.peca_id
-     JOIN fornecedores f ON f.id = p.fornecedor_id
-     WHERE p.numero = $1`,
-    [numero]
+    `SELECT o.*, p.name AS part_name, p.reference, s.name AS supplier_name
+     FROM orders o
+     JOIN parts p ON p.id = o.part_id
+     JOIN suppliers s ON s.id = o.supplier_id
+     WHERE o.number = $1`,
+    [number]
   );
   return rows.length ? rows[0] : null;
 }
 
 /**
  * Core operation: Batch updates of parsed Excel shop items.
- * Performs clean upsert mapping to vendor_id and SKU reference.
+ * Performs clean upsert mapping to supplier_id and SKU reference.
  */
-export async function importarPecasBatch(
-  fornecedorId: number,
-  artigos: { referencia: string; nome: string; preco: number; quantidade: number }[]
-): Promise<{ inseridos: number; actualizados: number; desactivados: number }> {
-  let inseridos = 0;
-  let actualizados = 0;
-  
+export async function importPartsBatch(
+  supplierId: number,
+  items: { reference: string; name: string; price: number; quantity: number }[]
+): Promise<{ inserted: number; updated: number; deactivated: number }> {
+  let inserted = 0;
+  let updated = 0;
+
   const client = await db.connect();
   try {
     await client.query("BEGIN");
 
-    const referenciasRecebidas = new Set(artigos.map((a) => a.referencia));
+    const receivedReferences = new Set(items.map((i) => i.reference));
 
-    for (const artigo of artigos) {
-      if (!artigo.referencia || !artigo.nome) continue;
+    for (const item of items) {
+      if (!item.reference || !item.name) continue;
 
       const result = await client.query(
-        `INSERT INTO pecas (fornecedor_id, referencia, nome, preco, quantidade, activo, actualizado_em)
+        `INSERT INTO parts (supplier_id, reference, name, price, quantity, active, updated_at)
          VALUES ($1, $2, $3, $4, $5, true, NOW())
-         ON CONFLICT (fornecedor_id, referencia)
+         ON CONFLICT (supplier_id, reference)
          DO UPDATE SET
-           nome = EXCLUDED.nome,
-           preco = EXCLUDED.preco,
-           quantidade = EXCLUDED.quantidade,
-           activo = true,
-           actualizado_em = NOW()
-         RETURNING (xmax = 0) AS foi_inserido`,
-        [fornecedorId, artigo.referencia, artigo.nome, artigo.preco, artigo.quantidade]
+           name = EXCLUDED.name,
+           price = EXCLUDED.price,
+           quantity = EXCLUDED.quantity,
+           active = true,
+           updated_at = NOW()
+         RETURNING (xmax = 0) AS was_inserted`,
+        [supplierId, item.reference, item.name, item.price, item.quantity]
       );
 
-      if (result.rows[0]?.foi_inserido) {
-        inseridos++;
+      if (result.rows[0]?.was_inserted) {
+        inserted++;
       } else {
-        actualizados++;
+        updated++;
       }
     }
 
     // Deactivate items from this supplier that are missing in the new document import
-    const resultDesativados = await client.query(
-      `UPDATE pecas
-       SET activo = false, quantidade = 0, actualizado_em = NOW()
-       WHERE fornecedor_id = $1
-         AND activo = true
-         AND referencia != ALL($2::text[])`,
-      [fornecedorId, [...referenciasRecebidas]]
+    const deactivatedResult = await client.query(
+      `UPDATE parts
+       SET active = false, quantity = 0, updated_at = NOW()
+       WHERE supplier_id = $1
+         AND active = true
+         AND reference != ALL($2::text[])`,
+      [supplierId, [...receivedReferences]]
     );
 
-    const desactivados = resultDesativados.rowCount || 0;
+    const deactivated = deactivatedResult.rowCount || 0;
 
     await client.query("COMMIT");
 
     // Log the synchronization event
     await db.query(
-      `INSERT INTO logs_sincronizacao (fornecedor_id, inseridos, actualizados, desactivados, criado_em)
+      `INSERT INTO sync_logs (supplier_id, inserted_count, updated_count, deactivated_count, created_at)
        VALUES ($1, $2, $3, $4, NOW())`,
-      [fornecedorId, inseridos, actualizados, desactivados]
+      [supplierId, inserted, updated, deactivated]
     );
 
-    return { inseridos, actualizados, desactivados };
+    return { inserted, updated, deactivated };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
