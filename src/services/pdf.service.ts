@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { config } from '../config/config.js';
 import { logger } from '../config/logger.js';
 import { formatPrice } from '../utils/helpers.js';
+import { t } from '../i18n/messages.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,37 +42,39 @@ export async function generateProformaPDF(
     const stream = fs.createWriteStream(filePath);
     doc.pipe(stream);
 
+    const pc = t.pdf.proforma;
+
     // Header
-    doc.fontSize(22).fillColor('#1A3A5C').font('Helvetica-Bold').text('REDE PEÇAS', 50, 50);
+    doc.fontSize(22).fillColor('#1A3A5C').font('Helvetica-Bold').text(pc.companyName, 50, 50);
     doc.fontSize(10).fillColor('#555555').font('Helvetica')
-      .text('Marketplace Automotivo de Angola', 50, 78)
-      .text('Tel: +244 900 000 000', 50, 92)
-      .text('Email: info@redepecas.ao', 50, 106);
+      .text(pc.tagline, 50, 78)
+      .text(pc.phone, 50, 92)
+      .text(pc.email, 50, 106);
 
     doc.fontSize(18).fillColor('#1A3A5C').font('Helvetica-Bold')
-      .text('FACTURA PROFORMA', 350, 50, { align: 'right' });
+      .text(pc.title, 350, 50, { align: 'right' });
     doc.fontSize(10).fillColor('#555555').font('Helvetica')
-      .text(`Nº: ${orderNumber}`, 350, 78, { align: 'right' })
-      .text(`Data: ${formatDate(new Date())}`, 350, 92, { align: 'right' })
-      .text(`Validade: ${formatDate(addDays(new Date(), 2))}`, 350, 106, { align: 'right' });
+      .text(pc.numberLabel(orderNumber), 350, 78, { align: 'right' })
+      .text(pc.dateLabel(formatDate(new Date())), 350, 92, { align: 'right' })
+      .text(pc.validityLabel(formatDate(addDays(new Date(), 2))), 350, 106, { align: 'right' });
 
     doc.moveTo(50, 145).lineTo(545, 145).strokeColor('#2E6DA4').lineWidth(2).stroke();
 
     // Client Info
-    doc.fontSize(11).fillColor('#1A3A5C').font('Helvetica-Bold').text('CLIENTE', 50, 160);
+    doc.fontSize(11).fillColor('#1A3A5C').font('Helvetica-Bold').text(pc.clientHeader, 50, 160);
     doc.fontSize(10).fillColor('#333333').font('Helvetica')
-      .text(`WhatsApp: ${phone}`, 50, 178)
-      .text('(Dados completos a fornecer no momento do pagamento)', 50, 193);
+      .text(pc.whatsappLabel(phone), 50, 178)
+      .text(pc.clientDataNote, 50, 193);
 
     // Table Header
     const tY = 240;
     doc.rect(50, tY, 495, 28).fillColor('#1A3A5C').fill();
     doc.fontSize(10).fillColor('#FFFFFF').font('Helvetica-Bold')
-      .text('Descrição', 60, tY + 9)
-      .text('Referência', 280, tY + 9)
-      .text('Qtd', 380, tY + 9, { width: 40, align: 'center' })
-      .text('Preço Unit.', 420, tY + 9, { width: 80, align: 'right' })
-      .text('Total', 480, tY + 9, { width: 60, align: 'right' });
+      .text(pc.tableDescription, 60, tY + 9)
+      .text(pc.tableReference, 280, tY + 9)
+      .text(pc.tableQty, 380, tY + 9, { width: 40, align: 'center' })
+      .text(pc.tableUnitPrice, 420, tY + 9, { width: 80, align: 'right' })
+      .text(pc.tableTotal, 480, tY + 9, { width: 60, align: 'right' });
 
     // Table Row
     const iY = tY + 28;
@@ -83,40 +86,35 @@ export async function generateProformaPDF(
       .text(formatPrice(item.price), 420, iY + 12, { width: 80, align: 'right' })
       .text(formatPrice(item.price), 480, iY + 12, { width: 60, align: 'right' });
     doc.fontSize(8).fillColor('#777777')
-      .text(`Fornecedor: ${item.supplier || 'Rede Peças'}`, 60, iY + 22);
+      .text(pc.supplierLabel(item.supplier || 'Rede Peças'), 60, iY + 22);
     doc.rect(50, tY, 495, 64).strokeColor('#CCCCCC').lineWidth(0.5).stroke();
 
     // Total Area
     const totalY = tY + 100;
     doc.rect(350, totalY, 195, 28).fillColor('#1A3A5C').fill();
     doc.fontSize(12).fillColor('#FFFFFF').font('Helvetica-Bold')
-      .text('TOTAL A PAGAR:', 360, totalY + 8)
+      .text(pc.totalDue, 360, totalY + 8)
       .text(formatPrice(item.price), 480, totalY + 8, { width: 60, align: 'right' });
 
     // Payment Instructions
     const payY = totalY + 60;
     doc.fontSize(11).fillColor('#1A3A5C').font('Helvetica-Bold')
-      .text('INSTRUÇÕES DE PAGAMENTO', 50, payY);
+      .text(pc.paymentInstructionsHeader, 50, payY);
     doc.rect(50, payY + 18, 495, 80).fillColor('#EEF4FB').strokeColor('#2E6DA4').lineWidth(0.5).fillAndStroke();
     doc.fontSize(10).fillColor('#333333').font('Helvetica')
-      .text('• Transferência bancária: IBAN AO06 0040 0000 XXXX XXXX XXXX X', 60, payY + 28)
-      .text('• Multicaixa Express: +244 900 000 000', 60, payY + 44)
-      .text(`• Referência obrigatória na transferência: ${orderNumber}`, 60, payY + 60)
-      .text('• Após pagamento, envie comprovativo para este WhatsApp', 60, payY + 76);
+      .text(pc.bankLine, 60, payY + 28)
+      .text(pc.multicaixaLine, 60, payY + 44)
+      .text(pc.referenceLine(orderNumber), 60, payY + 60)
+      .text(pc.afterPaymentLine, 60, payY + 76);
 
     // Terms Note
     doc.fontSize(9).fillColor('#777777').font('Helvetica')
-      .text(
-        'Esta proforma tem validade de 48 horas. O stock é reservado apenas após confirmação do pagamento. ' +
-        'A Rede Peças actua como intermediário entre o cliente e o fornecedor.',
-        50, payY + 120, { width: 495 }
-      );
+      .text(pc.termsNote, 50, payY + 120, { width: 495 });
 
     // Footer
     doc.moveTo(50, 760).lineTo(545, 760).strokeColor('#2E6DA4').lineWidth(1).stroke();
     doc.fontSize(8).fillColor('#999999')
-      .text('Rede Peças — Marketplace Automotivo de Angola  |  NIF: 5XXXXXXXXX  |  info@redepecas.ao',
-        50, 768, { align: 'center', width: 495 });
+      .text(pc.footer, 50, 768, { align: 'center', width: 495 });
 
     doc.end();
     stream.on('finish', () => resolve(filePath));
@@ -171,14 +169,7 @@ export async function sendProformaWhatsApp(
         to: phone,
         type: 'text',
         text: {
-          body:
-            `✅ *Pedido confirmado!*\n\n` +
-            `Segue em anexo a tua factura proforma para:\n` +
-            `*${item.name}*\n\n` +
-            `📋 Referência: *${orderNumber}*\n` +
-            `💰 Total: *${formatPrice(item.price)}*\n` +
-            `⏳ Validade: 48 horas\n\n` +
-            `Após pagamento, envia o comprovativo aqui nesta conversa. 🙏`
+          body: t.pdf.sendMessage.orderConfirmed(item.name, orderNumber, formatPrice(item.price)),
         },
       }),
     });
@@ -197,7 +188,7 @@ export async function sendProformaWhatsApp(
         document: {
           id: mediaId,
           filename: `Proforma_${orderNumber}.pdf`,
-          caption: `Factura Proforma Nº ${orderNumber} — Rede Peças`,
+          caption: t.pdf.sendMessage.documentCaption(orderNumber),
         },
       }),
     });
@@ -236,7 +227,7 @@ export async function generatePrimaveraInvoice(order: any): Promise<string> {
         cliente: order.customer_phone,
         linhas: [{
           artigo: order.reference || 'PEC-GEN',
-          descricao: order.part_name || 'Peça Automóvel',
+          descricao: order.product_name || 'Peça Automóvel',
           quantidade: order.quantity || 1,
           precoUnitario: order.unit_price,
           iva: 14, // VAT in Angola (14%)
@@ -318,10 +309,7 @@ export async function sendFinalInvoiceWhatsApp(
         to: phone,
         type: 'text',
         text: {
-          body:
-            `🧾 *Factura Oficial AGT Emitida!*\n\n` +
-            `O teu pagamento foi validado e a factura oficial já está disponível em anexo.\n` +
-            `Obrigado por comprares na Rede Peças! 🚗`
+          body: t.pdf.finalInvoice.notification(),
         },
       }),
     });
@@ -340,7 +328,7 @@ export async function sendFinalInvoiceWhatsApp(
         document: {
           id: mediaId,
           filename: `Factura_${orderNumber}.pdf`,
-          caption: `Factura Comercial Nº ${orderNumber} — Rede Peças`,
+          caption: t.pdf.finalInvoice.documentCaption(orderNumber),
         },
       }),
     });
@@ -366,40 +354,42 @@ async function generateMockInvoicePDF(order: any): Promise<string> {
     const stream = fs.createWriteStream(filePath);
     doc.pipe(stream);
 
+    const mc = t.pdf.mockInvoice;
+
     // Header
-    doc.fontSize(22).fillColor('#2E7D32').font('Helvetica-Bold').text('REDE PEÇAS - FACTURA', 50, 50);
+    doc.fontSize(22).fillColor('#2E7D32').font('Helvetica-Bold').text(mc.headerTitle, 50, 50);
     doc.fontSize(10).fillColor('#555555').font('Helvetica')
-      .text('Marketplace Automotivo de Angola', 50, 78)
-      .text('NIF: 5001234567 (Certificado AGT)', 50, 92);
+      .text(mc.tagline, 50, 78)
+      .text(mc.nifLine, 50, 92);
 
     doc.fontSize(18).fillColor('#2E7D32').font('Helvetica-Bold')
-      .text('FACTURA COMERCIAL', 350, 50, { align: 'right' });
+      .text(mc.title, 350, 50, { align: 'right' });
     doc.fontSize(10).fillColor('#555555').font('Helvetica')
-      .text(`Factura Nº: FA-${new Date().getFullYear()}/${order.number.split('-').pop()}`, 350, 78, { align: 'right' })
-      .text(`Data Emissão: ${formatDate(new Date())}`, 350, 92, { align: 'right' });
+      .text(mc.numberLabel(`FA-${new Date().getFullYear()}/${order.number.split('-').pop()}`), 350, 78, { align: 'right' })
+      .text(mc.dateLabel(formatDate(new Date())), 350, 92, { align: 'right' });
 
     doc.moveTo(50, 145).lineTo(545, 145).strokeColor('#2E7D32').lineWidth(2).stroke();
 
     // Client
-    doc.fontSize(11).fillColor('#2E7D32').font('Helvetica-Bold').text('CLIENTE', 50, 160);
+    doc.fontSize(11).fillColor('#2E7D32').font('Helvetica-Bold').text(mc.clientHeader, 50, 160);
     doc.fontSize(10).fillColor('#333333').font('Helvetica')
-      .text(`Nome: Cliente Rede Peças`, 50, 178)
-      .text(`WhatsApp: ${order.customer_phone}`, 50, 193);
+      .text(mc.nameLine, 50, 178)
+      .text(mc.whatsappLabel(order.customer_phone), 50, 193);
 
     // Table
     const tY = 240;
     doc.rect(50, tY, 495, 28).fillColor('#2E7D32').fill();
     doc.fontSize(10).fillColor('#FFFFFF').font('Helvetica-Bold')
-      .text('Descrição', 60, tY + 9)
-      .text('Referência', 280, tY + 9)
-      .text('Qtd', 380, tY + 9, { width: 40, align: 'center' })
-      .text('Preço Unit.', 420, tY + 9, { width: 80, align: 'right' })
-      .text('Total', 480, tY + 9, { width: 60, align: 'right' });
+      .text(mc.tableDescription, 60, tY + 9)
+      .text(mc.tableReference, 280, tY + 9)
+      .text(mc.tableQty, 380, tY + 9, { width: 40, align: 'center' })
+      .text(mc.tableUnitPrice, 420, tY + 9, { width: 80, align: 'right' })
+      .text(mc.tableTotal, 480, tY + 9, { width: 60, align: 'right' });
 
     const iY = tY + 28;
     doc.rect(50, iY, 495, 36).fillColor('#F1F8E9').fill();
     doc.fontSize(10).fillColor('#333333').font('Helvetica')
-      .text(order.part_name || 'Peça Automóvel', 60, iY + 6, { width: 210 })
+      .text(order.product_name || mc.defaultProductName, 60, iY + 6, { width: 210 })
       .text(order.reference || 'PEC-GEN', 280, iY + 12)
       .text('1', 380, iY + 12, { width: 40, align: 'center' })
       .text(formatPrice(order.unit_price), 420, iY + 12, { width: 80, align: 'right' })
@@ -409,12 +399,12 @@ async function generateMockInvoicePDF(order: any): Promise<string> {
     const totalY = tY + 100;
     doc.rect(350, totalY, 195, 28).fillColor('#2E7D32').fill();
     doc.fontSize(12).fillColor('#FFFFFF').font('Helvetica-Bold')
-      .text('TOTAL PAGO:', 360, totalY + 8)
+      .text(mc.totalPaid, 360, totalY + 8)
       .text(formatPrice(order.unit_price), 480, totalY + 8, { width: 60, align: 'right' });
 
     // AGT Stamp
     doc.fontSize(8).fillColor('#555555').font('Helvetica-Oblique')
-      .text('Processado por computador. Emitido de acordo com as regras de facturação da AGT Angola.', 50, totalY + 120);
+      .text(mc.agtStamp, 50, totalY + 120);
 
     doc.end();
     stream.on('finish', () => resolve(filePath));

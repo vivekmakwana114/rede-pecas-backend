@@ -19,7 +19,7 @@ INSERT INTO vehicles (make, model, generation, year_from, year_to, fuel_type) VA
 INSERT INTO categories (name) VALUES
   ('Filtração'), ('Motor'), ('Suspensão'), ('Travões'), ('Transmissão'), ('Elétrico');
 
-INSERT INTO parts (supplier_id, category_id, name, brand, reference, price, quantity, delivery_time, synonyms, category_keywords)
+INSERT INTO products (supplier_id, category_id, name, brand, reference, price, quantity, delivery_time, synonyms, category_keywords)
 VALUES
   (1, 1, 'Filtro de óleo Mann W712/75',    'Mann',   'W712/75',     2500,  8, 'Amanhã', 'filtro oleo oil filter',    'filtro óleo motor'),
   (2, 1, 'Filtro de óleo Bosch P7153',     'Bosch',  'P7153',       3100, 12, 'Hoje',   'filtro oleo oil filter',    'filtro óleo motor'),
@@ -28,9 +28,9 @@ VALUES
   (1, 3, 'Amortecedor dianteiro Hilux',    'KYB',    'KYB334816',  18500,  4, 'Amanhã', 'amortecedor frente choque', 'suspensão amortecimento'),
   (2, 4, 'Pastilhas travão Golf dianteiro','Textar', 'TEX2369201',  7200, 10, 'Hoje',   'pastilhas freio travoes',   'travões freio pastilhas');
 
--- Link every seeded part to a plausible vehicle so compatibility
+-- Link every seeded product to a plausible vehicle so compatibility
 -- joins return results in development.
-INSERT INTO compatibilities (part_id, vehicle_id) VALUES
+INSERT INTO compatibilities (product_id, vehicle_id) VALUES
   (1, 3), (1, 4),   -- Mann oil filter → VW Golf MK7/MK8
   (2, 3), (2, 4),   -- Bosch oil filter → VW Golf MK7/MK8
   (3, 1), (3, 2),   -- Mahle oil filter → Toyota Hilux

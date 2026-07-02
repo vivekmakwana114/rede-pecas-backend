@@ -1,2 +1,5 @@
-export * as crmModel from './crm.model.js';
-export * as inventoryModel from './inventory.model.js';
+export * from './customer.model.js';
+export * from './vehicle.model.js';
+export * from './product.model.js';
+export * from './supplier.model.js';
+export * from './order.model.js';

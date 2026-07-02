@@ -7,10 +7,11 @@ import {
   getOrdersPendingApproval,
   getOrdersApprovedToday,
   updateOrderStatus,
-  importPartsBatch
-} from '../models/inventory.model.js';
+} from '../models/order.model.js';
+import { importProductsBatch } from '../models/supplier.model.js';
 import { approveOrder } from '../services/payment.service.js';
 import { sendWhatsAppMessage } from '../services/whatsapp.service.js';
+import { t } from '../i18n/messages.js';
 
 /**
  * Secures panel accesses by delivering session credentials based on the admin password.
@@ -69,7 +70,7 @@ export async function rejectOrderHandler(req: Request, res: Response): Promise<v
   try {
     await updateOrderStatus(number, 'rejected');
 
-    // Notify customer about rejection via WhatsApp (customer message stays Portuguese)
+    // Notify customer about rejection via WhatsApp
     const { rows } = await db.query(
       'SELECT customer_phone FROM orders WHERE number = $1',
       [number]
@@ -77,12 +78,7 @@ export async function rejectOrderHandler(req: Request, res: Response): Promise<v
 
     if (rows.length) {
       const phone = rows[0].customer_phone;
-      await sendWhatsAppMessage(
-        phone,
-        `❌ O teu pedido *${number}* foi rejeitado.\n\n` +
-        `Motivo: comprovativo de pagamento não confirmado ou inválido.\n\n` +
-        `Se achas que é um erro, responde aqui e um atendente irá ajudar-te. 🙏`
-      );
+      await sendWhatsAppMessage(phone, t.order.rejected(number));
     }
 
     res.json({ success: true });
@@ -95,7 +91,7 @@ export async function rejectOrderHandler(req: Request, res: Response): Promise<v
 /**
  * Bulk imports spreadsheet rows mapped to supplier items.
  */
-export async function importPartsBatchHandler(req: Request, res: Response): Promise<void> {
+export async function importProductsBatchHandler(req: Request, res: Response): Promise<void> {
   const { supplierId, items } = req.body;
 
   if (!supplierId || !Array.isArray(items)) {
@@ -104,10 +100,10 @@ export async function importPartsBatchHandler(req: Request, res: Response): Prom
   }
 
   try {
-    const result = await importPartsBatch(supplierId, items);
+    const result = await importProductsBatch(supplierId, items);
     res.json(result);
   } catch (error: any) {
-    logger.error(`Error importing batch parts for supplier ${supplierId}`, error);
+    logger.error(`Error importing batch products for supplier ${supplierId}`, error);
     res.status(500).json({ error: error.message });
   }
 }

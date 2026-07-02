@@ -1,5 +1,14 @@
 # Rede Peças — Progress Report
 
+## Update — 2026-07-02 (onboarding merge)
+
+- **Onboarding merged into one flow.** Registration (name → NIF → address) no longer completes on its own — the address step now sets `customers.registration_status = 'awaiting_vehicle_id'`, and registration only reaches `complete` once vehicle ID also finishes (VIN typed, document photo, or manual entry). See `CLAUDE.md` → "The message pipeline" for the updated stage order.
+- **State-aware image routing landed**, resolving the prerequisite blocker for Vision: while a vehicle ID is pending, an incoming image is routed to `processVehicleDocument` instead of `processPaymentProof`.
+- **Claude Vision document reading wired in.** `extractDataWithClaudeVision` (`ai.service.ts`) is no longer dead code — `processVehicleDocument` in `whatsapp.controller.ts` calls it, cross-checks any legible VIN against the free NHTSA API (preferred over OCR when available), and reuses the existing Sim/Não confirmation flow.
+- **Bug fixed in passing:** `processVIN`'s decode-failure branch started a manual collection but never told the customer to type the make — silently stalled the conversation. Now sends a prompt.
+- New `downloadWhatsAppMedia` helper in `whatsapp.service.ts` (Meta Graph API media download → base64), used by the Vision path.
+- No schema changes required — `vehicle_sessions` already had every column needed, and `registration_status` is unconstrained TEXT.
+
 ## Update — 2026-07-02
 
 - **English conversion done (backend + admin panel).** All code identifiers, DB tables/columns, stored status values, API routes (`/admin/orders`, `/orders/:number/approve|reject`), and JSON payload keys are now English. Customer-facing WhatsApp copy, PDF text, and AI prompt bodies remain Portuguese by design. See CLAUDE.md "Language split".
@@ -39,12 +48,10 @@ The customer-facing journey the system is meant to support, end to end. Not all 
 
 ### Decisions made (2026-07-02)
 
-- **Onboarding is a single merged flow.** Registration (name→address→NIF) and vehicle ID (VIN / document photo / manual entry) become one step machine for new customers, not the two independent ones that exist today. Vehicle ID no longer happens "whenever a VIN shows up later" — it's part of onboarding.
-- **Image routing becomes state-aware.** Today *any* image is treated as a payment proof (see CLAUDE.md "message pipeline"), which would misroute a vehicle document sent during onboarding. Fix: route incoming images by the customer's current conversation state (awaiting vehicle ID → vehicle document; awaiting payment proof → payment proof) before wiring Claude Vision into the webhook. Wiring Vision in without this fix first will cause vehicle documents to be swallowed as payment proofs.
+- **Onboarding is a single merged flow.** Registration (name→NIF→address) and vehicle ID (VIN / document photo / manual entry) become one step machine for new customers, not the two independent ones that exist today. Vehicle ID no longer happens "whenever a VIN shows up later" — it's part of onboarding. ✅ **Implemented 2026-07-02.**
+- **Image routing becomes state-aware.** Today *any* image is treated as a payment proof (see CLAUDE.md "message pipeline"), which would misroute a vehicle document sent during onboarding. Fix: route incoming images by the customer's current conversation state (awaiting vehicle ID → vehicle document; awaiting payment proof → payment proof) before wiring Claude Vision into the webhook. Wiring Vision in without this fix first will cause vehicle documents to be swallowed as payment proofs. ✅ **Implemented 2026-07-02**, alongside wiring Claude Vision itself.
 - **No refund tracking.** Rejection sends a message-only "refunded within 3–5 business days" notice; staff handle the actual refund manually outside the system (consistent with payment gateway integration being out of scope per the SOW). No new order status added for this now — revisit only if staff lose track of pending refunds in practice.
-- **Staff/admin notification stays WhatsApp-only** (no email — no email-sending capability exists in this codebase today), but the **trigger point moves earlier**: fire when the order is created (proforma sent), not only when a payment proof lands / presential payment is chosen as it does today.
-
-These decisions aren't implemented yet — they update the target design. See "Suggested next steps" below for where they land in the backlog.
+- **Staff/admin notification stays WhatsApp-only** (no email — no email-sending capability exists in this codebase today), but the **trigger point moves earlier**: fire when the order is created (proforma sent), not only when a payment proof lands / presential payment is chosen as it does today. Still **not implemented**.
 
 ---
 
@@ -69,8 +76,8 @@ These decisions aren't implemented yet — they update the target design. See "S
 | Claude API integration (conversational agent) | ✅ | Working end-to-end in `whatsapp.controller.ts` (`processarAgenteConversa`) |
 | Structured action parsing (search / confirm / handoff) | ✅ | `executarAccaoEstruturada` handles `pesquisar`, `confirmar_pedido`, `transferir_humano` |
 | Redis-backed conversation history | ✅ | 20-message rolling window, 4h TTL |
-| Duplicate AI logic | 🟡 | `ai.service.ts` has a clean `chamarAgenteAI()` implementation that is **never called** — `whatsapp.controller.ts` has its own inline copy of the system prompt and Claude call, on a *different* model version. Needs consolidation to avoid prompt drift. |
-| Claude Vision document extraction | 🟡 | Implemented in `ai.service.ts` (`extrairDadosComClaudeVision`) but **not wired into the webhook flow**. The original prototype's `documento-viatura.js` (image → extract → confirm → save session) was never ported. Today, any image sent by a customer is only handled as a *payment proof*, even mid-vehicle-identification. |
+| Duplicate AI logic | 🟡 | `ai.service.ts` has a clean `callAIAgent()` implementation that is **never called** — `whatsapp.controller.ts` has its own inline copy of the system prompt and Claude call, on a *different* model version. Needs consolidation to avoid prompt drift. |
+| Claude Vision document extraction | ✅ | `extractDataWithClaudeVision` (`ai.service.ts`) is now wired into the webhook via `processVehicleDocument` in `whatsapp.controller.ts`, gated by state-aware image routing (2026-07-02). |
 | CRM auto-registration & returning customer recognition | ✅ | See section 3 |
 
 ---
@@ -81,7 +88,7 @@ These decisions aren't implemented yet — they update the target design. See "S
 |---|---|---|
 | Automatic customer pre-registration on first contact | ✅ | `crm.model.ts` + `processarRegistoCRM` |
 | Returning customer recognition | ✅ | `obterEActualizarCliente` updates last-contact + contact count |
-| Guided registration flow (nome → NIF → morada) | ✅ | Full step machine in `whatsapp.controller.ts` |
+| Guided registration flow (nome → NIF → morada → veículo) | ✅ | Full merged onboarding step machine in `whatsapp.controller.ts`, `registration_status` only reaches `complete` once vehicle ID also finishes (2026-07-02) |
 | Customer segmentation queries | ✅ | `obterClientesPorSegmento` — 8 segments (inactive, diesel owners, Luanda, frequent buyers, no orders, Toyota owners, new in 7 days, all) |
 | CRM stats aggregation | ✅ | `obterEstatisticasCRM` |
 | Campaign send tracking | ✅ | `registarCampanhaEnviada` / `campanhas_enviadas` table |
@@ -97,10 +104,10 @@ These decisions aren't implemented yet — they update the target design. See "S
 | VIN format detection | ✅ | `vin.service.ts` (`isVIN`) |
 | VIN decoding via NHTSA API | ✅ | `descodificarVIN`, with PT-AO fuel-type translation |
 | VIN → vehicle session save | ✅ | `salvarSessaoViatura` |
-| Manual vehicle collection fallback (marca → modelo → ano → nº motor) | ✅ | Full step machine in `whatsapp.controller.ts` |
-| Vehicle confirmation (Sim/Não buttons) | ✅ | `processarConfirmacaoViatura` |
-| Claude Vision document reader (livrete/Título do Veículo) | 🟡 | Backend method exists (`ai.service.ts`) but not called anywhere — **not functional today** |
-| Document confirmation flow | ❌ | Exists in the old prototype (`documento-viatura.js`), not ported |
+| Manual vehicle collection fallback (marca → modelo → ano → nº motor) | ✅ | Full step machine in `whatsapp.controller.ts`, now also part of merged onboarding |
+| Vehicle confirmation (Sim/Não buttons) | ✅ | `processVehicleConfirmation` — also finalizes onboarding when reached mid-registration |
+| Claude Vision document reader (livrete/Título do Veículo) | ✅ | `processVehicleDocument` in `whatsapp.controller.ts` (2026-07-02) — downloads the image, calls `extractDataWithClaudeVision`, cross-checks any legible VIN against NHTSA, then reuses the Sim/Não confirmation flow |
+| Document confirmation flow | ✅ | Ported from the old prototype's `documento-viatura.js`, reusing the existing VIN confirmation buttons instead of a separate flow |
 
 ---
 
@@ -161,10 +168,11 @@ These decisions aren't implemented yet — they update the target design. See "S
 1. ~~Port `schema.sql` into this repo~~ ✅ Done 2026-07-02 (`db/schema.sql` + `db:migrate`).
 2. ~~Add `.env.example` matching `config.ts`~~ ✅ Done 2026-07-02.
 3. Move placeholder payment details (IBAN, account, Multicaixa number in `payment.service.ts` / `pdf.service.ts`) and the default admin password fallback into env vars before production.
-4. Make image routing in `processMessageFlow` state-aware (awaiting vehicle ID → vehicle document; awaiting payment proof → payment proof) — this must land *before* step 5, per the 2026-07-02 workflow decisions above.
-5. Wire Claude Vision document reading into the WhatsApp webhook flow, now that image routing no longer collides with payment proofs.
-6. Merge the registration and manual-vehicle-collection step machines into a single new-customer onboarding flow (name → address → NIF → vehicle ID), per the 2026-07-02 workflow decisions.
+4. ~~Make image routing in `processMessageFlow` state-aware~~ ✅ Done 2026-07-02.
+5. ~~Wire Claude Vision document reading into the WhatsApp webhook flow~~ ✅ Done 2026-07-02 (`processVehicleDocument`).
+6. ~~Merge the registration and manual-vehicle-collection step machines into a single new-customer onboarding flow~~ ✅ Done 2026-07-02.
 7. Move the staff/admin WhatsApp notification trigger from payment-proof/presential-payment to order creation (proforma sent), per the 2026-07-02 workflow decisions.
 8. Consolidate the duplicated AI agent logic into `ai.service.ts`.
 9. Add a server-side multipart upload endpoint for CSV/XLS/XLSX import (backend currently has the `xlsx` dependency installed but unused).
 10. Add a GET endpoint to expose `sync_logs` so the admin panel can show import history.
+11. Manually verify the three onboarding vehicle-ID paths end to end against a real/sandbox WhatsApp number (VIN typed, document photo via Vision, manual fallback) — no automated test suite exists in this repo yet.

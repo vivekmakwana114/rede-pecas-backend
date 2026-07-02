@@ -4,7 +4,7 @@ import {
   getOrders,
   approveOrderHandler,
   rejectOrderHandler,
-  importPartsBatchHandler
+  importProductsBatchHandler
 } from '../../controllers/admin.controller.js';
 import { authMiddleware } from '../../middlewares/auth.js';
 import { validate } from '../../middlewares/validate.js';
@@ -19,6 +19,6 @@ router.post('/login', validate(adminValidation.login), login);
 router.get('/orders', authMiddleware, getOrders);
 router.post('/orders/:number/approve', authMiddleware, validate(adminValidation.orderParams), approveOrderHandler);
 router.post('/orders/:number/reject', authMiddleware, validate(adminValidation.orderParams), rejectOrderHandler);
-router.post('/inventory/upload', authMiddleware, validate(adminValidation.importPartsBatch), importPartsBatchHandler);
+router.post('/inventory/upload', authMiddleware, validate(adminValidation.importProductsBatch), importProductsBatchHandler);
 
 export default router;

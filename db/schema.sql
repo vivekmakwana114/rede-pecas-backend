@@ -60,9 +60,16 @@ CREATE INDEX IF NOT EXISTS idx_vehicles_make_model ON vehicles (make, model);
 CREATE INDEX IF NOT EXISTS idx_vehicles_years ON vehicles (year_from, year_to);
 
 -- ============================================================
--- PARTS
+-- PRODUCTS (formerly "parts" — renamed for clarity; the auto-parts
+-- domain vocabulary still calls them "peças" everywhere else)
 -- ============================================================
-CREATE TABLE IF NOT EXISTS parts (
+ALTER TABLE IF EXISTS parts RENAME TO products;
+ALTER INDEX IF EXISTS idx_parts_fts RENAME TO idx_products_fts;
+ALTER INDEX IF EXISTS idx_parts_supplier RENAME TO idx_products_supplier;
+ALTER INDEX IF EXISTS idx_parts_price RENAME TO idx_products_price;
+ALTER INDEX IF EXISTS idx_parts_active RENAME TO idx_products_active;
+
+CREATE TABLE IF NOT EXISTS products (
   id               SERIAL PRIMARY KEY,
   supplier_id      INT NOT NULL REFERENCES suppliers(id),
   category_id      INT REFERENCES categories(id),
@@ -106,32 +113,53 @@ CREATE TABLE IF NOT EXISTS parts (
   ) STORED
 );
 
-CREATE INDEX IF NOT EXISTS idx_parts_fts ON parts USING GIN (search_vector);
-CREATE INDEX IF NOT EXISTS idx_parts_supplier ON parts (supplier_id);
-CREATE INDEX IF NOT EXISTS idx_parts_price ON parts (price);
-CREATE INDEX IF NOT EXISTS idx_parts_active ON parts (active) WHERE active = true;
+CREATE INDEX IF NOT EXISTS idx_products_fts ON products USING GIN (search_vector);
+CREATE INDEX IF NOT EXISTS idx_products_supplier ON products (supplier_id);
+CREATE INDEX IF NOT EXISTS idx_products_price ON products (price);
+CREATE INDEX IF NOT EXISTS idx_products_active ON products (active) WHERE active = true;
 
 -- ============================================================
--- COMPATIBILITIES (part ↔ vehicle)
+-- COMPATIBILITIES (product ↔ vehicle)
 -- ============================================================
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'compatibilities' AND column_name = 'part_id'
+  ) THEN
+    ALTER TABLE compatibilities RENAME COLUMN part_id TO product_id;
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS compatibilities (
   id          SERIAL PRIMARY KEY,
-  part_id     INT NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+  product_id  INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   vehicle_id  INT NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
-  UNIQUE (part_id, vehicle_id)
+  UNIQUE (product_id, vehicle_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_compat_part ON compatibilities (part_id);
+ALTER INDEX IF EXISTS idx_compat_part RENAME TO idx_compat_product;
+CREATE INDEX IF NOT EXISTS idx_compat_product ON compatibilities (product_id);
 CREATE INDEX IF NOT EXISTS idx_compat_vehicle ON compatibilities (vehicle_id);
 
 -- ============================================================
 -- ORDERS
 -- ============================================================
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'orders' AND column_name = 'part_id'
+  ) THEN
+    ALTER TABLE orders RENAME COLUMN part_id TO product_id;
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS orders (
   id                      SERIAL PRIMARY KEY,
   number                  TEXT UNIQUE NOT NULL,  -- e.g. "RP-2026-00123"
   customer_phone          TEXT NOT NULL,
-  part_id                 INT REFERENCES parts(id),
+  product_id              INT REFERENCES products(id),
   supplier_id             INT REFERENCES suppliers(id),
   quantity                INT DEFAULT 1,
   unit_price              NUMERIC(12,2),
@@ -144,20 +172,51 @@ CREATE TABLE IF NOT EXISTS orders (
   approved_by             TEXT,
   approved_at             TIMESTAMPTZ,
   customer_engine_number  TEXT,
+  -- Payment proof (folded in from the former payment_proofs table —
+  -- always a strict 1:1 with the order, so no benefit to a separate table)
+  payment_proof_media_id  TEXT,
+  payment_proof_media_type TEXT,
   created_at              TIMESTAMPTZ DEFAULT NOW(),
   updated_at              TIMESTAMPTZ DEFAULT NOW()
 );
 
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_proof_media_id TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_proof_media_type TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_orders_customer_phone ON orders (customer_phone);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
 
+-- One-time data migration from payment_proofs, then drop it (idempotent: no-op once dropped)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'payment_proofs') THEN
+    UPDATE orders o
+    SET payment_proof_media_id = pp.media_id,
+        payment_proof_media_type = pp.media_type
+    FROM payment_proofs pp
+    WHERE pp.order_number = o.number;
+  END IF;
+END $$;
+
+DROP TABLE IF EXISTS payment_proofs;
+
 -- ============================================================
--- WAITLIST (parts not found — notify when available)
+-- WAITLIST (products not found — notify when available)
 -- ============================================================
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'waitlist_requests' AND column_name = 'part_name'
+  ) THEN
+    ALTER TABLE waitlist_requests RENAME COLUMN part_name TO product_name;
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS waitlist_requests (
   id             SERIAL PRIMARY KEY,
   phone          TEXT NOT NULL,
-  part_name      TEXT NOT NULL,
+  product_name   TEXT NOT NULL,
   vehicle_make   TEXT,
   vehicle_model  TEXT,
   vehicle_year   TEXT,
@@ -210,16 +269,6 @@ CREATE TABLE IF NOT EXISTS manual_vehicle_collections (
   model           TEXT,
   year            TEXT,
   engine_number   TEXT,
-  created_at      TIMESTAMPTZ DEFAULT NOW()
-);
-
--- ============================================================
--- Payment proofs sent by customers
--- ============================================================
-CREATE TABLE IF NOT EXISTS payment_proofs (
-  order_number    TEXT PRIMARY KEY REFERENCES orders(number),
-  media_id        TEXT NOT NULL,
-  media_type      TEXT,
   created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 

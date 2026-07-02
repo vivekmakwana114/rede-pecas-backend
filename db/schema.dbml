@@ -42,7 +42,7 @@ Table vehicles {
   }
 }
 
-Table parts {
+Table products {
   id serial [pk]
   supplier_id int [not null, ref: > suppliers.id]
   category_id int [ref: > categories.id]
@@ -70,11 +70,11 @@ Table parts {
 
 Table compatibilities {
   id serial [pk]
-  part_id int [not null, ref: > parts.id, note: 'ON DELETE CASCADE']
+  product_id int [not null, ref: > products.id, note: 'ON DELETE CASCADE']
   vehicle_id int [not null, ref: > vehicles.id, note: 'ON DELETE CASCADE']
 
   indexes {
-    (part_id, vehicle_id) [unique]
+    (product_id, vehicle_id) [unique]
   }
 }
 
@@ -82,7 +82,7 @@ Table orders {
   id serial [pk]
   number text [unique, not null, note: 'RP-YYYY-XXXXX']
   customer_phone text [not null, ref: > customers.phone]
-  part_id int [ref: > parts.id]
+  product_id int [ref: > products.id]
   supplier_id int [ref: > suppliers.id]
   quantity int [default: 1]
   unit_price numeric(12,2)
@@ -91,6 +91,8 @@ Table orders {
   approved_by text
   approved_at timestamptz
   customer_engine_number text
+  payment_proof_media_id text [note: 'WhatsApp media id; folded in from the former payment_proofs table (strict 1:1 with the order)']
+  payment_proof_media_type text
   created_at timestamptz [default: `NOW()`]
   updated_at timestamptz [default: `NOW()`]
 
@@ -103,7 +105,7 @@ Table orders {
 Table waitlist_requests {
   id serial [pk]
   phone text [not null]
-  part_name text [not null]
+  product_name text [not null]
   vehicle_make text
   vehicle_model text
   vehicle_year text
@@ -111,7 +113,7 @@ Table waitlist_requests {
   notified boolean [default: false]
   created_at timestamptz [default: `NOW()`]
 
-  Note: 'Parts not found in stock — notify customer when available'
+  Note: 'Products not found in stock — notify customer when available'
 }
 
 Table vin_cache {
@@ -150,13 +152,6 @@ Table manual_vehicle_collections {
   year text
   engine_number text
   created_at timestamptz [default: `NOW()`, note: '30-minute TTL enforced in queries']
-}
-
-Table payment_proofs {
-  order_number text [pk, ref: > orders.number]
-  media_id text [not null, note: 'WhatsApp media id']
-  media_type text
-  created_at timestamptz [default: `NOW()`]
 }
 
 Table order_counters {

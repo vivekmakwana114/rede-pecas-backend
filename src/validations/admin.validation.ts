@@ -13,7 +13,7 @@ export const orderParams: ValidationSchema = {
   }),
 };
 
-export const importPartsBatch: ValidationSchema = {
+export const importProductsBatch: ValidationSchema = {
   body: Joi.object().keys({
     supplierId: Joi.number().integer().required(),
     items: Joi.array()

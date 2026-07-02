@@ -3,78 +3,56 @@ import { config } from '../config/config.js';
 import { logger } from '../config/logger.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons } from './whatsapp.service.js';
 import { generatePrimaveraInvoice, sendFinalInvoiceWhatsApp } from './pdf.service.js';
-import { getOrderByNumber } from '../models/inventory.model.js';
+import { getOrderByNumber } from '../models/order.model.js';
+import { getSupplierPhoneById } from '../models/supplier.model.js';
 import { formatPrice } from '../utils/helpers.js';
+import { t } from '../i18n/messages.js';
 
-// Display names and instruction texts are Portuguese (customer-facing);
+// Display names and instruction texts come from src/i18n/messages.ts (customer-facing);
 // ids are English because they are persisted in orders.payment_method.
 export const PAYMENT_METHODS = {
   BANK_TRANSFER: {
     id: 'bank_transfer',
-    name: 'Transferência Bancária',
+    name: t.payment.methods.bankTransfer.name,
     emoji: '🏦',
     instructions: (orderNumber: string, amount: number) =>
-      `🏦 *Transferência Bancária*\n\n` +
-      `Banco: BFA / BAI / BIC (à tua escolha)\n` +
-      `IBAN: AO06 0040 0000 XXXX XXXX XXXX X\n` +
-      `Titular: Rede Peças, Lda\n` +
-      `Valor: *${formatPrice(amount)}*\n` +
-      `Referência: *${orderNumber}* _(obrigatório)_\n\n` +
-      `Após a transferência, envia aqui o comprovativo (foto ou PDF). 📸`,
+      t.payment.methods.bankTransfer.instructions(orderNumber, formatPrice(amount)),
     requiresProof: true,
   },
 
   BANK_DEPOSIT: {
     id: 'bank_deposit',
-    name: 'Depósito Bancário',
+    name: t.payment.methods.bankDeposit.name,
     emoji: '🏧',
     instructions: (orderNumber: string, amount: number) =>
-      `🏧 *Depósito Bancário*\n\n` +
-      `Banco: BFA / BAI / BIC (à tua escolha)\n` +
-      `Nº Conta: 000000000000\n` +
-      `Titular: Rede Peças, Lda\n` +
-      `Valor: *${formatPrice(amount)}*\n` +
-      `Referência: *${orderNumber}* _(escreve no talão)_\n\n` +
-      `Após o depósito, envia aqui a foto do talão. 📸`,
+      t.payment.methods.bankDeposit.instructions(orderNumber, formatPrice(amount)),
     requiresProof: true,
   },
 
   MULTICAIXA_EXPRESS: {
     id: 'multicaixa_express',
-    name: 'Multicaixa Express',
+    name: t.payment.methods.multicaixaExpress.name,
     emoji: '📱',
     instructions: (orderNumber: string, amount: number) =>
-      `📱 *Multicaixa Express*\n\n` +
-      `Número: *+244 900 000 000*\n` +
-      `Valor: *${formatPrice(amount)}*\n` +
-      `Referência: *${orderNumber}* _(coloca na descrição)_\n\n` +
-      `Após o pagamento, envia aqui o screenshot da confirmação. 📸`,
+      t.payment.methods.multicaixaExpress.instructions(orderNumber, formatPrice(amount)),
     requiresProof: true,
   },
 
   MOBILE_POS: {
     id: 'mobile_pos',
-    name: 'TPA Móvel (Terminal de Pagamento)',
+    name: t.payment.methods.mobilePOS.name,
     emoji: '💳',
     instructions: (orderNumber: string, amount: number) =>
-      `💳 *TPA Móvel*\n\n` +
-      `Um agente da Rede Peças irá até ti com o terminal de pagamento.\n\n` +
-      `Valor a pagar: *${formatPrice(amount)}*\n` +
-      `Pedido: *${orderNumber}*\n\n` +
-      `A nossa equipa entrará em contacto para combinar a visita. 🚗`,
+      t.payment.methods.mobilePOS.instructions(orderNumber, formatPrice(amount)),
     requiresProof: false,
   },
 
   CASH: {
     id: 'cash',
-    name: 'Dinheiro em Mão',
+    name: t.payment.methods.cash.name,
     emoji: '💵',
     instructions: (orderNumber: string, amount: number) =>
-      `💵 *Pagamento em Dinheiro*\n\n` +
-      `Um agente da Rede Peças irá recolher o pagamento na entrega.\n\n` +
-      `Valor a preparar: *${formatPrice(amount)}*\n` +
-      `Pedido: *${orderNumber}*\n\n` +
-      `Por favor tenha o valor exacto disponível. 🙏`,
+      t.payment.methods.cash.instructions(orderNumber, formatPrice(amount)),
     requiresProof: false,
   },
 };
@@ -83,21 +61,9 @@ export const PAYMENT_METHODS = {
  * Initiates the payment selection process via WhatsApp buttons.
  */
 export async function askPaymentMethod(phone: string, orderNumber: string, amount: number): Promise<void> {
-  const message =
-    `💰 *Como preferes pagar?*\n\n` +
-    `Pedido: *${orderNumber}*\n` +
-    `Valor: *${formatPrice(amount)}*\n\n` +
-    `Escolhe uma opção:`;
+  const message = t.payment.askMethodBody(orderNumber, formatPrice(amount));
 
-  await sendWhatsAppButtons(
-    phone,
-    message,
-    [
-      '🏦 Transferência / Depósito',
-      '📱 Multicaixa Express',
-      '💳 TPA Móvel / Dinheiro',
-    ]
-  );
+  await sendWhatsAppButtons(phone, message, t.payment.askMethodButtons);
 
   await db.query(
     `UPDATE orders SET status = 'awaiting_payment_method' WHERE number = $1`,
@@ -122,11 +88,7 @@ export async function processMethodChoice(phone: string, customerReply: string):
   const reply = customerReply.toLowerCase();
 
   if (reply.includes('transfer') || reply.includes('deposit') || reply.includes('banco') || reply === '1') {
-    await sendWhatsAppButtons(
-      phone,
-      'Preferes transferência ou depósito bancário?',
-      ['🏦 Transferência', '🏧 Depósito']
-    );
+    await sendWhatsAppButtons(phone, t.payment.askBankSubtypeBody(), t.payment.askBankSubtypeButtons);
     await db.query(
       `UPDATE orders SET status = 'awaiting_bank_subtype' WHERE number = $1`,
       [number]
@@ -136,11 +98,7 @@ export async function processMethodChoice(phone: string, customerReply: string):
     await confirmMethodAndSendInstructions(phone, number, unit_price, PAYMENT_METHODS.MULTICAIXA_EXPRESS);
     return true;
   } else if (reply.includes('tpa') || reply.includes('terminal') || reply.includes('dinheiro') || reply === '3') {
-    await sendWhatsAppButtons(
-      phone,
-      'Preferes pagar com cartão no terminal ou em dinheiro na entrega?',
-      ['💳 TPA (cartão)', '💵 Dinheiro na entrega']
-    );
+    await sendWhatsAppButtons(phone, t.payment.askInPersonSubtypeBody(), t.payment.askInPersonSubtypeButtons);
     await db.query(
       `UPDATE orders SET status = 'awaiting_in_person_subtype' WHERE number = $1`,
       [number]
@@ -225,40 +183,25 @@ export async function processPaymentProof(phone: string, mediaId: string, mediaT
   const { number, unit_price, payment_method } = rows[0];
 
   await db.query(
-    `INSERT INTO payment_proofs (order_number, media_id, media_type, created_at)
-     VALUES ($1, $2, $3, NOW())
-     ON CONFLICT (order_number) DO UPDATE SET media_id = $2, media_type = $3`,
+    `UPDATE orders
+     SET payment_proof_media_id = $2,
+         payment_proof_media_type = $3,
+         status = 'payment_proof_received',
+         updated_at = NOW()
+     WHERE number = $1`,
     [number, mediaId, mediaType]
-  );
-
-  await db.query(
-    `UPDATE orders SET status = 'payment_proof_received' WHERE number = $1`,
-    [number]
   );
 
   const methodName = Object.values(PAYMENT_METHODS)
     .find(m => m.id === payment_method)?.name || payment_method;
 
-  await sendWhatsAppMessage(
-    phone,
-    `✅ *Comprovativo recebido!*\n\n` +
-    `Método: ${methodName}\n` +
-    `Pedido: *${number}*\n\n` +
-    `A nossa equipa irá verificar o pagamento e emitir a factura em breve.\n` +
-    `Normalmente demora menos de 30 minutos em horário de expediente. 🙏`
-  );
+  await sendWhatsAppMessage(phone, t.payment.proofReceivedCustomer(methodName, number));
 
   const staffPhone = config.admin.staffPhone;
   if (staffPhone) {
     await sendWhatsAppMessage(
       staffPhone,
-      `📸 *COMPROVATIVO RECEBIDO*\n\n` +
-      `Pedido: *${number}*\n` +
-      `Método: ${methodName}\n` +
-      `Valor: *${formatPrice(unit_price)}*\n` +
-      `Cliente: ${phone}\n\n` +
-      `Acede ao painel para verificar e aprovar:\n` +
-      `🔗 ${config.appUrl}/admin/orders`
+      t.payment.proofReceivedStaff(number, methodName, formatPrice(unit_price), phone, `${config.appUrl}/admin/orders`)
     );
   }
 
@@ -325,17 +268,15 @@ async function notifyAgentInPersonPayment(
 
   await sendWhatsAppMessage(
     staffPhone,
-    `${method.emoji} *PAGAMENTO PRESENCIAL SOLICITADO*\n\n` +
-    `Método: *${method.name}*\n` +
-    `Pedido: *${orderNumber}*\n` +
-    `Valor: *${formatPrice(amount)}*\n` +
-    `Cliente: ${customerPhone}\n\n` +
-    `${method.id === 'mobile_pos'
-      ? 'Leva o terminal TPA ao cliente para efectuar o pagamento.'
-      : 'O cliente vai pagar em dinheiro na entrega.'
-    }\n\n` +
-    `Após confirmação, aprova no painel:\n` +
-    `🔗 ${config.appUrl}/admin/orders`
+    t.payment.inPersonPaymentStaff(
+      orderNumber,
+      method.name,
+      method.emoji,
+      formatPrice(amount),
+      customerPhone,
+      method.id === 'mobile_pos',
+      `${config.appUrl}/admin/orders`
+    )
   );
 }
 
@@ -343,23 +284,13 @@ async function notifyAgentInPersonPayment(
  * Dispatches a delivery checklist alert to the supplier.
  */
 async function notifySupplierDelivery(order: any): Promise<void> {
-  const { rows } = await db.query(
-    'SELECT phone FROM suppliers WHERE id = $1',
-    [order.supplier_id]
-  );
-  if (!rows.length || !rows[0].phone) return;
+  const supplierPhone = await getSupplierPhoneById(order.supplier_id);
+  if (!supplierPhone) return;
 
   try {
     await sendWhatsAppMessage(
-      rows[0].phone,
-      `📦 *NOVO PEDIDO CONFIRMADO — REDE PEÇAS*\n\n` +
-      `Por favor prepare o seguinte artigo para entrega:\n\n` +
-      `🔧 Peça: *${order.part_name}*\n` +
-      `📋 Referência: ${order.reference}\n` +
-      `🔢 Quantidade: ${order.quantity}\n` +
-      `📋 Nº Pedido: *${order.number}*\n\n` +
-      `A equipa da Rede Peças entrará em contacto para coordenar a recolha.\n` +
-      `Obrigado pela parceria! 🙏`
+      supplierPhone,
+      t.payment.supplierDeliveryNotice(order.product_name, order.reference, order.quantity, order.number)
     );
   } catch (error: any) {
     // Delivery notification must not fail the approval flow

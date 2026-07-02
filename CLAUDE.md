@@ -11,7 +11,7 @@ See `PROJECT_PROGRESS.md` for the current status against the SOW, known gaps, an
 ## Commands
 
 ```bash
-npm run dev        # nodemon + ts-node/esm, watches src/
+npm run dev        # tsx watch, watches src/
 npm run build      # tsc → dist/
 npm start          # node dist/index.js (requires build)
 npm run lint       # eslint src
@@ -43,15 +43,17 @@ Two route groups mounted under `/v1` (`src/routes/v1/index.ts`):
 
 `processMessageFlow` in `src/controllers/whatsapp.controller.ts` routes every incoming message through a strict priority chain — earlier stages short-circuit later ones:
 
-1. CRM registration (new customer → guided name → NIF → address flow; `customers.registration_status`)
-2. Media (image/document) → treated as payment proof (`processPaymentProof`)
-3. Active manual vehicle collection (make → model → year → engine number step machine)
-4. 17-char VIN detected → NHTSA decode → confirm buttons (falls back to manual collection on decode failure)
-5. Vehicle confirmation reply (Sim/Não)
-6. Order awaiting payment input (`awaiting_payment_method` / `awaiting_*_subtype` states)
-7. Fallback: conversational Claude agent
+1. CRM registration (new customer → guided name → NIF → address flow; `customers.registration_status`). Registration and vehicle ID are one merged onboarding flow: completing the address step sets `registration_status = 'awaiting_vehicle_id'` instead of `complete` — that status is explicitly excluded from this gate so stages 3–6 below (already fully general) handle it, rather than being re-implemented here.
+2. State-aware image routing: while a vehicle ID is pending (`registration_status === 'awaiting_vehicle_id'` or an active manual collection), an image is treated as a vehicle document (`processVehicleDocument`, via Claude Vision) instead of a payment proof.
+3. Media (image/document) not caught by stage 2 → treated as payment proof (`processPaymentProof`)
+4. Active manual vehicle collection (make → model → year → engine number step machine)
+5. 17-char VIN detected → NHTSA decode → confirm buttons (falls back to manual collection, now with a message, on decode failure)
+6. Vehicle confirmation reply (Sim/Não) — if this completes a pending onboarding, flips `registration_status` to `complete` and sends the combined welcome message
+7. Still `awaiting_vehicle_id` and nothing above matched (e.g. non-VIN text with no VIN typed and no document sent) → starts manual collection deterministically rather than falling through to the AI agent
+8. Order awaiting payment input (`awaiting_payment_method` / `awaiting_*_subtype` states)
+9. Fallback: conversational Claude agent
 
-New message-handling behavior must slot into this chain deliberately — position determines what can intercept what (e.g. today any image is consumed as a payment proof, even mid-vehicle-identification; a known gap — see "Intended end-to-end workflow" below, image routing is agreed to become state-aware).
+New message-handling behavior must slot into this chain deliberately — position determines what can intercept what.
 
 ### Conversational state
 
@@ -64,14 +66,14 @@ The AI agent (`processAIConversation`) sends this history plus a system prompt t
 
 ### Known duplication
 
-`src/services/ai.service.ts` contains an unused, cleaner copy of the agent call (`callAIAgent`) plus a Claude Vision document extractor (`extractDataWithClaudeVision`) that is not wired into the webhook. The live agent logic (and system prompt) is inlined in `whatsapp.controller.ts` on a different model version. Consolidation is a pending task — don't extend both copies.
+`src/services/ai.service.ts` contains an unused, cleaner copy of the conversational agent call (`callAIAgent`). The live agent logic (and system prompt) is inlined in `whatsapp.controller.ts` on a different model version. Consolidation is still a pending task — don't extend both copies. (The Vision document extractor `extractDataWithClaudeVision` from the same file **is** now wired into the webhook, via `processVehicleDocument` — no longer duplicated/unused.)
 
 ### Intended end-to-end workflow (agreed with Vivek, 2026-07-02)
 
-The target customer journey is documented in full in `PROJECT_PROGRESS.md` → "Full intended workflow". Three decisions from that discussion change the architecture described above and are **not yet implemented**:
+The target customer journey is documented in full in `PROJECT_PROGRESS.md` → "Full intended workflow". Of the three decisions from that discussion:
 
-- **Onboarding becomes a single merged flow.** Registration (name→address→NIF) and vehicle ID (VIN, document/photo, or manual entry) are to become one step machine for new customers, replacing the two independent step machines that exist today (pipeline stages 1 and 3/4 above). Don't restructure this until the merge lands — treat it as a planned refactor, not current behavior.
-- **Image routing must become state-aware before Claude Vision is wired in.** Route incoming images by the customer's current conversation state (awaiting vehicle ID → treat as vehicle document; awaiting payment proof → treat as payment proof), replacing today's unconditional "any image = payment proof" at pipeline stage 2. Wiring `extractDataWithClaudeVision` into the webhook without this fix first will cause vehicle documents sent during onboarding to be swallowed as payment proofs.
-- **Staff/admin WhatsApp notification trigger moves earlier.** It currently fires when a payment proof lands or presential payment is chosen; the agreed target is to fire at order creation (proforma sent) instead. No email notification — none exists in this codebase and none was added to scope.
+- **Onboarding is now a single merged flow** (implemented 2026-07-02): registration (name→NIF→address) and vehicle ID (VIN typed, document/photo via Claude Vision, or manual entry) are one continuous step machine — see the message pipeline above.
+- **Image routing is now state-aware** (implemented 2026-07-02): resolved as part of the same change, since it was a hard prerequisite for wiring in Vision.
+- **Staff/admin WhatsApp notification trigger moving to order creation** — still **not implemented**; it currently fires when a payment proof lands or presential payment is chosen. No email notification — none exists in this codebase and none was added to scope.
 
 Refund tracking on order rejection was explicitly decided *against* — it stays a message-only "refunded within 3–5 business days" notice with no new order status, consistent with payment gateway integration being out of scope per the SOW.
