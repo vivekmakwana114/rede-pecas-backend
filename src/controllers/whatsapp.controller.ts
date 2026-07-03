@@ -80,6 +80,11 @@ export async function receiveWebhookMessage(req: Request, res: Response): Promis
 
     logger.debug(`[${phone}] Webhook type: ${mediaType}, text: ${customerText}`);
 
+    // TEMPORARY: confirms end-to-end delivery (Meta -> webhook -> WhatsApp send) while
+    // debugging real-number message delivery. Remove once that's confirmed working —
+    // fires on every inbound message, stacking on top of the normal flow's own reply.
+    await sendWhatsAppMessage(phone, t.botCheck.activeReply());
+
     await processMessageFlow(phone, customerText, mediaType, mediaId);
   } catch (error: any) {
     logger.error('Error in WhatsApp webhook processing', error);

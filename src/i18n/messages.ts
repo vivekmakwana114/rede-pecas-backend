@@ -25,6 +25,9 @@ interface PaymentMethodCopy {
 }
 
 interface Messages {
+  botCheck: {
+    activeReply: () => string;
+  };
   onboarding: {
     welcome: () => string;
     askNifBody: (name: string) => string;
@@ -155,6 +158,11 @@ interface Messages {
 }
 
 const pt: Messages = {
+  botCheck: {
+    activeReply: () =>
+      `🤖 Recebemos a tua mensagem! O nosso assistente está activo.\n\n` +
+      `*Como podemos ajudar-te hoje?*`,
+  },
   onboarding: {
     welcome: () =>
       `👋 Bem-vindo à *Rede Peças*!\n\n` +
@@ -472,6 +480,11 @@ EXEMPLOS DE EXTRACÇÃO:
 };
 
 const en: Messages = {
+  botCheck: {
+    activeReply: () =>
+      `🤖 We received your message! Our assistant is active.\n\n` +
+      `*How can we help you today?*`,
+  },
   onboarding: {
     welcome: () =>
       `👋 Welcome to *Rede Peças*!\n\n` +
