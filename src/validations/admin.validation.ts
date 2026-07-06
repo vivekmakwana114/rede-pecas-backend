@@ -28,3 +28,12 @@ export const importProductsBatch: ValidationSchema = {
       .required(),
   }),
 };
+
+export const importProductsFile: ValidationSchema = {
+  body: Joi.object().keys({
+    supplierId: Joi.number().integer(),
+    supplierName: Joi.string(),
+    supplierNif: Joi.string().allow(''),
+    supplierProvince: Joi.string().allow(''),
+  }).xor('supplierId', 'supplierName'),
+};

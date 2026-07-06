@@ -34,30 +34,25 @@ CREATE TABLE IF NOT EXISTS suppliers (
 );
 
 -- ============================================================
--- PART CATEGORIES
+-- MINIFICATION: categories, the static vehicle-compatibility catalog
+-- (formerly "vehicles"), and its join table "compatibilities" have zero
+-- code references anywhere in the app (nothing populates or reads them
+-- outside seed data) and are dropped entirely. Guarded so a database
+-- already migrated to the new schema — where "vehicles" is the new
+-- phone-keyed table created later in this file — is never affected.
 -- ============================================================
-CREATE TABLE IF NOT EXISTS categories (
-  id            SERIAL PRIMARY KEY,
-  name          TEXT NOT NULL,                  -- e.g. "Motor", "Suspensão"
-  parent_id     INT REFERENCES categories(id)   -- subcategories
-);
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'vehicles' AND column_name = 'year_from'
+  ) THEN
+    DROP TABLE IF EXISTS compatibilities;
+    DROP TABLE vehicles;
+  END IF;
+END $$;
 
--- ============================================================
--- VEHICLES (compatibility table)
--- ============================================================
-CREATE TABLE IF NOT EXISTS vehicles (
-  id            SERIAL PRIMARY KEY,
-  make          TEXT NOT NULL,                  -- e.g. "Toyota"
-  model         TEXT NOT NULL,                  -- e.g. "Hilux"
-  generation    TEXT,                           -- e.g. "AN10/AN20"
-  year_from     INT NOT NULL,                   -- e.g. 2005
-  year_to       INT NOT NULL,                   -- e.g. 2015
-  engine        TEXT,                           -- e.g. "2.5D 4D"
-  fuel_type     TEXT                            -- "diesel", "gasolina", "híbrido"
-);
-
-CREATE INDEX IF NOT EXISTS idx_vehicles_make_model ON vehicles (make, model);
-CREATE INDEX IF NOT EXISTS idx_vehicles_years ON vehicles (year_from, year_to);
+DROP TABLE IF EXISTS compatibilities;
 
 -- ============================================================
 -- PRODUCTS (formerly "parts" — renamed for clarity; the auto-parts
@@ -72,7 +67,6 @@ ALTER INDEX IF EXISTS idx_parts_active RENAME TO idx_products_active;
 CREATE TABLE IF NOT EXISTS products (
   id               SERIAL PRIMARY KEY,
   supplier_id      INT NOT NULL REFERENCES suppliers(id),
-  category_id      INT REFERENCES categories(id),
 
   -- Identification
   name             TEXT NOT NULL,               -- e.g. "Filtro de óleo Mann W712/75"
@@ -87,6 +81,7 @@ CREATE TABLE IF NOT EXISTS products (
   price            NUMERIC(12,2) NOT NULL,      -- in Kwanzas (AOA)
   quantity         INT NOT NULL DEFAULT 0,
   unit             TEXT DEFAULT 'unidade',
+  waitlist_phones  TEXT[] DEFAULT '{}',         -- phones awaiting a restock notification
 
   -- Delivery
   delivery_time    TEXT DEFAULT 'Em stock',     -- e.g. "Hoje", "2 dias", "Sob encomenda"
@@ -113,34 +108,15 @@ CREATE TABLE IF NOT EXISTS products (
   ) STORED
 );
 
+ALTER TABLE products DROP COLUMN IF EXISTS category_id;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS waitlist_phones TEXT[] DEFAULT '{}';
+
 CREATE INDEX IF NOT EXISTS idx_products_fts ON products USING GIN (search_vector);
 CREATE INDEX IF NOT EXISTS idx_products_supplier ON products (supplier_id);
 CREATE INDEX IF NOT EXISTS idx_products_price ON products (price);
 CREATE INDEX IF NOT EXISTS idx_products_active ON products (active) WHERE active = true;
 
--- ============================================================
--- COMPATIBILITIES (product ↔ vehicle)
--- ============================================================
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'compatibilities' AND column_name = 'part_id'
-  ) THEN
-    ALTER TABLE compatibilities RENAME COLUMN part_id TO product_id;
-  END IF;
-END $$;
-
-CREATE TABLE IF NOT EXISTS compatibilities (
-  id          SERIAL PRIMARY KEY,
-  product_id  INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-  vehicle_id  INT NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
-  UNIQUE (product_id, vehicle_id)
-);
-
-ALTER INDEX IF EXISTS idx_compat_part RENAME TO idx_compat_product;
-CREATE INDEX IF NOT EXISTS idx_compat_product ON compatibilities (product_id);
-CREATE INDEX IF NOT EXISTS idx_compat_vehicle ON compatibilities (vehicle_id);
+DROP TABLE IF EXISTS categories;
 
 -- ============================================================
 -- ORDERS
@@ -201,34 +177,16 @@ END $$;
 DROP TABLE IF EXISTS payment_proofs;
 
 -- ============================================================
--- WAITLIST (products not found — notify when available)
+-- WAITLIST — replaced by products.waitlist_phones (see PRODUCTS section)
 -- ============================================================
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'waitlist_requests' AND column_name = 'part_name'
-  ) THEN
-    ALTER TABLE waitlist_requests RENAME COLUMN part_name TO product_name;
-  END IF;
-END $$;
-
-CREATE TABLE IF NOT EXISTS waitlist_requests (
-  id             SERIAL PRIMARY KEY,
-  phone          TEXT NOT NULL,
-  product_name   TEXT NOT NULL,
-  vehicle_make   TEXT,
-  vehicle_model  TEXT,
-  vehicle_year   TEXT,
-  engine_number  TEXT,
-  notified       BOOLEAN DEFAULT false,
-  created_at     TIMESTAMPTZ DEFAULT NOW()
-);
+DROP TABLE IF EXISTS waitlist_requests;
 
 -- ============================================================
--- VIN cache (avoids repeated NHTSA API calls)
+-- NHTSA vehicle cache (avoids repeated NHTSA API calls for the same VIN)
 -- ============================================================
-CREATE TABLE IF NOT EXISTS vin_cache (
+ALTER TABLE IF EXISTS vin_cache RENAME TO nhtsa_vehicles;
+
+CREATE TABLE IF NOT EXISTS nhtsa_vehicles (
   vin                 CHAR(17) PRIMARY KEY,
   make                TEXT NOT NULL,
   model               TEXT NOT NULL,
@@ -238,38 +196,6 @@ CREATE TABLE IF NOT EXISTS vin_cache (
   fuel_type           TEXT,
   manufacture_country TEXT,
   created_at          TIMESTAMPTZ DEFAULT NOW()
-);
-
--- ============================================================
--- Per-customer vehicle session (4-hour working context)
--- ============================================================
-CREATE TABLE IF NOT EXISTS vehicle_sessions (
-  phone           TEXT PRIMARY KEY,
-  vin             CHAR(17),
-  make            TEXT,
-  model           TEXT,
-  year            TEXT,
-  engine_number   TEXT,
-  license_plate   TEXT,
-  engine_size     TEXT,
-  fuel_type       TEXT,
-  updated_at      TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_vehicle_sessions_time ON vehicle_sessions (updated_at);
-
--- ============================================================
--- Manual vehicle data collection (VIN failed or unavailable)
--- ============================================================
-CREATE TABLE IF NOT EXISTS manual_vehicle_collections (
-  phone           TEXT PRIMARY KEY,
-  status          TEXT NOT NULL,
-  attempted_vin   CHAR(17),
-  make            TEXT,
-  model           TEXT,
-  year            TEXT,
-  engine_number   TEXT,
-  created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ============================================================
@@ -303,7 +229,7 @@ CREATE TABLE IF NOT EXISTS customers (
   nif                  TEXT,                    -- Angolan tax ID
   address              TEXT,
   email                TEXT,
-  registration_status  TEXT DEFAULT 'new',      -- new, awaiting_name, awaiting_nif, awaiting_address, complete
+  registration_status  TEXT DEFAULT 'new',      -- new, awaiting_name, awaiting_nif, awaiting_nif_number, awaiting_address, awaiting_vehicle_id, complete
   first_contact_at     TIMESTAMPTZ DEFAULT NOW(),
   last_contact_at      TIMESTAMPTZ DEFAULT NOW(),
   registered_at        TIMESTAMPTZ,
@@ -315,11 +241,62 @@ CREATE INDEX IF NOT EXISTS idx_customers_status ON customers (registration_statu
 CREATE INDEX IF NOT EXISTS idx_customers_last_contact ON customers (last_contact_at);
 CREATE INDEX IF NOT EXISTS idx_customers_registered_at ON customers (registered_at);
 
-CREATE TABLE IF NOT EXISTS campaign_sends (
-  id          SERIAL PRIMARY KEY,
-  phone       TEXT REFERENCES customers(phone),
-  segment     TEXT,
-  sent_at     TIMESTAMPTZ DEFAULT NOW()
+DROP TABLE IF EXISTS campaign_sends;
+
+-- ============================================================
+-- VEHICLES — per-customer identified vehicle (merged from the former
+-- vehicle_sessions + manual_vehicle_collections). One row per phone;
+-- `status` distinguishes a confirmed vehicle (NULL/'complete', 4-hour TTL
+-- via updated_at) from an in-progress manual-entry wizard step
+-- (30-minute TTL via created_at). Must be created after `customers`
+-- (FK dependency).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS vehicles (
+  phone           TEXT PRIMARY KEY REFERENCES customers(phone),
+  vin             CHAR(17),
+  make            TEXT,
+  model           TEXT,
+  year            TEXT,
+  engine_number   TEXT,
+  license_plate   TEXT,
+  engine_size     TEXT,
+  fuel_type       TEXT,
+  source          TEXT,               -- 'vin' | 'manual' | 'document'
+  status          TEXT,               -- NULL/'complete' = confirmed vehicle; other = in-progress manual wizard step
+  attempted_vin   CHAR(17),           -- VIN that failed NHTSA decode before falling back to manual entry
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_campaign_sends_phone ON campaign_sends (phone);
+CREATE INDEX IF NOT EXISTS idx_vehicles_updated_at ON vehicles (updated_at);
+CREATE INDEX IF NOT EXISTS idx_vehicles_status_created ON vehicles (status, created_at);
+
+-- One-time data migration from the old two-table design, then drop them
+-- (idempotent: no-op once already dropped)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'vehicle_sessions') THEN
+    INSERT INTO vehicles (phone, vin, make, model, year, engine_number, license_plate, engine_size, fuel_type, source, updated_at, created_at)
+    SELECT phone, vin, make, model, year, engine_number, license_plate, engine_size, fuel_type, 'vin', updated_at, updated_at
+    FROM vehicle_sessions
+    WHERE phone IN (SELECT phone FROM customers)
+    ON CONFLICT (phone) DO NOTHING;
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'manual_vehicle_collections') THEN
+    INSERT INTO vehicles (phone, status, attempted_vin, make, model, year, engine_number, created_at, updated_at)
+    SELECT phone, status, attempted_vin, make, model, year, engine_number, created_at, created_at
+    FROM manual_vehicle_collections
+    WHERE phone IN (SELECT phone FROM customers)
+    ON CONFLICT (phone) DO UPDATE SET
+      status = EXCLUDED.status,
+      attempted_vin = EXCLUDED.attempted_vin,
+      make = COALESCE(EXCLUDED.make, vehicles.make),
+      model = COALESCE(EXCLUDED.model, vehicles.model),
+      year = COALESCE(EXCLUDED.year, vehicles.year),
+      engine_number = COALESCE(EXCLUDED.engine_number, vehicles.engine_number);
+  END IF;
+END $$;
+
+DROP TABLE IF EXISTS vehicle_sessions;
+DROP TABLE IF EXISTS manual_vehicle_collections;

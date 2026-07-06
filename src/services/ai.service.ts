@@ -1,32 +1,17 @@
 import Anthropic from "@anthropic-ai/sdk";
+import fs from 'fs';
 import { config } from "../config/config.js";
 import { logger } from "../config/logger.js";
+import { getCustomerVehicle } from '../models/vehicle.model.js';
+import { createOrder, generateOrderNumber } from '../models/order.model.js';
+import * as productService from './product.service.js';
+import { generateProformaPDF, sendProformaWhatsApp } from './pdf.service.js';
+import { askPaymentMethod } from './payment.service.js';
+import { getHistory, saveHistory, getPendingOptions, clearPendingOptions } from './session.service.js';
+import { sendWhatsAppMessage } from './whatsapp.service.js';
+import { t } from '../i18n/messages.js';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
-
-// Prompt text is Portuguese (the customer conversation language);
-// the structured-action JSON keys are English (machine protocol).
-const SYSTEM_PROMPT = `
-És o assistente virtual da Rede Peças, um marketplace automotivo em Angola.
-O teu trabalho é ajudar clientes a encontrar peças para os seus veículos.
-
-REGRAS:
-1. Sê sempre simpático e directo. Fala em português angolano informal.
-2. Extrai do pedido do cliente: peça, marca do veículo, modelo e ano.
-3. Se faltarem dados críticos (marca ou modelo), faz UMA pergunta curta para obtê-los.
-4. Quando tiveres informação suficiente, devolve APENAS um JSON válido neste formato:
-   { "action": "search", "part": "...", "vehicle_make": "...", "model": "...", "year": "..." }
-5. Se o cliente escolher uma opção (ex: responde "2" ou "quero a segunda"), devolve:
-   { "action": "confirm_order", "chosen_option": 2 }
-6. Se o cliente quiser falar com humano, devolve:
-   { "action": "transfer_to_human", "reason": "..." }
-7. Para qualquer outra mensagem de conversa normal, responde em texto simples — NÃO em JSON.
-
-EXEMPLOS DE EXTRACÇÃO:
-- "filtro de óleo pra Golf 2019" → { "action": "search", "part": "filtro de óleo", "vehicle_make": "Volkswagen", "model": "Golf", "year": "2019" }
-- "correia da Toyota Hilux" → pede o ano, pois é crítico para compatibilidade
-- "preciso de amortecedor dianteiro" → pede marca e modelo do carro
-`;
 
 export interface VisionData {
   document: boolean;
@@ -42,25 +27,6 @@ export interface VisionData {
   fuel_type?: string | null;
   color?: string | null;
   body_type?: string | null;
-}
-
-/**
- * Sends conversation message history to Claude chatbot and retrieves response text.
- */
-export async function callAIAgent(history: { role: 'user' | 'assistant'; content: string }[]): Promise<string> {
-  try {
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: history,
-    });
-
-    return response.content[0].type === 'text' ? response.content[0].text : '';
-  } catch (error: any) {
-    logger.error(`Claude API error: ${error.message}`);
-    throw error;
-  }
 }
 
 /**
@@ -130,5 +96,154 @@ REGRAS IMPORTANTES:
   } catch (error: any) {
     logger.error(`Claude Vision error: ${error.message}`);
     throw error;
+  }
+}
+
+/**
+ * Conversation flow processing using Anthropic API.
+ */
+export async function processAIConversation(phone: string, customerText: string): Promise<void> {
+  try {
+    const history = await getHistory(phone);
+    const vehicle = await getCustomerVehicle(phone);
+
+    let enrichedText = customerText;
+    // Enrich query context with session vehicle metadata if the customer doesn't type it
+    if (vehicle && !customerText.toLowerCase().includes(vehicle.make.toLowerCase())) {
+      enrichedText =
+        `[Viatura do cliente: ${vehicle.make} ${vehicle.model} ${vehicle.year}] ` +
+        customerText;
+    }
+
+    history.push({ role: 'user', content: enrichedText });
+
+    const aiReply = await callAnthropic(history);
+    const action = tryParseJSON(aiReply);
+
+    if (!action) {
+      await sendWhatsAppMessage(phone, aiReply);
+      // Push the clean agent text response to session history
+      history.push({ role: 'assistant', content: aiReply });
+    } else {
+      // If agent requested search, inject vehicle parameters from session cache if missing
+      if (action.action === 'search' && vehicle) {
+        action.vehicle_make = action.vehicle_make || vehicle.make;
+        action.model = action.model || vehicle.model;
+        action.year = action.year || vehicle.year;
+      }
+      await executeStructuredAction(phone, action, history);
+    }
+
+    await saveHistory(phone, history);
+  } catch (error: any) {
+    // Anthropic call or downstream action failed (e.g. bad ANTHROPIC_API_KEY) — without this,
+    // the customer gets silence (the outer webhook catch only logs) after already having
+    // received the session greeting, which reads as a broken/inconsistent bot.
+    logger.error(`AI agent pipeline failed for ${phone}`, error);
+    await sendWhatsAppMessage(phone, t.agent.serviceUnavailable());
+
+    const staffPhone = config.admin.staffPhone;
+    if (staffPhone) {
+      try {
+        await sendWhatsAppMessage(staffPhone, t.agent.aiFailureStaffAlert(phone, error.message));
+      } catch (staffError: any) {
+        // Staff alert failing (e.g. STAFF_PHONE_NUMBER not on the WhatsApp test allow-list)
+        // must not surface as a second uncaught error — the customer already got their
+        // fallback message above, and this is a best-effort side notification.
+        logger.error('Failed to notify staff of AI agent failure', staffError);
+      }
+    }
+  }
+}
+
+async function callAnthropic(history: any[]): Promise<string> {
+  // Strip temporary fields from history before sending to Anthropic SDK
+  const cleanMessages = history.map((h) => ({
+    role: h.role,
+    content: h.content,
+  }));
+
+  const response = await anthropic.messages.create({
+    model: 'claude-3-5-sonnet-20241022',
+    max_tokens: 1024,
+    system: t.systemPrompt,
+    messages: cleanMessages,
+  });
+
+  // Extract response text
+  const textContent = response.content.find(c => c.type === 'text');
+  return textContent?.type === 'text' ? textContent.text : '';
+}
+
+/**
+ * Orchestrates backend JSON actions returned by the AI agent.
+ */
+async function executeStructuredAction(phone: string, action: any, history: any): Promise<void> {
+  switch (action.action) {
+    case 'search': {
+      await productService.searchAndRespond(phone, action, history);
+      break;
+    }
+
+    case 'confirm_order': {
+      const options = await getPendingOptions(phone);
+      const idx = (action.chosen_option || 1) - 1;
+      const choice = options?.[idx];
+
+      if (!choice) {
+        await sendWhatsAppMessage(phone, t.agent.optionNotFound());
+        return;
+      }
+
+      const orderNumber = await generateOrderNumber();
+
+      // Save order record
+      await createOrder(orderNumber, phone, choice);
+
+      // Generate invoice proforma PDF
+      const proformaPath = await generateProformaPDF(orderNumber, phone, choice);
+
+      // Send confirmation text & PDF attachment
+      await sendProformaWhatsApp(phone, proformaPath, orderNumber, choice);
+
+      // Trigger payment selection prompt
+      await askPaymentMethod(phone, orderNumber, choice.price);
+
+      // Options consumed — prevent a stale numeric reply from creating a duplicate order
+      await clearPendingOptions(phone);
+
+      // Clean temp PDF asynchronously
+      setTimeout(() => {
+        try {
+          fs.unlinkSync(proformaPath);
+        } catch {
+          // best-effort cleanup, ignore if already removed
+        }
+      }, 60000);
+
+      const confirmation = t.agent.proformaSentChoosePayment();
+      history.push({ role: 'assistant', content: confirmation });
+      break;
+    }
+
+    case 'transfer_to_human': {
+      const msg = t.agent.transferToHuman();
+      await sendWhatsAppMessage(phone, msg);
+      logger.info(`[SUPPORT] Customer ${phone} requested human support. Reason: ${action.reason}`);
+      break;
+    }
+
+    default:
+      logger.warn('Unknown structured action from AI agent', action);
+  }
+}
+
+function tryParseJSON(text: string): any | null {
+  try {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    return JSON.parse(match[0]);
+  } catch {
+    return null;
   }
 }

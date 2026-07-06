@@ -1,16 +1,18 @@
 import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
+import * as XLSX from 'xlsx';
 import { config } from '../config/config.js';
 import { logger } from '../config/logger.js';
-import { db } from '../config/db.js';
 import {
   getOrdersPendingApproval,
   getOrdersApprovedToday,
   updateOrderStatus,
+  getOrderByNumber,
 } from '../models/order.model.js';
-import { importProductsBatch } from '../models/supplier.model.js';
+import { importProductsBatch, getOrCreateSupplierByName } from '../models/supplier.model.js';
 import { approveOrder } from '../services/payment.service.js';
 import { sendWhatsAppMessage } from '../services/whatsapp.service.js';
+import { notifyWaitlistedCustomers } from '../services/product.service.js';
 import { t } from '../i18n/messages.js';
 
 /**
@@ -71,14 +73,9 @@ export async function rejectOrderHandler(req: Request, res: Response): Promise<v
     await updateOrderStatus(number, 'rejected');
 
     // Notify customer about rejection via WhatsApp
-    const { rows } = await db.query(
-      'SELECT customer_phone FROM orders WHERE number = $1',
-      [number]
-    );
-
-    if (rows.length) {
-      const phone = rows[0].customer_phone;
-      await sendWhatsAppMessage(phone, t.order.rejected(number));
+    const order = await getOrderByNumber(number);
+    if (order) {
+      await sendWhatsAppMessage(order.customer_phone, t.order.rejected(number));
     }
 
     res.json({ success: true });
@@ -101,9 +98,69 @@ export async function importProductsBatchHandler(req: Request, res: Response): P
 
   try {
     const result = await importProductsBatch(supplierId, items);
+    await notifyWaitlistedCustomers(result.restockNotifications);
     res.json(result);
   } catch (error: any) {
     logger.error(`Error importing batch products for supplier ${supplierId}`, error);
+    res.status(500).json({ error: error.message });
+  }
+}
+
+const HEADER_ALIASES: Record<string, string[]> = {
+  reference: ['reference', 'referencia', 'ref', 'sku'],
+  name: ['name', 'nome', 'descricao', 'description', 'descrição'],
+  price: ['price', 'preco', 'preço'],
+  quantity: ['quantity', 'quantidade', 'qty', 'stock'],
+};
+
+function normalizeRow(row: Record<string, any>): { reference: string; name: string; price: number; quantity: number } | null {
+  const lowerRow = Object.fromEntries(Object.entries(row).map(([k, v]) => [k.trim().toLowerCase(), v]));
+  const pick = (field: string) => {
+    for (const alias of HEADER_ALIASES[field]) {
+      if (lowerRow[alias] !== undefined) return lowerRow[alias];
+    }
+    return undefined;
+  };
+  const reference = pick('reference');
+  const name = pick('name');
+  const price = Number(pick('price'));
+  const quantity = Number(pick('quantity'));
+  if (!reference || !name || Number.isNaN(price) || Number.isNaN(quantity)) return null;
+  return { reference: String(reference), name: String(name), price, quantity };
+}
+
+/**
+ * Bulk imports products from an uploaded CSV/XLSX file, parsed server-side.
+ * Accepts either an existing supplierId or supplier name/nif/province to
+ * create one on the fly.
+ */
+export async function importProductsFileHandler(req: Request, res: Response): Promise<void> {
+  if (!req.file) {
+    res.status(400).json({ error: 'File is required (field name: file).' });
+    return;
+  }
+
+  const { supplierId, supplierName, supplierNif, supplierProvince } = req.body;
+
+  try {
+    const resolvedSupplierId = supplierId
+      ? Number(supplierId)
+      : await getOrCreateSupplierByName(supplierName, supplierNif, supplierProvince);
+
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rawRows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet);
+
+    const items = rawRows
+      .map(normalizeRow)
+      .filter((r): r is NonNullable<typeof r> => r !== null);
+
+    const result = await importProductsBatch(resolvedSupplierId, items);
+    await notifyWaitlistedCustomers(result.restockNotifications);
+
+    res.json({ supplierId: resolvedSupplierId, ...result });
+  } catch (error: any) {
+    logger.error('Error importing inventory file', error);
     res.status(500).json({ error: error.message });
   }
 }

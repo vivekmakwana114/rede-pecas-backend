@@ -59,7 +59,7 @@ New message-handling behavior must slot into this chain deliberately — positio
 
 State is per-phone-number and lives in two places:
 
-- **PostgreSQL** — durable step-machine state: `customers.registration_status`, `manual_vehicle_collections.status`, and `orders.status` (state machine in `src/services/payment.service.ts`: `awaiting_payment → awaiting_payment_method → awaiting_bank_subtype | awaiting_in_person_subtype → awaiting_payment_proof | awaiting_agent_confirmation → payment_proof_received → approved | rejected`).
+- **PostgreSQL** — durable step-machine state: `customers.registration_status`, `vehicles.status` (the merged per-customer vehicle-identification table — see below), and `orders.status` (state machine in `src/services/payment.service.ts`: `awaiting_payment → awaiting_payment_method → awaiting_bank_subtype | awaiting_in_person_subtype → awaiting_payment_proof | awaiting_agent_confirmation → payment_proof_received → approved | rejected`).
 - **Redis** — rolling 20-message conversation history (key `session:<phone>`) and pending search options awaiting the customer's numeric choice (key `options:<phone>`), both 4h TTL (`src/services/session.service.ts`), with silent in-memory fallback when Redis is down.
 
 The AI agent (`processAIConversation`) sends this history plus a system prompt to Claude; replies are either plain text (forwarded to the customer) or a structured JSON action (`search` / `confirm_order` / `transfer_to_human`, English keys) dispatched by `executeStructuredAction`.

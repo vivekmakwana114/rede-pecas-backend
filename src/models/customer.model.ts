@@ -14,15 +14,6 @@ export interface Customer {
   active: boolean;
 }
 
-export interface CRMStats {
-  total_customers: number;
-  registered: number;
-  active_30_days: number;
-  new_this_week: number;
-  with_nif: number;
-  with_address: number;
-}
-
 /**
  * Retrieves a customer by phone number and updates their last contact date & total contact count.
  */
@@ -82,80 +73,4 @@ export async function updateCustomer(phone: string, fields: Partial<Customer>): 
     `UPDATE customers SET ${setClauses} WHERE phone = $1`,
     [phone, ...values]
   );
-}
-
-/**
- * Retrieves customers based on segment rules.
- */
-export async function getCustomersBySegment(segment: string, limit: number): Promise<{ phone: string; name: string | null }[]> {
-  const queries: { [key: string]: { sql: string; hasParams: boolean } } = {
-    all: {
-      sql: `SELECT phone, name FROM customers WHERE registration_status = 'complete' AND active = true ORDER BY last_contact_at DESC LIMIT $1`,
-      hasParams: true
-    },
-    inactive_30_days: {
-      sql: `SELECT phone, name FROM customers WHERE registration_status = 'complete' AND active = true AND last_contact_at < NOW() - INTERVAL '30 days' LIMIT $1`,
-      hasParams: true
-    },
-    diesel: {
-      sql: `SELECT DISTINCT c.phone, c.name FROM customers c JOIN vehicle_sessions vs ON vs.phone = c.phone WHERE c.registration_status = 'complete' AND vs.fuel_type ILIKE '%diesel%' LIMIT $1`,
-      hasParams: true
-    },
-    luanda: {
-      sql: `SELECT phone, name FROM customers WHERE registration_status = 'complete' AND active = true AND address ILIKE '%luanda%' LIMIT $1`,
-      hasParams: true
-    },
-    frequent_buyers: {
-      sql: `SELECT c.phone, c.name, COUNT(o.id) AS total_orders FROM customers c JOIN orders o ON o.customer_phone = c.phone WHERE c.registration_status = 'complete' GROUP BY c.phone, c.name HAVING COUNT(o.id) >= 3 ORDER BY total_orders DESC LIMIT $1`,
-      hasParams: true
-    },
-    no_orders: {
-      sql: `SELECT c.phone, c.name FROM customers c WHERE c.registration_status = 'complete' AND c.active = true AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_phone = c.phone) LIMIT $1`,
-      hasParams: true
-    },
-    toyota: {
-      sql: `SELECT DISTINCT c.phone, c.name FROM customers c JOIN vehicle_sessions vs ON vs.phone = c.phone WHERE c.registration_status = 'complete' AND vs.make ILIKE '%toyota%' LIMIT $1`,
-      hasParams: true
-    },
-    new_7_days: {
-      sql: `SELECT phone, name FROM customers WHERE registration_status = 'complete' AND registered_at > NOW() - INTERVAL '7 days' LIMIT $1`,
-      hasParams: true
-    }
-  };
-
-  const queryObj = queries[segment] || queries.all;
-  const { rows } = await db.query(queryObj.sql, [limit]);
-  return rows;
-}
-
-/**
- * Registers an outbound campaign message send record.
- */
-export async function logCampaignSend(phone: string, segment: string): Promise<void> {
-  await db.query(
-    `INSERT INTO campaign_sends (phone, segment, sent_at)
-     VALUES ($1, $2, NOW())`,
-    [phone, segment]
-  );
-}
-
-/**
- * Aggregates analytical statistics for CRM dashboard.
- */
-export async function getCRMStats(): Promise<CRMStats> {
-  const { rows } = await db.query(`
-    SELECT
-      COUNT(*)::int                                                     AS total_customers,
-      COUNT(*) FILTER (WHERE registration_status = 'complete')::int     AS registered,
-      COUNT(*) FILTER (
-        WHERE last_contact_at > NOW() - INTERVAL '30 days'
-      )::int                                                            AS active_30_days,
-      COUNT(*) FILTER (
-        WHERE registered_at > NOW() - INTERVAL '7 days'
-      )::int                                                            AS new_this_week,
-      COUNT(*) FILTER (WHERE nif IS NOT NULL)::int                      AS with_nif,
-      COUNT(*) FILTER (WHERE address IS NOT NULL)::int                  AS with_address
-    FROM customers
-  `);
-  return rows[0];
 }

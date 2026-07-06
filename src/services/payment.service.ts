@@ -3,7 +3,7 @@ import { config } from '../config/config.js';
 import { logger } from '../config/logger.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons } from './whatsapp.service.js';
 import { generatePrimaveraInvoice, sendFinalInvoiceWhatsApp } from './pdf.service.js';
-import { getOrderByNumber } from '../models/order.model.js';
+import { getOrderByNumber, getLatestOrderByStatus } from '../models/order.model.js';
 import { getSupplierPhoneById } from '../models/supplier.model.js';
 import { formatPrice } from '../utils/helpers.js';
 import { t } from '../i18n/messages.js';
@@ -69,6 +69,19 @@ export async function askPaymentMethod(phone: string, orderNumber: string, amoun
     `UPDATE orders SET status = 'awaiting_payment_method' WHERE number = $1`,
     [orderNumber]
   );
+}
+
+/**
+ * Fetches the customer's most recent order still awaiting a payment-method
+ * input, if any — used by the message pipeline to route a reply to
+ * `processMethodChoice`/`processMethodSubtype` instead of the AI agent.
+ */
+export async function getPendingPaymentOrder(phone: string) {
+  return getLatestOrderByStatus(phone, [
+    'awaiting_payment_method',
+    'awaiting_bank_subtype',
+    'awaiting_in_person_subtype'
+  ]);
 }
 
 /**

@@ -69,6 +69,7 @@ export async function clearSession(phone: string): Promise<void> {
   const key = `session:${phone}`;
   memoryCache.delete(key);
   await clearPendingOptions(phone);
+  await clearPendingWaitlistOffer(phone);
 
   if (useMemoryFallback || !redisClient?.isOpen) {
     return;
@@ -128,5 +129,99 @@ export async function clearPendingOptions(phone: string): Promise<void> {
     await redisClient.del(key);
   } catch (err) {
     logger.error('Error deleting pending options from Redis', err);
+  }
+}
+
+// Tracks "have we heard from this number in the last 4h" independently of the AI
+// conversation transcript above — a customer stuck in registration or mid-payment
+// never touches getHistory/saveHistory, so that array can't be used as a session
+// boundary. This is a plain presence marker, touched on every incoming message.
+const activeSessions = new Map<string, number>();
+
+export async function isNewSession(phone: string): Promise<boolean> {
+  const key = `active:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    const expiresAt = activeSessions.get(key);
+    return !expiresAt || expiresAt < Date.now();
+  }
+
+  try {
+    const exists = await redisClient.exists(key);
+    return exists === 0;
+  } catch (err) {
+    logger.error('Error checking session activity in Redis', err);
+    const expiresAt = activeSessions.get(key);
+    return !expiresAt || expiresAt < Date.now();
+  }
+}
+
+export async function markSessionActive(phone: string): Promise<void> {
+  const key = `active:${phone}`;
+  activeSessions.set(key, Date.now() + SESSION_TTL * 1000);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, SESSION_TTL, '1');
+  } catch (err) {
+    logger.error('Error marking session active in Redis', err);
+  }
+}
+
+/**
+ * Tracks a pending "want me to notify you when this product is back in
+ * stock?" offer awaiting the customer's yes/no reply. Uses a dedicated map
+ * (not the options `memoryCache`) since a single offer object is a
+ * different shape than the array-of-options it stores.
+ */
+const waitlistOfferCache = new Map<string, { productId: number; productName: string }>();
+
+export async function savePendingWaitlistOffer(
+  phone: string,
+  offer: { productId: number; productName: string }
+): Promise<void> {
+  const key = `waitlist:${phone}`;
+  waitlistOfferCache.set(key, offer);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, SESSION_TTL, JSON.stringify(offer));
+  } catch (err) {
+    logger.error('Error saving pending waitlist offer to Redis', err);
+  }
+}
+
+export async function getPendingWaitlistOffer(phone: string): Promise<{ productId: number; productName: string } | null> {
+  const key = `waitlist:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return waitlistOfferCache.get(key) || null;
+  }
+
+  try {
+    const data = await redisClient.get(key);
+    return data ? JSON.parse(data) : null;
+  } catch (err) {
+    logger.error('Error fetching pending waitlist offer from Redis', err);
+    return waitlistOfferCache.get(key) || null;
+  }
+}
+
+export async function clearPendingWaitlistOffer(phone: string): Promise<void> {
+  const key = `waitlist:${phone}`;
+  waitlistOfferCache.delete(key);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.del(key);
+  } catch (err) {
+    logger.error('Error deleting pending waitlist offer from Redis', err);
   }
 }

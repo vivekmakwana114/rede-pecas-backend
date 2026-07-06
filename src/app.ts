@@ -12,8 +12,8 @@ app.use(express.json());
 // Enable cors
 app.use(cors());
 
-// v1 api routes
-app.use('/v1', routes);
+// api routes (each route module binds its own /v1/... prefix — see routes/index.ts)
+app.use(routes);
 
 // Send back 404 error for any unknown api request
 app.use((req, res, next) => {

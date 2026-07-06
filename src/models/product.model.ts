@@ -13,19 +13,17 @@ export interface Product {
 }
 
 /**
- * Searches the unified inventory for compatible products.
+ * Searches the inventory for products matching the customer's request by
+ * name/brand/reference/synonyms (full-text). Vehicle make/model/year are no
+ * longer used to filter results — the compatibility catalog that used to
+ * back that matching was never populated by any code path, so this is a
+ * deliberate simplification to a purely text-based search.
  * Limits result to top 5 cheapest products.
  */
 export async function searchProductsInInventory({
   part,
-  vehicle_make,
-  model,
-  year,
 }: {
   part: string;
-  vehicle_make?: string | null;
-  model?: string | null;
-  year?: string | null;
 }): Promise<Product[]> {
   const { rows } = await db.query(
     `
@@ -40,53 +38,56 @@ export async function searchProductsInInventory({
       s.rating AS supplier_rating
     FROM products p
     JOIN suppliers s ON s.id = p.supplier_id
-    JOIN compatibilities c ON c.product_id = p.id
-    JOIN vehicles v ON v.id = c.vehicle_id
     WHERE
       p.quantity > 0
       AND p.active = true
       AND p.search_vector @@ plainto_tsquery('portuguese', unaccent($1))
-      AND (
-        v.make ILIKE $2 OR $2 IS NULL
-      )
-      AND (
-        v.model ILIKE $3 OR $3 IS NULL
-      )
-      AND (
-        v.year_from <= $4::int AND v.year_to >= $4::int
-        OR $4 IS NULL
-      )
     ORDER BY
       p.price ASC,
       s.rating DESC
     LIMIT 5
     `,
-    [part, vehicle_make || null, model || null, year ? parseInt(year, 10) : null]
+    [part]
   );
   return rows;
 }
 
 /**
- * Registers a waitlist entry when a product is out of stock.
+ * Appends a phone to a product's waitlist (idempotent — no duplicate entries).
  */
-export async function addToWaitlist({
-  phone,
-  product,
-  vehicle_make,
-  model,
-  year,
-  engineNumber
-}: {
-  phone: string;
-  product: string;
-  vehicle_make?: string | null;
-  model?: string | null;
-  year?: string | null;
-  engineNumber?: string | null;
-}): Promise<void> {
+export async function addToProductWaitlist(productId: number, phone: string): Promise<void> {
   await db.query(
-    `INSERT INTO waitlist_requests (phone, product_name, vehicle_make, vehicle_model, vehicle_year, engine_number, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-    [phone, product, vehicle_make || null, model || null, year || null, engineNumber || null]
+    `UPDATE products
+     SET waitlist_phones = CASE
+       WHEN $2 = ANY(waitlist_phones) THEN waitlist_phones
+       ELSE array_append(waitlist_phones, $2)
+     END
+     WHERE id = $1`,
+    [productId, phone]
   );
+}
+
+/**
+ * Finds an out-of-stock product matching the requested part, so a waitlist
+ * opt-in has somewhere to attach the customer's phone. Not vehicle-aware —
+ * a part with no product row at all (never stocked) can't be waitlisted
+ * under this design; the common case (a stocked product hitting zero) is
+ * fully covered.
+ */
+export async function findZeroQuantityProductMatch({
+  part,
+}: {
+  part: string;
+}): Promise<{ id: number; name: string } | null> {
+  const { rows } = await db.query(
+    `SELECT id, name
+     FROM products
+     WHERE quantity = 0
+       AND active = true
+       AND search_vector @@ plainto_tsquery('portuguese', unaccent($1))
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+    [part]
+  );
+  return rows.length ? rows[0] : null;
 }
