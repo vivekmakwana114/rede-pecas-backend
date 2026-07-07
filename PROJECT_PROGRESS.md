@@ -1,5 +1,9 @@
 # Rede Peças — Progress Report
 
+## Update — 2026-07-07 (CSV/XLSX import logic moved out of the controller)
+
+- **`product.controller.ts` no longer imports `xlsx` or parses spreadsheets directly.** The workbook reading, `HEADER_ALIASES` header-alias mapping, and row normalization all lived in the controller (a layering violation of `CLAUDE.md`'s own `routes → controllers → services → models` convention — it happened because the code predates that convention being applied consistently here, and got extended in place for multi-supplier support without being questioned). Moved into `product.service.ts` as `importInventoryBatch` (JSON-body path) and `importInventoryFromFile` (file-upload path, wraps the former after parsing) — both controller handlers are now just validate → call service → shape response.
+
 ## Update — 2026-07-07 (forgot/reset password now identified by phone, not email)
 
 - **`POST /admin/forgot/password` and `POST /admin/reset/password` now take `{ phone }` / `{ phone, code, newPassword }` instead of `{ email }`** — since the OTP is delivered to that same WhatsApp number, identifying by email and then requiring the admin to separately know their phone was redundant (and the OTP itself is the real identity check anyway). New `getAdminByPhone` (`adminUser.model.ts`) compares digits-only on both sides (`regexp_replace(phone, '[^0-9]', '', 'g')`) so the stored `phone` column's formatting doesn't matter. Anti-enumeration behavior carries over unchanged — identical response whether or not the phone matches an account. `login` is untouched, still email+password. Verified live: formatted phone, digits-only phone, and an unknown phone all behave correctly; old email-body requests now correctly 400 with a humanized validation error.
