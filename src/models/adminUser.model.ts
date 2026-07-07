@@ -17,6 +17,20 @@ export async function getAdminByEmail(email: string): Promise<AdminUser | null> 
   return rows.length ? rows[0] : null;
 }
 
+/**
+ * Looks up an admin by phone, ignoring formatting (admin phone numbers are
+ * entered by hand and may include spaces/parens/dashes — compares digits only
+ * on both sides so the caller doesn't need to normalize before querying).
+ */
+export async function getAdminByPhone(phone: string): Promise<AdminUser | null> {
+  const digitsOnly = phone.replace(/\D/g, '');
+  const { rows } = await db.query(
+    "SELECT * FROM admin_users WHERE regexp_replace(phone, '[^0-9]', '', 'g') = $1",
+    [digitsOnly]
+  );
+  return rows.length ? rows[0] : null;
+}
+
 export async function getAdminById(id: number): Promise<AdminUser | null> {
   const { rows } = await db.query('SELECT * FROM admin_users WHERE id = $1', [id]);
   return rows.length ? rows[0] : null;

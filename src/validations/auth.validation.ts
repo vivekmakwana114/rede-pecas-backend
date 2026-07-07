@@ -24,13 +24,13 @@ export const changePassword: ValidationSchema = {
 
 export const forgotPassword: ValidationSchema = {
   body: Joi.object().keys({
-    email: Joi.string().email().required(),
+    phone: Joi.string().required(),
   }),
 };
 
 export const resetPassword: ValidationSchema = {
   body: Joi.object().keys({
-    email: Joi.string().email().required(),
+    phone: Joi.string().required(),
     code: Joi.string().length(6).required(),
     newPassword: Joi.string().min(8).required(),
   }),

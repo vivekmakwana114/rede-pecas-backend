@@ -86,17 +86,17 @@ export const changePassword = catchAsync(async (req: AuthenticatedRequest, res: 
 });
 
 /**
- * Sends a 6-digit password-reset code to the admin's WhatsApp number. Always
- * responds the same way regardless of whether the email matched an account,
- * so this endpoint can't be used to enumerate admin emails.
+ * Sends a 6-digit password-reset code to the admin's own WhatsApp number. Always
+ * responds the same way regardless of whether the phone matched an account,
+ * so this endpoint can't be used to enumerate admin phone numbers.
  */
 export const forgotPassword = catchAsync(async (req: Request, res: Response) => {
-  const { email } = req.body;
-  await adminAuthService.forgotPassword(email);
+  const { phone } = req.body;
+  await adminAuthService.forgotPassword(phone);
 
   res.status(200).json({
     success: true,
-    message: 'If that email is registered, a reset code has been sent via WhatsApp.',
+    message: 'If that phone number is registered, a reset code has been sent via WhatsApp.',
     code: 200,
     data: null,
     meta: { timestamp: new Date().toISOString() },
@@ -107,8 +107,8 @@ export const forgotPassword = catchAsync(async (req: Request, res: Response) => 
  * Completes a password reset using the code sent by forgotPassword.
  */
 export const resetPassword = catchAsync(async (req: Request, res: Response) => {
-  const { email, code, newPassword } = req.body;
-  await adminAuthService.resetPassword(email, code, newPassword);
+  const { phone, code, newPassword } = req.body;
+  await adminAuthService.resetPassword(phone, code, newPassword);
 
   res.status(200).json({
     success: true,

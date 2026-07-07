@@ -6,6 +6,7 @@ import { ApiError } from '../utils/ApiError.js';
 import {
   AdminUser,
   getAdminByEmail,
+  getAdminByPhone,
   getAdminById,
   updateAdminProfile,
   updateAdminPassword,
@@ -131,12 +132,14 @@ export async function changePassword(
 }
 
 /**
- * Sends a 6-digit reset code to the admin's WhatsApp number (no email/SMTP service
- * exists in this project). Always resolves without revealing whether the email
- * matched an account, so this endpoint can't be used to enumerate admin emails.
+ * Sends a 6-digit reset code to the admin's own WhatsApp number — identified by
+ * that same phone (no email/SMTP service exists in this project, and the OTP
+ * itself is the identity check, so there's no separate "which account" lookup).
+ * Always resolves the same way regardless of whether the phone matched an
+ * account, so this endpoint can't be used to enumerate admin phone numbers.
  */
-export async function forgotPassword(email: string): Promise<void> {
-  const admin = await getAdminByEmail(email.toLowerCase().trim());
+export async function forgotPassword(phone: string): Promise<void> {
+  const admin = await getAdminByPhone(phone);
   if (!admin) return;
 
   const code = String(Math.floor(100000 + Math.random() * 900000));
@@ -148,20 +151,20 @@ export async function forgotPassword(email: string): Promise<void> {
   // Admin phone numbers are entered by hand (unlike customer numbers, which arrive
   // pre-formatted as plain digits straight from the WhatsApp webhook) and the Cloud
   // API's `to` field rejects punctuation — strip everything but digits.
-  const phone = admin.phone.replace(/\D/g, '');
+  const sendTo = admin.phone.replace(/\D/g, '');
 
   try {
-    await sendWhatsAppMessage(phone, t.adminAuth.resetCode(code));
+    await sendWhatsAppMessage(sendTo, t.adminAuth.resetCode(code));
   } catch (error: any) {
     // Must not throw — a delivery failure (bad number, WhatsApp API hiccup) would
-    // otherwise surface differently than the "unknown email" case above and leak
-    // which emails have accounts. Logged so it's still visible to staff.
-    logger.error(`Failed to send admin password-reset code to ${phone}`, error);
+    // otherwise surface differently than the "unknown phone" case above and leak
+    // which numbers have accounts. Logged so it's still visible to staff.
+    logger.error(`Failed to send admin password-reset code to ${sendTo}`, error);
   }
 }
 
-export async function resetPassword(email: string, code: string, newPassword: string): Promise<void> {
-  const admin = await getAdminByEmail(email.toLowerCase().trim());
+export async function resetPassword(phone: string, code: string, newPassword: string): Promise<void> {
+  const admin = await getAdminByPhone(phone);
   if (!admin || !admin.reset_code_hash || !admin.reset_code_expires_at) {
     throw new ApiError(400, 'Invalid or expired reset code.');
   }
