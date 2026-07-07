@@ -5,6 +5,9 @@ node_modules/
 dist/
 build/
 
+#postman collections
+postman/
+
 # Environment variables
 .env
 .env.*

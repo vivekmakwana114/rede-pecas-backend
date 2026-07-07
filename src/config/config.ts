@@ -48,7 +48,8 @@ export const config = {
   },
   jwt: {
     secret: process.env.JWT_SECRET,
-    accessExpirationMinutes: parseInt(process.env.JWT_ACCESS_EXPIRATION_MINUTES || '60', 10)
+    accessExpirationMinutes: parseInt(process.env.JWT_ACCESS_EXPIRATION_MINUTES || '60', 10),
+    refreshExpirationDays: parseInt(process.env.JWT_REFRESH_EXPIRATION_DAYS || '30', 10)
   },
   admin: {
     staffPhone: process.env.STAFF_PHONE_NUMBER || ''

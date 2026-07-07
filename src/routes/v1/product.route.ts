@@ -10,7 +10,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 router.post('/inventory/upload', authMiddleware, validate(adminValidation.importProductsBatch), importProductsBatchHandler);
 router.post(
-  '/inventory/import-file',
+  '/inventory/import',
   authMiddleware,
   upload.single('file'),
   validate(adminValidation.importProductsFile),

@@ -20,10 +20,16 @@ export function errorHandler(err: ApiError, req: Request, res: Response, _next: 
     message = 'Internal Server Error';
   }
 
+  // Full error (including stack) is always logged server-side — never sent to the
+  // client, in development or otherwise. Matches the success envelope's shape
+  // (src/utils/apiResponse.ts) so callers only ever need to branch on `success`.
   logger.error(`[Error Handler] ${statusCode} - ${message} - Stack: ${err.stack}`);
 
   res.status(statusCode).json({
-    error: message,
-    ...(config.env === 'development' && { stack: err.stack }),
+    success: false,
+    message,
+    code: statusCode,
+    data: null,
+    meta: { timestamp: new Date().toISOString() },
   });
 }

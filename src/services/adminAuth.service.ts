@@ -28,7 +28,7 @@ function toProfile(admin: AdminUser): AdminProfile {
   return { id: admin.id, name: admin.name, email: admin.email, phone: admin.phone };
 }
 
-function signToken(admin: AdminUser): string {
+function signAccessToken(admin: AdminUser): string {
   return jwt.sign(
     { id: admin.id, email: admin.email, role: 'admin' },
     config.jwt.secret,
@@ -36,13 +36,54 @@ function signToken(admin: AdminUser): string {
   );
 }
 
-export async function login(email: string, password: string): Promise<{ token: string; admin: AdminProfile }> {
+// `type: 'refresh'` marks this as only usable at POST /admin/refresh — authMiddleware
+// rejects it on every other protected route so a leaked refresh token can't be used
+// directly as a bearer token.
+function signRefreshToken(admin: AdminUser): string {
+  return jwt.sign(
+    { id: admin.id, email: admin.email, role: 'admin', type: 'refresh' },
+    config.jwt.secret,
+    { expiresIn: `${config.jwt.refreshExpirationDays}d` }
+  );
+}
+
+export async function login(
+  email: string,
+  password: string
+): Promise<{ accessToken: string; refreshToken: string; admin: AdminProfile }> {
   const admin = await getAdminByEmail(email.toLowerCase().trim());
   if (!admin || !(await bcrypt.compare(password, admin.password_hash))) {
     throw new ApiError(401, 'Incorrect email or password.');
   }
 
-  return { token: signToken(admin), admin: toProfile(admin) };
+  return {
+    accessToken: signAccessToken(admin),
+    refreshToken: signRefreshToken(admin),
+    admin: toProfile(admin),
+  };
+}
+
+/**
+ * Exchanges a refresh token for a new access token. Stateless (no DB-tracked
+ * session) — the refresh token stays valid until its own expiry regardless of
+ * password changes; it can't be individually revoked.
+ */
+export async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; admin: AdminProfile }> {
+  let decoded: any;
+  try {
+    decoded = jwt.verify(refreshToken, config.jwt.secret);
+  } catch {
+    throw new ApiError(401, 'Invalid or expired refresh token.');
+  }
+
+  if (decoded.type !== 'refresh') {
+    throw new ApiError(401, 'Invalid or expired refresh token.');
+  }
+
+  const admin = await getAdminById(decoded.id);
+  if (!admin) throw new ApiError(401, 'Invalid or expired refresh token.');
+
+  return { accessToken: signAccessToken(admin), admin: toProfile(admin) };
 }
 
 export async function getProfile(adminId: number): Promise<AdminProfile> {

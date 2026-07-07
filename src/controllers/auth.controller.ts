@@ -4,12 +4,38 @@ import { AuthenticatedRequest } from '../middlewares/auth.js';
 import * as adminAuthService from '../services/adminAuth.service.js';
 
 /**
- * Authenticates an admin account and issues a session token.
+ * Authenticates an admin account and issues an access + refresh token pair.
  */
 export const login = catchAsync(async (req: Request, res: Response) => {
   const { email, password } = req.body;
-  const { token, admin } = await adminAuthService.login(email, password);
-  res.json({ token, admin });
+  const { accessToken, refreshToken, admin } = await adminAuthService.login(email, password);
+
+  res.status(200).json({
+    success: true,
+    message: 'Login successful.',
+    code: 200,
+    data: { admin },
+    accessToken,
+    refreshToken,
+    meta: { timestamp: new Date().toISOString() },
+  });
+});
+
+/**
+ * Exchanges a refresh token for a new access token.
+ */
+export const refresh = catchAsync(async (req: Request, res: Response) => {
+  const { refreshToken } = req.body;
+  const { accessToken, admin } = await adminAuthService.refreshAccessToken(refreshToken);
+
+  res.status(200).json({
+    success: true,
+    message: 'Access token refreshed.',
+    code: 200,
+    data: { admin },
+    accessToken,
+    meta: { timestamp: new Date().toISOString() },
+  });
 });
 
 /**
@@ -17,7 +43,14 @@ export const login = catchAsync(async (req: Request, res: Response) => {
  */
 export const getProfile = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
   const admin = await adminAuthService.getProfile(req.user.id);
-  res.json({ admin });
+
+  res.status(200).json({
+    success: true,
+    message: 'Profile retrieved.',
+    code: 200,
+    data: { admin },
+    meta: { timestamp: new Date().toISOString() },
+  });
 });
 
 /**
@@ -26,7 +59,14 @@ export const getProfile = catchAsync(async (req: AuthenticatedRequest, res: Resp
 export const changeProfile = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
   const { name, email } = req.body;
   const admin = await adminAuthService.changeProfile(req.user.id, { name, email });
-  res.json({ admin });
+
+  res.status(200).json({
+    success: true,
+    message: 'Profile updated.',
+    code: 200,
+    data: { admin },
+    meta: { timestamp: new Date().toISOString() },
+  });
 });
 
 /**
@@ -35,7 +75,14 @@ export const changeProfile = catchAsync(async (req: AuthenticatedRequest, res: R
 export const changePassword = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
   const { currentPassword, newPassword } = req.body;
   await adminAuthService.changePassword(req.user.id, currentPassword, newPassword);
-  res.json({ success: true });
+
+  res.status(200).json({
+    success: true,
+    message: 'Password changed successfully.',
+    code: 200,
+    data: null,
+    meta: { timestamp: new Date().toISOString() },
+  });
 });
 
 /**
@@ -46,7 +93,14 @@ export const changePassword = catchAsync(async (req: AuthenticatedRequest, res: 
 export const forgotPassword = catchAsync(async (req: Request, res: Response) => {
   const { email } = req.body;
   await adminAuthService.forgotPassword(email);
-  res.json({ message: 'If that email is registered, a reset code has been sent via WhatsApp.' });
+
+  res.status(200).json({
+    success: true,
+    message: 'If that email is registered, a reset code has been sent via WhatsApp.',
+    code: 200,
+    data: null,
+    meta: { timestamp: new Date().toISOString() },
+  });
 });
 
 /**
@@ -55,5 +109,12 @@ export const forgotPassword = catchAsync(async (req: Request, res: Response) => 
 export const resetPassword = catchAsync(async (req: Request, res: Response) => {
   const { email, code, newPassword } = req.body;
   await adminAuthService.resetPassword(email, code, newPassword);
-  res.json({ success: true });
+
+  res.status(200).json({
+    success: true,
+    message: 'Password reset successfully.',
+    code: 200,
+    data: null,
+    meta: { timestamp: new Date().toISOString() },
+  });
 });

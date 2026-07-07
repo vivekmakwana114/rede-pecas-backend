@@ -35,3 +35,9 @@ export const resetPassword: ValidationSchema = {
     newPassword: Joi.string().min(8).required(),
   }),
 };
+
+export const refresh: ValidationSchema = {
+  body: Joi.object().keys({
+    refreshToken: Joi.string().required(),
+  }),
+};

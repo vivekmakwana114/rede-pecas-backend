@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import * as XLSX from 'xlsx';
-import { logger } from '../config/logger.js';
+import { catchAsync } from '../utils/catchAsync.js';
+import { ApiError } from '../utils/ApiError.js';
 import { importProductsBatch, getOrCreateSupplierByName, ImportItem } from '../models/supplier.model.js';
 import { notifyWaitlistedCustomers } from '../services/product.service.js';
 
@@ -9,23 +10,24 @@ import { notifyWaitlistedCustomers } from '../services/product.service.js';
  * fallback for any item that doesn't carry its own supplierId — a single
  * request can mix products from several suppliers by setting it per item.
  */
-export async function importProductsBatchHandler(req: Request, res: Response): Promise<void> {
+export const importProductsBatchHandler = catchAsync(async (req: Request, res: Response) => {
   const { supplierId, items } = req.body;
 
   if (!Array.isArray(items)) {
-    res.status(400).json({ error: 'Invalid parameters. items is required.' });
-    return;
+    throw new ApiError(400, 'Invalid parameters. items is required.');
   }
 
-  try {
-    const result = await importProductsBatch(items, supplierId ? Number(supplierId) : null);
-    await notifyWaitlistedCustomers(result.restockNotifications);
-    res.json(result);
-  } catch (error: any) {
-    logger.error('Error importing batch products', error);
-    res.status(500).json({ error: error.message });
-  }
-}
+  const result = await importProductsBatch(items, supplierId ? Number(supplierId) : null);
+  await notifyWaitlistedCustomers(result.restockNotifications);
+
+  res.status(200).json({
+    success: true,
+    message: 'Products imported.',
+    code: 200,
+    data: result,
+    meta: { timestamp: new Date().toISOString() },
+  });
+});
 
 const HEADER_ALIASES: Record<string, string[]> = {
   reference: ['reference', 'referencia', 'ref', 'sku'],
@@ -78,41 +80,40 @@ function normalizeRow(row: Record<string, any>): ImportItem | null {
  * supplier columns fall back to the request-level one. A file can therefore
  * mix products from several different suppliers in one upload.
  */
-export async function importProductsFileHandler(req: Request, res: Response): Promise<void> {
+export const importProductsFileHandler = catchAsync(async (req: Request, res: Response) => {
   if (!req.file) {
-    res.status(400).json({ error: 'File is required (field name: file).' });
-    return;
+    throw new ApiError(400, 'File is required (field name: file).');
   }
 
   const { supplierId, supplierName, supplierNif, supplierProvince } = req.body;
 
-  try {
-    let defaultSupplierId: number | null = null;
-    if (supplierId) {
-      defaultSupplierId = Number(supplierId);
-    } else if (supplierName) {
-      defaultSupplierId = await getOrCreateSupplierByName(supplierName, supplierNif, supplierProvince);
-    }
-
-    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rawRows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet);
-
-    const items = rawRows
-      .map(normalizeRow)
-      .filter((r): r is NonNullable<typeof r> => r !== null);
-
-    if (!items.length) {
-      res.status(400).json({ error: 'No valid rows found in the file (check column headers).' });
-      return;
-    }
-
-    const result = await importProductsBatch(items, defaultSupplierId);
-    await notifyWaitlistedCustomers(result.restockNotifications);
-
-    res.json(result);
-  } catch (error: any) {
-    logger.error('Error importing inventory file', error);
-    res.status(500).json({ error: error.message });
+  let defaultSupplierId: number | null = null;
+  if (supplierId) {
+    defaultSupplierId = Number(supplierId);
+  } else if (supplierName) {
+    defaultSupplierId = await getOrCreateSupplierByName(supplierName, supplierNif, supplierProvince);
   }
-}
+
+  const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rawRows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet);
+
+  const items = rawRows
+    .map(normalizeRow)
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+
+  if (!items.length) {
+    throw new ApiError(400, 'No valid rows found in the file (check column headers).');
+  }
+
+  const result = await importProductsBatch(items, defaultSupplierId);
+  await notifyWaitlistedCustomers(result.restockNotifications);
+
+  res.status(200).json({
+    success: true,
+    message: 'Inventory file imported.',
+    code: 200,
+    data: result,
+    meta: { timestamp: new Date().toISOString() },
+  });
+});
