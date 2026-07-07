@@ -25,15 +25,17 @@ interface PaymentMethodCopy {
 }
 
 interface Messages {
-  botCheck: {
-    activeReply: () => string;
-  };
   onboarding: {
     welcome: () => string;
+    welcomeBack: (name: string) => string;
+    resumeRegistration: () => string;
+    askNameOnly: () => string;
     askNifBody: (name: string) => string;
     askNifButtons: [string, string];
+    askNifNumber: () => string;
     askAddress: () => string;
-    profileCreatedAskVehicle: (name: string) => string;
+    askVehicleIdBody: (name: string) => string;
+    askVehicleIdButtons: [string, string, string];
     onboardingComplete: (name: string, vehicleSummary: string) => string;
   };
   manual: {
@@ -46,12 +48,14 @@ interface Messages {
     engineLabel: (engineNumber: string) => string;
   };
   vin: {
+    askVinPrompt: () => string;
     identifying: () => string;
     decodeFailed: () => string;
     confirmBody: (description: string) => string;
     confirmButtons: [string, string];
   };
   document: {
+    askPhotoPrompt: () => string;
     received: () => string;
     downloadFailed: () => string;
     processingError: () => string;
@@ -64,12 +68,20 @@ interface Messages {
   };
   vehicleConfirm: {
     confirmedAskPart: (make: string, model: string, year: string) => string;
-    rejectedFreeText: () => string;
+    addVehicleButton: () => string;
+    addVehicleBody: () => string;
+    chooseVehiclePrompt: (vehicles: { make: string; model: string; year: string }[]) => string;
+    vehicleChoiceNotFound: () => string;
   };
   agent: {
     checkingStock: () => string;
     noStockFound: () => string;
     optionNotFound: () => string;
+    serviceUnavailable: () => string;
+    aiFailureStaffAlert: (phone: string, errorMessage: string) => string;
+    waitlistConfirmed: (productName: string) => string;
+    waitlistDeclined: () => string;
+    restockNotification: (productName: string) => string;
     proformaSentChoosePayment: () => string;
     transferToHuman: () => string;
     searchHeader: (count: number, part: string, make: string, model: string, year: string) => string;
@@ -154,15 +166,13 @@ interface Messages {
       agtStamp: string;
     };
   };
+  adminAuth: {
+    resetCode: (code: string) => string;
+  };
   systemPrompt: string;
 }
 
 const pt: Messages = {
-  botCheck: {
-    activeReply: () =>
-      `🤖 Recebemos a tua mensagem! O nosso assistente está activo.\n\n` +
-      `*Como podemos ajudar-te hoje?*`,
-  },
   onboarding: {
     welcome: () =>
       `👋 Bem-vindo à *Rede Peças*!\n\n` +
@@ -170,22 +180,27 @@ const pt: Messages = {
       `encontramos as peças certas para o teu veículo no menor tempo possível. 🚗\n\n` +
       `Para te servir melhor, vou registar o teu perfil rapidamente.\n\n` +
       `*Como te chamas?* 👇`,
+    welcomeBack: (name) =>
+      `👋 Olá de novo, *${name}*! Bem-vindo de volta à *Rede Peças*. 😊`,
+    resumeRegistration: () =>
+      `👋 Vamos continuar o teu registo!`,
+    askNameOnly: () => `*Como te chamas?* 👇`,
     askNifBody: (name) =>
       `Prazer, *${name}*! 🤝\n\n` +
       `Tens *NIF* para incluir nas facturas?\n` +
       `_(útil se comprares em nome de empresa)_`,
     askNifButtons: ['✅ Sim, tenho NIF', '❌ Não, obrigado'],
+    askNifNumber: () =>
+      `Perfeito! Escreve o teu *número de NIF* 👇`,
     askAddress: () =>
       `Qual é o teu *endereço de entrega* preferido?\n\n` +
       `Exemplo: _Bairro Morro Bento, Rua da Samba, Nº 12, Luanda_\n\n` +
       `_(responde "saltar" se preferires indicar no momento do pedido)_`,
-    profileCreatedAskVehicle: (name) =>
+    askVehicleIdBody: (name) =>
       `✅ *Perfil criado com sucesso, ${name}!*\n\n` +
       `Da próxima vez que nos contactares já te reconheço. 😊\n\n` +
-      `Agora preciso identificar o teu veículo. Tens três opções:\n\n` +
-      `🔢 Envia o *número de chassi (VIN)* — 17 caracteres\n` +
-      `📄 Tira uma *foto do documento* do veículo (livrete/Título)\n` +
-      `✍️ Ou responde *"não tenho"* para preencheres os dados manualmente 👇`,
+      `Agora preciso identificar o teu veículo. Escolhe uma opção 👇`,
+    askVehicleIdButtons: ['🔢 Tenho o VIN', '📄 Enviar foto', '✍️ Manual'],
     onboardingComplete: (name, vehicleSummary) =>
       `✅ Ficaste registado na *Rede Peças*, ${name}! 🎉\n\n` +
       `${vehicleSummary}\n\n` +
@@ -215,6 +230,9 @@ const pt: Messages = {
     engineLabel: (engineNumber) => `🔧 Motor: *${engineNumber}*`,
   },
   vin: {
+    askVinPrompt: () =>
+      `🔢 Perfeito! Envia o número de chassi (VIN) — 17 caracteres, encontras ` +
+      `no documento do veículo ou gravado no próprio chassi.`,
     identifying: () => `🔍 A identificar a viatura pelo número de chassi...`,
     decodeFailed: () =>
       `⚠️ Não consegui identificar esse número de chassi.\n\n` +
@@ -225,6 +243,8 @@ const pt: Messages = {
     confirmButtons: ['✅ Sim, é este', '❌ Não, é outro'],
   },
   document: {
+    askPhotoPrompt: () =>
+      `📄 Perfeito! Tira uma foto nítida do documento do veículo (livrete/Título) e envia aqui.`,
     received: () => `📄 Recebi a foto. A ler os dados do documento...`,
     downloadFailed: () =>
       `⚠️ Não consegui descarregar a imagem. Por favor tenta enviar novamente, ` +
@@ -256,9 +276,14 @@ const pt: Messages = {
       `Perfeito! 🙌\n\n` +
       `Agora diz-me que peça precisas para o teu *${make} ${model} ${year}*.\n\n` +
       `Exemplo: _"filtro de óleo"_, _"pastilhas de travão"_, _"correia de distribuição"_...`,
-    rejectedFreeText: () =>
-      `Sem problema! Diz-me a *marca*, *modelo* e *ano* do teu carro. 👇\n\n` +
-      `Exemplo: _"Toyota Hilux 2018"_`,
+    addVehicleButton: () => '➕ Outro carro',
+    addVehicleBody: () =>
+      `🚗 Vamos identificar o teu novo veículo. Escolhe uma opção 👇`,
+    chooseVehiclePrompt: (vehicles) =>
+      `Para qual dos teus veículos é isto? 👇\n\n` +
+      vehicles.map((v, i) => `${i + 1}️⃣ ${v.make} ${v.model} ${v.year}`).join('\n'),
+    vehicleChoiceNotFound: () =>
+      `Não percebi. Responde só com o número do veículo. 👆`,
   },
   agent: {
     checkingStock: () => `Um momento, estou a verificar o nosso stock para ti...`,
@@ -266,6 +291,18 @@ const pt: Messages = {
       `Infelizmente não encontrei essa peça em stock agora. Posso registar o teu pedido e avisar quando estiver disponível. Queres que eu faça isso?`,
     optionNotFound: () =>
       `Não consegui identificar a opção escolhida. Por favor responde com o número (ex: 1, 2 ou 3).`,
+    serviceUnavailable: () =>
+      `⚠️ Estamos com uma instabilidade temporária na nossa plataforma. Por favor tenta novamente daqui a alguns minutos. 🙏`,
+    aiFailureStaffAlert: (phone, errorMessage) =>
+      `⚠️ *Falha no agente de IA*\n\n` +
+      `Cliente: ${phone}\n` +
+      `Erro: ${errorMessage}\n\n` +
+      `Por favor verifica a configuração da API Claude ou contacta o cliente manualmente.`,
+    waitlistConfirmed: (productName) =>
+      `✅ Perfeito! Vou avisar-te assim que *${productName}* estiver disponível.`,
+    waitlistDeclined: () => `Sem problema! 👍`,
+    restockNotification: (productName) =>
+      `📦 Boas notícias! *${productName}* já está disponível em stock. Queres fazer o pedido?`,
     proformaSentChoosePayment: () =>
       `Proforma enviada! Por favor escolhe um dos métodos de pagamento abaixo. 👇`,
     transferToHuman: () =>
@@ -456,6 +493,11 @@ const pt: Messages = {
       agtStamp: 'Processado por computador. Emitido de acordo com as regras de facturação da AGT Angola.',
     },
   },
+  adminAuth: {
+    resetCode: (code) =>
+      `🔐 Código de recuperação de senha do painel Rede Peças: *${code}*\n\n` +
+      `Válido por 10 minutos. Se não pediste isto, ignora esta mensagem.`,
+  },
   systemPrompt: `
 És o assistente virtual da Rede Peças, um marketplace automotivo em Angola.
 O teu trabalho é ajudar clientes a encontrar peças para os seus veículos.
@@ -480,11 +522,6 @@ EXEMPLOS DE EXTRACÇÃO:
 };
 
 const en: Messages = {
-  botCheck: {
-    activeReply: () =>
-      `🤖 We received your message! Our assistant is active.\n\n` +
-      `*How can we help you today?*`,
-  },
   onboarding: {
     welcome: () =>
       `👋 Welcome to *Rede Peças*!\n\n` +
@@ -492,22 +529,27 @@ const en: Messages = {
       `we find the right parts for your vehicle as fast as possible. 🚗\n\n` +
       `To help you better, let's set up your profile quickly.\n\n` +
       `*What's your name?* 👇`,
+    welcomeBack: (name) =>
+      `👋 Hey again, *${name}*! Welcome back to *Rede Peças*. 😊`,
+    resumeRegistration: () =>
+      `👋 Let's continue your registration!`,
+    askNameOnly: () => `*What's your name?* 👇`,
     askNifBody: (name) =>
       `Nice to meet you, *${name}*! 🤝\n\n` +
       `Do you have a *NIF* (tax ID) to include on invoices?\n` +
       `_(useful if you're buying on behalf of a company)_`,
     askNifButtons: ['✅ Yes, I have a NIF', '❌ No, thanks'],
+    askNifNumber: () =>
+      `Great! Type your *NIF number* 👇`,
     askAddress: () =>
       `What's your preferred *delivery address*?\n\n` +
       `Example: _Bairro Morro Bento, Rua da Samba, Nº 12, Luanda_\n\n` +
       `_(reply "skip" if you'd rather provide it when placing an order)_`,
-    profileCreatedAskVehicle: (name) =>
+    askVehicleIdBody: (name) =>
       `✅ *Profile created successfully, ${name}!*\n\n` +
       `Next time you message us, I'll already recognize you. 😊\n\n` +
-      `Now I need to identify your vehicle. You have three options:\n\n` +
-      `🔢 Send the *chassis number (VIN)* — 17 characters\n` +
-      `📄 Take a *photo of the vehicle document* (registration/title)\n` +
-      `✍️ Or reply *"I don't have it"* to fill in the details manually 👇`,
+      `Now I need to identify your vehicle. Pick an option 👇`,
+    askVehicleIdButtons: ['🔢 I have the VIN', '📄 Send a photo', '✍️ Manual entry'],
     onboardingComplete: (name, vehicleSummary) =>
       `✅ You're registered with *Rede Peças*, ${name}! 🎉\n\n` +
       `${vehicleSummary}\n\n` +
@@ -537,6 +579,9 @@ const en: Messages = {
     engineLabel: (engineNumber) => `🔧 Engine: *${engineNumber}*`,
   },
   vin: {
+    askVinPrompt: () =>
+      `🔢 Perfect! Send the chassis number (VIN) — 17 characters, found on the ` +
+      `vehicle document or stamped on the chassis itself.`,
     identifying: () => `🔍 Identifying the vehicle from the chassis number...`,
     decodeFailed: () =>
       `⚠️ I couldn't identify that chassis number.\n\n` +
@@ -547,6 +592,8 @@ const en: Messages = {
     confirmButtons: ['✅ Yes, that\'s it', '❌ No, different car'],
   },
   document: {
+    askPhotoPrompt: () =>
+      `📄 Perfect! Take a clear photo of the vehicle document (registration/title) and send it here.`,
     received: () => `📄 Got the photo. Reading the document's data...`,
     downloadFailed: () =>
       `⚠️ I couldn't download the image. Please try sending it again, ` +
@@ -578,9 +625,14 @@ const en: Messages = {
       `Perfect! 🙌\n\n` +
       `Now tell me which part you need for your *${make} ${model} ${year}*.\n\n` +
       `Example: _"oil filter"_, _"brake pads"_, _"timing belt"_...`,
-    rejectedFreeText: () =>
-      `No problem! Tell me the *make*, *model*, and *year* of your car. 👇\n\n` +
-      `Example: _"Toyota Hilux 2018"_`,
+    addVehicleButton: () => '➕ Add vehicle',
+    addVehicleBody: () =>
+      `🚗 Let's identify your new vehicle. Pick an option 👇`,
+    chooseVehiclePrompt: (vehicles) =>
+      `Which of your vehicles is this for? 👇\n\n` +
+      vehicles.map((v, i) => `${i + 1}️⃣ ${v.make} ${v.model} ${v.year}`).join('\n'),
+    vehicleChoiceNotFound: () =>
+      `I didn't get that. Reply with just the vehicle's number. 👆`,
   },
   agent: {
     checkingStock: () => `One moment, checking our stock for you...`,
@@ -588,6 +640,18 @@ const en: Messages = {
       `Unfortunately I couldn't find that part in stock right now. I can register your request and notify you when it's available. Want me to do that?`,
     optionNotFound: () =>
       `I couldn't identify which option you chose. Please reply with the number (e.g. 1, 2, or 3).`,
+    serviceUnavailable: () =>
+      `⚠️ We're experiencing temporary instability on our platform. Please try again in a few minutes. 🙏`,
+    aiFailureStaffAlert: (phone, errorMessage) =>
+      `⚠️ *AI agent failure*\n\n` +
+      `Customer: ${phone}\n` +
+      `Error: ${errorMessage}\n\n` +
+      `Please check the Claude API configuration or contact the customer manually.`,
+    waitlistConfirmed: (productName) =>
+      `✅ Perfect! I'll let you know as soon as *${productName}* is available.`,
+    waitlistDeclined: () => `No problem! 👍`,
+    restockNotification: (productName) =>
+      `📦 Good news! *${productName}* is back in stock. Want to place an order?`,
     proformaSentChoosePayment: () =>
       `Proforma sent! Please choose one of the payment methods below. 👇`,
     transferToHuman: () =>
@@ -777,6 +841,11 @@ const en: Messages = {
       totalPaid: 'TOTAL PAID:',
       agtStamp: 'Computer-processed. Issued in accordance with AGT Angola billing rules.',
     },
+  },
+  adminAuth: {
+    resetCode: (code) =>
+      `🔐 Rede Peças admin panel password reset code: *${code}*\n\n` +
+      `Valid for 10 minutes. If you didn't request this, ignore this message.`,
   },
   systemPrompt: `
 You are the virtual assistant for Rede Peças, an auto parts marketplace in Angola.

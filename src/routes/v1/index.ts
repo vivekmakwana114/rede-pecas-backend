@@ -1,12 +1,16 @@
 import express from 'express';
 import whatsappRoute from './whatsapp.route.js';
-import adminRoute from './admin.route.js';
+import authRoute from './auth.route.js';
+import orderRoute from './order.route.js';
+import productRoute from './product.route.js';
 
 const router = express.Router();
 
 const defaultRoutes = [
   { path: '/webhook/whatsapp', route: whatsappRoute },
-  { path: '/admin', route: adminRoute },
+  { path: '/admin', route: authRoute },
+  { path: '/admin', route: orderRoute },
+  { path: '/admin', route: productRoute },
 ];
 
 defaultRoutes.forEach((route) => {

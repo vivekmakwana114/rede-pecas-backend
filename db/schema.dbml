@@ -20,32 +20,9 @@ Table suppliers {
   created_at timestamptz [default: `NOW()`]
 }
 
-Table categories {
-  id serial [pk]
-  name text [not null]
-  parent_id int [ref: > categories.id, note: 'subcategories']
-}
-
-Table vehicles {
-  id serial [pk]
-  make text [not null]
-  model text [not null]
-  generation text
-  year_from int [not null]
-  year_to int [not null]
-  engine text
-  fuel_type text
-
-  indexes {
-    (make, model)
-    (year_from, year_to)
-  }
-}
-
 Table products {
   id serial [pk]
   supplier_id int [not null, ref: > suppliers.id]
-  category_id int [ref: > categories.id]
   name text [not null]
   brand text
   reference text [not null]
@@ -56,6 +33,7 @@ Table products {
   price numeric(12,2) [not null, note: 'Kwanzas (AOA)']
   quantity int [not null, default: 0]
   unit text [default: 'unidade']
+  waitlist_phones "text[]" [default: '{}', note: 'phones awaiting a restock notification']
   delivery_time text [default: 'Em stock']
   active boolean [default: true]
   created_at timestamptz [default: `NOW()`]
@@ -65,16 +43,6 @@ Table products {
   indexes {
     (supplier_id, reference) [unique, note: 'batch-import upsert target']
     price
-  }
-}
-
-Table compatibilities {
-  id serial [pk]
-  product_id int [not null, ref: > products.id, note: 'ON DELETE CASCADE']
-  vehicle_id int [not null, ref: > vehicles.id, note: 'ON DELETE CASCADE']
-
-  indexes {
-    (product_id, vehicle_id) [unique]
   }
 }
 
@@ -102,21 +70,7 @@ Table orders {
   }
 }
 
-Table waitlist_requests {
-  id serial [pk]
-  phone text [not null]
-  product_name text [not null]
-  vehicle_make text
-  vehicle_model text
-  vehicle_year text
-  engine_number text
-  notified boolean [default: false]
-  created_at timestamptz [default: `NOW()`]
-
-  Note: 'Products not found in stock — notify customer when available'
-}
-
-Table vin_cache {
+Table nhtsa_vehicles {
   vin char(17) [pk]
   make text [not null]
   model text [not null]
@@ -127,31 +81,7 @@ Table vin_cache {
   manufacture_country text
   created_at timestamptz [default: `NOW()`]
 
-  Note: 'Avoids repeated NHTSA API calls'
-}
-
-Table vehicle_sessions {
-  phone text [pk]
-  vin char(17)
-  make text
-  model text
-  year text
-  engine_number text
-  license_plate text
-  engine_size text
-  fuel_type text
-  updated_at timestamptz [default: `NOW()`, note: '4-hour working context']
-}
-
-Table manual_vehicle_collections {
-  phone text [pk]
-  status text [not null, note: 'awaiting_make → awaiting_model → awaiting_year → awaiting_engine_number → complete']
-  attempted_vin char(17)
-  make text
-  model text
-  year text
-  engine_number text
-  created_at timestamptz [default: `NOW()`, note: '30-minute TTL enforced in queries']
+  Note: 'Avoids repeated NHTSA API calls for the same VIN'
 }
 
 Table order_counters {
@@ -176,7 +106,7 @@ Table customers {
   nif text [note: 'Angolan tax ID']
   address text
   email text
-  registration_status text [default: 'new', note: 'new → awaiting_name → awaiting_nif → awaiting_address → complete']
+  registration_status text [default: 'new', note: 'new → awaiting_name → awaiting_nif → awaiting_nif_number → awaiting_address → awaiting_vehicle_id → complete']
   first_contact_at timestamptz [default: `NOW()`]
   last_contact_at timestamptz [default: `NOW()`]
   registered_at timestamptz
@@ -190,9 +120,26 @@ Table customers {
   }
 }
 
-Table campaign_sends {
-  id serial [pk]
-  phone text [ref: > customers.phone]
-  segment text [note: 'all | inactive_30_days | diesel | luanda | frequent_buyers | no_orders | toyota | new_7_days']
-  sent_at timestamptz [default: `NOW()`]
+Table vehicles {
+  phone text [pk, ref: > customers.phone]
+  vin char(17)
+  make text
+  model text
+  year text
+  engine_number text
+  license_plate text
+  engine_size text
+  fuel_type text
+  source text [note: 'vin | manual | document']
+  status text [note: 'NULL/complete = confirmed vehicle (4h TTL via updated_at); other = in-progress manual wizard step (30-min TTL via created_at)']
+  attempted_vin char(17) [note: 'VIN that failed NHTSA decode before falling back to manual entry']
+  created_at timestamptz [default: `NOW()`]
+  updated_at timestamptz [default: `NOW()`]
+
+  indexes {
+    updated_at
+    (status, created_at)
+  }
+
+  Note: 'Per-customer identified vehicle — merged from the former vehicle_sessions + manual_vehicle_collections'
 }
