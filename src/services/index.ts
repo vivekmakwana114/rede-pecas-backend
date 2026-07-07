@@ -1,3 +1,4 @@
+export * as adminAuthService from './adminAuth.service.js';
 export * as aiService from './ai.service.js';
 export * as customerService from './customer.service.js';
 export * as paymentService from './payment.service.js';

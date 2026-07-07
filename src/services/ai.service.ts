@@ -2,12 +2,12 @@ import Anthropic from "@anthropic-ai/sdk";
 import fs from 'fs';
 import { config } from "../config/config.js";
 import { logger } from "../config/logger.js";
-import { getCustomerVehicle } from '../models/vehicle.model.js';
+import { getCustomerVehicles } from '../models/vehicle.model.js';
 import { createOrder, generateOrderNumber } from '../models/order.model.js';
 import * as productService from './product.service.js';
 import { generateProformaPDF, sendProformaWhatsApp } from './pdf.service.js';
 import { askPaymentMethod } from './payment.service.js';
-import { getHistory, saveHistory, getPendingOptions, clearPendingOptions } from './session.service.js';
+import { getHistory, saveHistory, getPendingOptions, clearPendingOptions, clearPartPromptSent, getChosenVehicle } from './session.service.js';
 import { sendWhatsAppMessage } from './whatsapp.service.js';
 import { t } from '../i18n/messages.js';
 
@@ -100,12 +100,27 @@ REGRAS IMPORTANTES:
 }
 
 /**
+ * A customer can have several confirmed vehicles. With one, it's unambiguous; with
+ * several, ai.service.ts must not guess — it uses whichever the customer picked via
+ * the "which vehicle is this for?" prompt (sessionService.getChosenVehicle), falling
+ * back to the most recent if that's somehow unset (e.g. it expired mid-conversation).
+ */
+async function resolveSearchVehicle(phone: string) {
+  const vehicles = await getCustomerVehicles(phone);
+  if (vehicles.length === 0) return null;
+  if (vehicles.length === 1) return vehicles[0];
+
+  const chosenId = await getChosenVehicle(phone);
+  return vehicles.find((v) => v.id === chosenId) || vehicles[0];
+}
+
+/**
  * Conversation flow processing using Anthropic API.
  */
 export async function processAIConversation(phone: string, customerText: string): Promise<void> {
   try {
     const history = await getHistory(phone);
-    const vehicle = await getCustomerVehicle(phone);
+    const vehicle = await resolveSearchVehicle(phone);
 
     let enrichedText = customerText;
     // Enrich query context with session vehicle metadata if the customer doesn't type it
@@ -142,17 +157,21 @@ export async function processAIConversation(phone: string, customerText: string)
     logger.error(`AI agent pipeline failed for ${phone}`, error);
     await sendWhatsAppMessage(phone, t.agent.serviceUnavailable());
 
-    const staffPhone = config.admin.staffPhone;
-    if (staffPhone) {
-      try {
-        await sendWhatsAppMessage(staffPhone, t.agent.aiFailureStaffAlert(phone, error.message));
-      } catch (staffError: any) {
-        // Staff alert failing (e.g. STAFF_PHONE_NUMBER not on the WhatsApp test allow-list)
-        // must not surface as a second uncaught error — the customer already got their
-        // fallback message above, and this is a best-effort side notification.
-        logger.error('Failed to notify staff of AI agent failure', staffError);
-      }
-    }
+    // Close out this invitation on failure — the next message re-triggers the
+    // deterministic "what part do you need" prompt instead of blindly retrying
+    // (and failing) the AI again on every subsequent message.
+    await clearPartPromptSent(phone);
+
+    // Staff alert disabled for now — STAFF_PHONE_NUMBER isn't on the WhatsApp test
+    // allow-list yet, so this was erroring on every AI failure instead of helping.
+    // const staffPhone = config.admin.staffPhone;
+    // if (staffPhone) {
+    //   try {
+    //     await sendWhatsAppMessage(staffPhone, t.agent.aiFailureStaffAlert(phone, error.message));
+    //   } catch (staffError: any) {
+    //     logger.error('Failed to notify staff of AI agent failure', staffError);
+    //   }
+    // }
   }
 }
 

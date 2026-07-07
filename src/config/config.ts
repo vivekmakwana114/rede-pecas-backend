@@ -51,11 +51,13 @@ export const config = {
     accessExpirationMinutes: parseInt(process.env.JWT_ACCESS_EXPIRATION_MINUTES || '60', 10)
   },
   admin: {
-    password: process.env.ADMIN_PASSWORD || 'redepecas2025',
     staffPhone: process.env.STAFF_PHONE_NUMBER || ''
   },
   primavera: {
     apiUrl: process.env.PRIMAVERA_API_URL || 'https://api.primavera-angola.ao',
     token: process.env.PRIMAVERA_API_TOKEN || ''
+  },
+  nhtsa: {
+    apiUrl: process.env.NHTSA_API_URL || 'https://vpic.nhtsa.dot.gov/api/vehicles/decodevin'
   }
 };

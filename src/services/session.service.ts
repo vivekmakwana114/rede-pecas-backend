@@ -7,6 +7,7 @@ let useMemoryFallback = false;
 const memoryCache = new Map<string, any[]>();
 
 const SESSION_TTL = 60 * 60 * 4; // 4 hours in seconds
+const VEHICLE_ID_CHOICE_TTL = 60 * 30; // 30 minutes — matches the manual-collection wizard's own window
 
 if (config.redis.url) {
   try {
@@ -167,6 +168,202 @@ export async function markSessionActive(phone: string): Promise<void> {
     await redisClient.setEx(key, SESSION_TTL, '1');
   } catch (err) {
     logger.error('Error marking session active in Redis', err);
+  }
+}
+
+// Tracks "has this customer actually been asked 'what part do you need?'" (via
+// onboardingComplete/collectionComplete/confirmedAskPart/sendAskPartPrompt) independently
+// of the AI history. The conversational Claude agent is only invoked once this is set —
+// it must never be the first thing that answers a message, both to avoid burning an API
+// call on stray chatter and so a Claude/Anthropic outage doesn't surface on every message.
+const partPromptSessions = new Map<string, number>();
+
+export async function wasPartPromptSent(phone: string): Promise<boolean> {
+  const key = `partPrompt:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    const expiresAt = partPromptSessions.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
+  }
+
+  try {
+    const exists = await redisClient.exists(key);
+    return exists === 1;
+  } catch (err) {
+    logger.error('Error checking part-prompt state in Redis', err);
+    const expiresAt = partPromptSessions.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
+  }
+}
+
+export async function markPartPromptSent(phone: string): Promise<void> {
+  const key = `partPrompt:${phone}`;
+  partPromptSessions.set(key, Date.now() + SESSION_TTL * 1000);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, SESSION_TTL, '1');
+  } catch (err) {
+    logger.error('Error marking part-prompt state in Redis', err);
+  }
+}
+
+/**
+ * Clears the part-prompt invitation after a failed AI call so the customer's next
+ * message re-triggers the deterministic "what part do you need" prompt instead of
+ * blindly retrying (and failing) the AI again. Never called on a successful AI
+ * reply — the AI still owns the conversation then (pending options, order
+ * confirmation, etc.) and needs to see the next message directly.
+ */
+export async function clearPartPromptSent(phone: string): Promise<void> {
+  const key = `partPrompt:${phone}`;
+  partPromptSessions.delete(key);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.del(key);
+  } catch (err) {
+    logger.error('Error clearing part-prompt state in Redis', err);
+  }
+}
+
+/**
+ * Tracks the "which of your vehicles is this for?" picker shown when a customer with
+ * 2+ vehicles is about to be invited to ask for a part — awaits their numeric reply,
+ * same shape/lifecycle as `savePendingOptions` above but a separate key since a search
+ * can also have its own pending options open at a different point in the flow.
+ */
+const pendingVehicleChoiceCache = new Map<string, { id: number; make: string; model: string; year: string }[]>();
+
+export async function savePendingVehicleChoice(
+  phone: string,
+  vehicles: { id: number; make: string; model: string; year: string }[]
+): Promise<void> {
+  const key = `vehicleChoice:${phone}`;
+  pendingVehicleChoiceCache.set(key, vehicles);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, SESSION_TTL, JSON.stringify(vehicles));
+  } catch (err) {
+    logger.error('Error saving pending vehicle choice to Redis', err);
+  }
+}
+
+export async function getPendingVehicleChoice(phone: string): Promise<{ id: number; make: string; model: string; year: string }[] | null> {
+  const key = `vehicleChoice:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return pendingVehicleChoiceCache.get(key) || null;
+  }
+
+  try {
+    const data = await redisClient.get(key);
+    return data ? JSON.parse(data) : null;
+  } catch (err) {
+    logger.error('Error fetching pending vehicle choice from Redis', err);
+    return pendingVehicleChoiceCache.get(key) || null;
+  }
+}
+
+export async function clearPendingVehicleChoice(phone: string): Promise<void> {
+  const key = `vehicleChoice:${phone}`;
+  pendingVehicleChoiceCache.delete(key);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.del(key);
+  } catch (err) {
+    logger.error('Error deleting pending vehicle choice from Redis', err);
+  }
+}
+
+// Which vehicle applies to the customer's current "ask for a part" invitation, once
+// resolved (either the only vehicle on file, or the customer's answer to the picker
+// above). ai.service.ts reads this instead of guessing when there's more than one
+// vehicle on file.
+const chosenVehicleSessions = new Map<string, { id: number; expiresAt: number }>();
+
+export async function saveChosenVehicle(phone: string, vehicleId: number): Promise<void> {
+  const key = `chosenVehicle:${phone}`;
+  chosenVehicleSessions.set(key, { id: vehicleId, expiresAt: Date.now() + SESSION_TTL * 1000 });
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, SESSION_TTL, String(vehicleId));
+  } catch (err) {
+    logger.error('Error saving chosen vehicle to Redis', err);
+  }
+}
+
+export async function getChosenVehicle(phone: string): Promise<number | null> {
+  const key = `chosenVehicle:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    const entry = chosenVehicleSessions.get(key);
+    return entry && entry.expiresAt >= Date.now() ? entry.id : null;
+  }
+
+  try {
+    const data = await redisClient.get(key);
+    return data ? parseInt(data, 10) : null;
+  } catch (err) {
+    logger.error('Error fetching chosen vehicle from Redis', err);
+    const entry = chosenVehicleSessions.get(key);
+    return entry && entry.expiresAt >= Date.now() ? entry.id : null;
+  }
+}
+
+// Tracks "the customer was just shown the VIN/photo/manual vehicle-ID choice"
+// (during onboarding, or via the 'add another vehicle' flow for a customer who
+// already has one) — needed so a photo they send next is routed to
+// processVehicleDocument, and a VIN/manual button tap to processVehicleIdOptionChoice,
+// even once they already have a confirmed vehicle on file (needsVehicleId would
+// otherwise be false and neither check would fire). 30-min TTL matches the
+// manual-collection wizard's own window rather than the full 4h session.
+const vehicleIdChoiceSessions = new Map<string, number>();
+
+export async function markVehicleIdChoiceShown(phone: string): Promise<void> {
+  const key = `vehicleIdChoice:${phone}`;
+  vehicleIdChoiceSessions.set(key, Date.now() + VEHICLE_ID_CHOICE_TTL * 1000);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, VEHICLE_ID_CHOICE_TTL, '1');
+  } catch (err) {
+    logger.error('Error marking vehicle-ID choice shown in Redis', err);
+  }
+}
+
+export async function wasVehicleIdChoiceShown(phone: string): Promise<boolean> {
+  const key = `vehicleIdChoice:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    const expiresAt = vehicleIdChoiceSessions.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
+  }
+
+  try {
+    const exists = await redisClient.exists(key);
+    return exists === 1;
+  } catch (err) {
+    logger.error('Error checking vehicle-ID choice state in Redis', err);
+    const expiresAt = vehicleIdChoiceSessions.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
   }
 }
 

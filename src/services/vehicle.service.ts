@@ -1,7 +1,9 @@
 import { logger } from '../config/logger.js';
+import { config } from '../config/config.js';
 import { capitalize } from '../utils/helpers.js';
 import {
-  getCustomerVehicle,
+  getCustomerVehicles,
+  getMostRecentVehicle,
   saveVehicleSession,
   clearVehicleSession,
   getActiveManualCollection,
@@ -13,12 +15,108 @@ import {
 import { sendWhatsAppMessage, sendWhatsAppButtons, downloadWhatsAppMedia } from './whatsapp.service.js';
 import { extractDataWithClaudeVision, VisionData } from './ai.service.js';
 import { completeOnboardingIfNeeded, Customer } from './customer.service.js';
+import {
+  markPartPromptSent,
+  savePendingVehicleChoice,
+  getPendingVehicleChoice,
+  clearPendingVehicleChoice,
+  saveChosenVehicle,
+  markVehicleIdChoiceShown,
+} from './session.service.js';
 import { t } from '../i18n/messages.js';
 
 // Pure pass-through so the controller never imports vehicle.model.js directly
 export { getActiveManualCollection, startManualCollection };
 
-const NHTSA_URL = "https://vpic.nhtsa.dot.gov/api/vehicles/decodevin";
+/**
+ * Sends the deterministic "what part do you need" prompt for a customer whose
+ * vehicle(s) are already confirmed — reused for returning customers so a bare
+ * greeting doesn't need an AI call. With one vehicle on file, asks directly; with
+ * several, asks which one first (see resolvePendingVehicleChoice) before inviting
+ * a part search — ai.service.ts picks up the resolved choice via getChosenVehicle.
+ */
+export async function sendAskPartPrompt(phone: string): Promise<boolean> {
+  const vehicles = await getCustomerVehicles(phone);
+  if (!vehicles.length) return false;
+
+  if (vehicles.length === 1) {
+    const v = vehicles[0];
+    await sendWhatsAppButtons(
+      phone,
+      t.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year),
+      [t.vehicleConfirm.addVehicleButton()]
+    );
+    await markPartPromptSent(phone);
+    return true;
+  }
+
+  await savePendingVehicleChoice(phone, vehicles.map(v => ({ id: v.id, make: v.make, model: v.model, year: v.year })));
+  await sendWhatsAppMessage(phone, t.vehicleConfirm.chooseVehiclePrompt(vehicles));
+  return true;
+}
+
+/**
+ * Resolves a reply to the "which vehicle is this for?" picker shown by
+ * sendAskPartPrompt when the customer has 2+ vehicles. Records the choice for
+ * ai.service.ts to use as this invitation's vehicle context, then sends the
+ * normal "what part do you need" prompt for that specific vehicle.
+ */
+export async function resolvePendingVehicleChoice(phone: string, reply: string): Promise<boolean> {
+  const pending = await getPendingVehicleChoice(phone);
+  if (!pending) return false;
+
+  const idx = parseInt(reply.trim(), 10) - 1;
+  const chosen = pending[idx];
+  if (!chosen) {
+    await sendWhatsAppMessage(phone, t.vehicleConfirm.vehicleChoiceNotFound());
+    return true;
+  }
+
+  await clearPendingVehicleChoice(phone);
+  await saveChosenVehicle(phone, chosen.id);
+  await sendWhatsAppButtons(
+    phone,
+    t.vehicleConfirm.confirmedAskPart(chosen.make, chosen.model, chosen.year),
+    [t.vehicleConfirm.addVehicleButton()]
+  );
+  await markPartPromptSent(phone);
+  return true;
+}
+
+/**
+ * Whether this customer has at least one confirmed vehicle on file (registration
+ * and vehicle ID are independent — this is the sole gate for whether the
+ * vehicle-ID flow is needed).
+ */
+export async function hasVehicleOnFile(phone: string): Promise<boolean> {
+  return (await getCustomerVehicles(phone)).length > 0;
+}
+
+const ADD_VEHICLE_TRIGGERS = ['outro carro', 'add vehicle', 'novo carro', 'adicionar carro'];
+
+/**
+ * Whether this reply is the customer asking to identify an additional vehicle
+ * (the "➕ Outro carro"/"➕ Add vehicle" button always offered alongside the
+ * ask-part prompt, or the same phrase typed free-text).
+ */
+export function isAddVehicleRequest(text: string): boolean {
+  const r = text.trim().toLowerCase();
+  return ADD_VEHICLE_TRIGGERS.some((trigger) => r.includes(trigger));
+}
+
+/**
+ * Starts identifying an additional vehicle — the same VIN/photo/manual choice
+ * shown during onboarding, but for a customer who already has one or more
+ * vehicles on file. Nothing about the identification flow itself needs to
+ * change: saveVehicleSession always inserts a new row unless given a specific
+ * in-progress row's id, so the existing vehicle(s) are untouched either way.
+ */
+export async function startAddVehicleFlow(phone: string): Promise<void> {
+  await sendWhatsAppButtons(phone, t.vehicleConfirm.addVehicleBody(), t.onboarding.askVehicleIdButtons);
+  await markVehicleIdChoiceShown(phone);
+}
+
+const NHTSA_URL = config.nhtsa.apiUrl;
 
 export interface VINInfo {
   vin: string;
@@ -169,14 +267,14 @@ export async function processManualCollectionStep(
 
   if (collection.status === 'awaiting_make') {
     const make = capitalize(r);
-    await updateManualCollection(phone, { make, status: 'awaiting_model' });
+    await updateManualCollection(collection.id, { make, status: 'awaiting_model' });
     await sendWhatsAppMessage(phone, t.manual.askModel(make));
     return true;
   }
 
   if (collection.status === 'awaiting_model') {
     const model = capitalize(r);
-    await updateManualCollection(phone, { model, status: 'awaiting_year' });
+    await updateManualCollection(collection.id, { model, status: 'awaiting_year' });
     await sendWhatsAppMessage(phone, t.manual.askYear(collection.make, model));
     return true;
   }
@@ -191,7 +289,7 @@ export async function processManualCollectionStep(
       return true;
     }
 
-    await updateManualCollection(phone, { year: yearClean, status: 'awaiting_engine_number' });
+    await updateManualCollection(collection.id, { year: yearClean, status: 'awaiting_engine_number' });
     await sendWhatsAppMessage(phone, t.manual.askEngineNumber(collection.make, collection.model, yearClean));
     return true;
   }
@@ -202,16 +300,14 @@ export async function processManualCollectionStep(
       ? null
       : r.toUpperCase();
 
-    // Complete vehicle session
+    // Completes this specific in-progress row (sets status='complete' on it) —
+    // does not touch any other vehicles this customer already has on file.
     await saveVehicleSession(phone, {
       make: collection.make,
       model: collection.model,
       year: collection.year,
       engine_number: engineNumber,
-    });
-
-    // Mark manual collection as complete
-    await updateManualCollection(phone, { status: 'complete' });
+    }, collection.id);
 
     const summary = [
       `🚗 *${collection.make} ${collection.model} ${collection.year}*`,
@@ -220,7 +316,8 @@ export async function processManualCollectionStep(
 
     const completedOnboarding = await completeOnboardingIfNeeded(phone, customer, summary);
     if (!completedOnboarding) {
-      await sendWhatsAppMessage(phone, t.manual.collectionComplete(summary));
+      await sendWhatsAppButtons(phone, t.manual.collectionComplete(summary), [t.vehicleConfirm.addVehicleButton()]);
+      await markPartPromptSent(phone);
     }
     return true;
   }
@@ -350,26 +447,37 @@ export async function processVehicleConfirmation(phone: string, reply: string, c
   const r = reply.toLowerCase();
 
   if (r.includes('sim') || r.includes('yes') || r.includes('✅') || r === '1' || r.includes('btn_0')) {
-    const v = await getCustomerVehicle(phone);
+    // The vehicle we just decoded/saved is unambiguously the most recently updated
+    // row — nothing else touches this customer's vehicles between the save and this
+    // reply, even if they already have other confirmed vehicles on file.
+    const v = await getMostRecentVehicle(phone);
     if (!v) return false;
 
     const summary = `🚗 *${v.make} ${v.model} ${v.year}*`;
     const completedOnboarding = await completeOnboardingIfNeeded(phone, customer, summary);
     if (!completedOnboarding) {
-      await sendWhatsAppMessage(phone, t.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year));
+      await sendWhatsAppButtons(
+        phone,
+        t.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year),
+        [t.vehicleConfirm.addVehicleButton()]
+      );
+      await markPartPromptSent(phone);
     }
     return true;
   }
 
   if (r.includes('não') || r.includes('nao') || r.includes('❌') || r === '2' || r.includes('btn_1')) {
-    await clearVehicleSession(phone);
+    // Delete only the just-rejected attempt (by id) — never all of this customer's
+    // vehicles, since they may already have others confirmed.
+    const rejected = await getMostRecentVehicle(phone);
+    if (rejected) await clearVehicleSession(rejected.id);
 
-    if (customer.registration_status === 'awaiting_vehicle_id') {
-      await startManualCollection(phone, 'awaiting_make');
-      await sendWhatsAppMessage(phone, t.manual.askMakePrompt());
-    } else {
-      await sendWhatsAppMessage(phone, t.vehicleConfirm.rejectedFreeText());
-    }
+    // Same step-by-step wizard regardless of whether this is the customer's first
+    // vehicle or a returning customer re-identifying — nothing downstream parses a
+    // combined "make model year" free-text reply, so asking for one led to a wasted
+    // round-trip.
+    await startManualCollection(phone, 'awaiting_make');
+    await sendWhatsAppMessage(phone, t.manual.askMakePrompt());
     return true;
   }
 

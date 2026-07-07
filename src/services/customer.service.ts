@@ -6,7 +6,7 @@ import {
   Customer
 } from '../models/customer.model.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons } from './whatsapp.service.js';
-import { markSessionActive } from './session.service.js';
+import { markSessionActive, markPartPromptSent, markVehicleIdChoiceShown } from './session.service.js';
 import { capitalize } from '../utils/helpers.js';
 import { t } from '../i18n/messages.js';
 
@@ -28,9 +28,10 @@ export async function getOrCreateCustomer(phone: string): Promise<Customer | nul
 }
 
 /**
- * Handles CRM registration states.
+ * Handles customer profile registration steps (name/NIF/address). Independent of
+ * vehicle identification, which is tracked separately via the `vehicles` table.
  */
-export async function processCRMRegistration(phone: string, status: string, reply: string): Promise<boolean> {
+export async function processCustomerRegistration(phone: string, status: string, reply: string): Promise<boolean> {
   const r = reply.trim();
 
   if (status === 'awaiting_name') {
@@ -69,13 +70,17 @@ export async function processCRMRegistration(phone: string, status: string, repl
 
     await updateCustomer(phone, {
       address,
-      registration_status: 'awaiting_vehicle_id',
+      registration_status: 'complete',
     });
 
     const cust = await getCustomerByPhone(phone);
     const name = cust?.name?.split(' ')[0] || 'Cliente';
 
+    // Profile is done, but the customer still has no vehicle on file — the vehicle-ID
+    // gate in whatsapp.controller.ts picks this up on their next message regardless,
+    // but showing the buttons immediately here avoids an unnecessary extra round trip.
     await sendWhatsAppButtons(phone, t.onboarding.askVehicleIdBody(name), t.onboarding.askVehicleIdButtons);
+    await markVehicleIdChoiceShown(phone);
     return true;
   }
 
@@ -85,7 +90,7 @@ export async function processCRMRegistration(phone: string, status: string, repl
 /**
  * Greets a customer resuming a stale mid-registration session (their previous session
  * expired before they finished name/NIF/address) and re-sends the exact question for
- * their current step, reusing the same prompt builders `processCRMRegistration` uses —
+ * their current step, reusing the same prompt builders `processCustomerRegistration` uses —
  * instead of silently treating this first message as the answer to that step.
  */
 export async function sendResumeRegistrationPrompt(phone: string, customer: Customer): Promise<void> {
@@ -104,21 +109,28 @@ export async function sendResumeRegistrationPrompt(phone: string, customer: Cust
 }
 
 /**
- * If the customer reached this vehicle-ID step as part of onboarding (registration
- * was pending on the vehicle, not yet 'complete'), finalizes registration and sends
- * the combined "profile complete" message. Returns true if it did so, so the caller
- * can skip its own lighter-weight "tell me what part you need" message.
+ * If this is the customer's first-ever confirmed vehicle (registered_at still NULL —
+ * profile and vehicle are independent, so this is the only reliable "first time" signal
+ * now that there's no shared 'awaiting_vehicle_id' status), sends the combined "profile
+ * complete" welcome message and stamps registered_at. Returns true if it did so, so the
+ * caller can skip its own lighter-weight "tell me what part you need" message — used for
+ * a returning customer whose vehicle session simply expired and is being re-provided.
  */
 export async function completeOnboardingIfNeeded(
   phone: string,
   customer: Customer,
   vehicleSummary: string
 ): Promise<boolean> {
-  if (customer.registration_status !== 'awaiting_vehicle_id') return false;
+  if (customer.registered_at) return false;
 
-  await updateCustomer(phone, { registration_status: 'complete', registered_at: new Date() });
+  await updateCustomer(phone, { registered_at: new Date() });
 
   const name = customer.name?.split(' ')[0] || 'Cliente';
-  await sendWhatsAppMessage(phone, t.onboarding.onboardingComplete(name, vehicleSummary));
+  await sendWhatsAppButtons(
+    phone,
+    t.onboarding.onboardingComplete(name, vehicleSummary),
+    [t.vehicleConfirm.addVehicleButton()]
+  );
+  await markPartPromptSent(phone);
   return true;
 }

@@ -68,7 +68,10 @@ interface Messages {
   };
   vehicleConfirm: {
     confirmedAskPart: (make: string, model: string, year: string) => string;
-    rejectedFreeText: () => string;
+    addVehicleButton: () => string;
+    addVehicleBody: () => string;
+    chooseVehiclePrompt: (vehicles: { make: string; model: string; year: string }[]) => string;
+    vehicleChoiceNotFound: () => string;
   };
   agent: {
     checkingStock: () => string;
@@ -162,6 +165,9 @@ interface Messages {
       totalPaid: string;
       agtStamp: string;
     };
+  };
+  adminAuth: {
+    resetCode: (code: string) => string;
   };
   systemPrompt: string;
 }
@@ -270,9 +276,14 @@ const pt: Messages = {
       `Perfeito! 🙌\n\n` +
       `Agora diz-me que peça precisas para o teu *${make} ${model} ${year}*.\n\n` +
       `Exemplo: _"filtro de óleo"_, _"pastilhas de travão"_, _"correia de distribuição"_...`,
-    rejectedFreeText: () =>
-      `Sem problema! Diz-me a *marca*, *modelo* e *ano* do teu carro. 👇\n\n` +
-      `Exemplo: _"Toyota Hilux 2018"_`,
+    addVehicleButton: () => '➕ Outro carro',
+    addVehicleBody: () =>
+      `🚗 Vamos identificar o teu novo veículo. Escolhe uma opção 👇`,
+    chooseVehiclePrompt: (vehicles) =>
+      `Para qual dos teus veículos é isto? 👇\n\n` +
+      vehicles.map((v, i) => `${i + 1}️⃣ ${v.make} ${v.model} ${v.year}`).join('\n'),
+    vehicleChoiceNotFound: () =>
+      `Não percebi. Responde só com o número do veículo. 👆`,
   },
   agent: {
     checkingStock: () => `Um momento, estou a verificar o nosso stock para ti...`,
@@ -482,6 +493,11 @@ const pt: Messages = {
       agtStamp: 'Processado por computador. Emitido de acordo com as regras de facturação da AGT Angola.',
     },
   },
+  adminAuth: {
+    resetCode: (code) =>
+      `🔐 Código de recuperação de senha do painel Rede Peças: *${code}*\n\n` +
+      `Válido por 10 minutos. Se não pediste isto, ignora esta mensagem.`,
+  },
   systemPrompt: `
 És o assistente virtual da Rede Peças, um marketplace automotivo em Angola.
 O teu trabalho é ajudar clientes a encontrar peças para os seus veículos.
@@ -609,9 +625,14 @@ const en: Messages = {
       `Perfect! 🙌\n\n` +
       `Now tell me which part you need for your *${make} ${model} ${year}*.\n\n` +
       `Example: _"oil filter"_, _"brake pads"_, _"timing belt"_...`,
-    rejectedFreeText: () =>
-      `No problem! Tell me the *make*, *model*, and *year* of your car. 👇\n\n` +
-      `Example: _"Toyota Hilux 2018"_`,
+    addVehicleButton: () => '➕ Add vehicle',
+    addVehicleBody: () =>
+      `🚗 Let's identify your new vehicle. Pick an option 👇`,
+    chooseVehiclePrompt: (vehicles) =>
+      `Which of your vehicles is this for? 👇\n\n` +
+      vehicles.map((v, i) => `${i + 1}️⃣ ${v.make} ${v.model} ${v.year}`).join('\n'),
+    vehicleChoiceNotFound: () =>
+      `I didn't get that. Reply with just the vehicle's number. 👆`,
   },
   agent: {
     checkingStock: () => `One moment, checking our stock for you...`,
@@ -820,6 +841,11 @@ const en: Messages = {
       totalPaid: 'TOTAL PAID:',
       agtStamp: 'Computer-processed. Issued in accordance with AGT Angola billing rules.',
     },
+  },
+  adminAuth: {
+    resetCode: (code) =>
+      `🔐 Rede Peças admin panel password reset code: *${code}*\n\n` +
+      `Valid for 10 minutes. If you didn't request this, ignore this message.`,
   },
   systemPrompt: `
 You are the virtual assistant for Rede Peças, an auto parts marketplace in Angola.

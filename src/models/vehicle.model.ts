@@ -1,6 +1,7 @@
 import { db } from '../config/db.js';
 
 export interface VehicleSession {
+  id: number;
   phone: string;
   vin: string | null;
   make: string;
@@ -13,10 +14,12 @@ export interface VehicleSession {
   source: string | null;
   status: string | null;
   attempted_vin: string | null;
+  created_at: Date;
   updated_at: Date;
 }
 
 export interface ManualCollection {
+  id: number;
   phone: string;
   status: string;
   attempted_vin: string | null;
@@ -28,72 +31,117 @@ export interface ManualCollection {
 }
 
 /**
- * Retrieves the customer's confirmed vehicle (expires after 4 hours).
- * Excludes rows mid-way through the manual-entry wizard (status set to
- * something other than NULL/'complete') — those are in-progress, not confirmed.
+ * Retrieves every confirmed vehicle on file for this customer (each expires 4 hours
+ * after its own last update). A customer can have more than one — see "add another
+ * vehicle" in the message pipeline.
  */
-export async function getCustomerVehicle(phone: string): Promise<VehicleSession | null> {
+export async function getCustomerVehicles(phone: string): Promise<VehicleSession[]> {
   const { rows } = await db.query(
     `SELECT * FROM vehicles
      WHERE phone = $1
        AND (status IS NULL OR status = 'complete')
-       AND updated_at > NOW() - INTERVAL '4 hours'`,
+       AND updated_at > NOW() - INTERVAL '4 hours'
+     ORDER BY updated_at DESC`,
+    [phone]
+  );
+  return rows;
+}
+
+/**
+ * The single most-recently-confirmed vehicle, for callers right after a save (VIN/
+ * photo decode, manual-entry completion) where there's no ambiguity about which row
+ * they mean. Not for search-time vehicle selection when the customer has several —
+ * use `getCustomerVehicles` + a picker there instead.
+ */
+export async function getMostRecentVehicle(phone: string): Promise<VehicleSession | null> {
+  const { rows } = await db.query(
+    `SELECT * FROM vehicles
+     WHERE phone = $1
+       AND (status IS NULL OR status = 'complete')
+       AND updated_at > NOW() - INTERVAL '4 hours'
+     ORDER BY updated_at DESC
+     LIMIT 1`,
     [phone]
   );
   return rows.length ? rows[0] : null;
 }
 
 /**
- * Saves/updates a customer's confirmed vehicle (via VIN decode, manual entry
- * completion, or document photo). Always marks status 'complete', which is
- * what distinguishes a confirmed vehicle from an in-progress manual wizard
- * step on the same row.
+ * Fetches one specific confirmed vehicle by id (still scoped to the phone it
+ * belongs to, and still subject to the same 4h freshness window).
+ */
+export async function getVehicleById(phone: string, id: number): Promise<VehicleSession | null> {
+  const { rows } = await db.query(
+    `SELECT * FROM vehicles
+     WHERE id = $1 AND phone = $2
+       AND (status IS NULL OR status = 'complete')
+       AND updated_at > NOW() - INTERVAL '4 hours'`,
+    [id, phone]
+  );
+  return rows.length ? rows[0] : null;
+}
+
+/**
+ * Saves a customer's confirmed vehicle (via VIN decode, manual entry completion, or
+ * document photo). When `id` is given, updates that specific in-progress wizard row
+ * (transitioning it to 'complete'); otherwise inserts a brand-new row — a customer
+ * can have several confirmed vehicles, so this never upserts by phone alone.
  */
 export async function saveVehicleSession(
   phone: string,
-  data: Partial<VehicleSession>
+  data: Partial<VehicleSession>,
+  id?: number
 ): Promise<void> {
   // Non-functional/descriptive field, nothing branches on it — a document scan
   // with neither a legible plate nor VIN falls back to 'manual', which is fine.
   const source = data.license_plate ? 'document' : (data.vin ? 'vin' : 'manual');
 
+  const values = [
+    data.vin || null,
+    data.make || null,
+    data.model || null,
+    data.year || null,
+    data.engine_number || null,
+    data.license_plate || null,
+    data.engine_size || null,
+    data.fuel_type || null,
+    source,
+  ];
+
+  if (id) {
+    await db.query(
+      `UPDATE vehicles SET
+         vin = COALESCE($2, vin),
+         make = COALESCE($3, make),
+         model = COALESCE($4, model),
+         year = COALESCE($5, year),
+         engine_number = COALESCE($6, engine_number),
+         license_plate = COALESCE($7, license_plate),
+         engine_size = COALESCE($8, engine_size),
+         fuel_type = COALESCE($9, fuel_type),
+         source = COALESCE($10, source),
+         status = 'complete',
+         updated_at = NOW()
+       WHERE id = $1`,
+      [id, ...values]
+    );
+    return;
+  }
+
   await db.query(
     `INSERT INTO vehicles
        (phone, vin, make, model, year, engine_number, license_plate, engine_size, fuel_type, source, status, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'complete', NOW(), NOW())
-     ON CONFLICT (phone)
-     DO UPDATE SET
-       vin = COALESCE($2, vehicles.vin),
-       make = COALESCE($3, vehicles.make),
-       model = COALESCE($4, vehicles.model),
-       year = COALESCE($5, vehicles.year),
-       engine_number = COALESCE($6, vehicles.engine_number),
-       license_plate = COALESCE($7, vehicles.license_plate),
-       engine_size = COALESCE($8, vehicles.engine_size),
-       fuel_type = COALESCE($9, vehicles.fuel_type),
-       source = COALESCE($10, vehicles.source),
-       status = 'complete',
-       updated_at = NOW()`,
-    [
-      phone,
-      data.vin || null,
-      data.make || null,
-      data.model || null,
-      data.year || null,
-      data.engine_number || null,
-      data.license_plate || null,
-      data.engine_size || null,
-      data.fuel_type || null,
-      source,
-    ]
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'complete', NOW(), NOW())`,
+    [phone, ...values]
   );
 }
 
 /**
- * Deletes a customer's vehicle row entirely (confirmed vehicle or in-progress wizard).
+ * Deletes one specific vehicle row (a rejected identification attempt, or an
+ * in-progress wizard row) — never all of a customer's vehicles.
  */
-export async function clearVehicleSession(phone: string): Promise<void> {
-  await db.query("DELETE FROM vehicles WHERE phone = $1", [phone]);
+export async function clearVehicleSession(id: number): Promise<void> {
+  await db.query("DELETE FROM vehicles WHERE id = $1", [id]);
 }
 
 /**
@@ -140,47 +188,43 @@ export async function getNhtsaVehicle(vin: string): Promise<any | null> {
 }
 
 /**
- * Begins a manual vehicle details collection process. Resets every
- * vehicle-data field to NULL — including the vin/plate/engine/fuel fields
- * from a possible prior confirmed vehicle on this same row — so a fresh
- * manual entry never inherits stale data from an earlier identification.
+ * Begins a manual vehicle details collection process — always a new row (a customer
+ * can have other confirmed vehicles already; this never touches them). Returns the
+ * new row's id, which callers thread through updateManualCollection/saveVehicleSession
+ * to keep mutating this same in-progress row.
  */
-export async function startManualCollection(phone: string, status: string, attemptedVin: string | null = null): Promise<void> {
-  await db.query(
+export async function startManualCollection(phone: string, status: string, attemptedVin: string | null = null): Promise<number> {
+  const { rows } = await db.query(
     `INSERT INTO vehicles (phone, status, attempted_vin, source, created_at, updated_at)
      VALUES ($1, $2, $3, 'manual', NOW(), NOW())
-     ON CONFLICT (phone)
-     DO UPDATE SET
-       status = $2,
-       attempted_vin = $3,
-       make = NULL, model = NULL, year = NULL, engine_number = NULL,
-       vin = NULL, license_plate = NULL, engine_size = NULL, fuel_type = NULL,
-       source = 'manual',
-       created_at = NOW(),
-       updated_at = NOW()`,
+     RETURNING id`,
     [phone, status, attemptedVin]
   );
+  return rows[0].id;
 }
 
 /**
  * Returns the ongoing manual details collection process state, if any
- * (expires after 30 minutes of inactivity).
+ * (expires after 30 minutes of inactivity). At most one in-progress row per
+ * phone is expected at a time — enforced by the message pipeline, not the DB.
  */
 export async function getActiveManualCollection(phone: string): Promise<ManualCollection | null> {
   const { rows } = await db.query(
     `SELECT * FROM vehicles
      WHERE phone = $1
        AND status IS NOT NULL AND status != 'complete'
-       AND created_at > NOW() - INTERVAL '30 minutes'`,
+       AND created_at > NOW() - INTERVAL '30 minutes'
+     ORDER BY created_at DESC
+     LIMIT 1`,
     [phone]
   );
   return rows.length ? rows[0] : null;
 }
 
 /**
- * Updates manual collection state values.
+ * Updates manual collection state values for one specific in-progress row.
  */
-export async function updateManualCollection(phone: string, fields: Partial<ManualCollection>): Promise<void> {
+export async function updateManualCollection(id: number, fields: Partial<ManualCollection>): Promise<void> {
   const keys = Object.keys(fields);
   if (!keys.length) return;
 
@@ -188,7 +232,7 @@ export async function updateManualCollection(phone: string, fields: Partial<Manu
   const values = keys.map((key) => (fields as any)[key]);
 
   await db.query(
-    `UPDATE vehicles SET ${setClauses} WHERE phone = $1`,
-    [phone, ...values]
+    `UPDATE vehicles SET ${setClauses} WHERE id = $1`,
+    [id, ...values]
   );
 }

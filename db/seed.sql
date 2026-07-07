@@ -3,6 +3,12 @@
 -- Data values stay Portuguese (real product/domain language).
 -- ============================================================
 
+-- Dev admin login: admin@redepecas.ao / admin123 (bcrypt hash below — change
+-- the password immediately in any environment this seed reaches beyond local dev).
+INSERT INTO admin_users (name, email, phone, password_hash) VALUES
+  ('Admin', 'admin@redepecas.ao', '244900000001', '$2a$10$UVANI9fapZOKB5T8opdS4.FtEkSYk42ISUp0NQhSAeNvxQIrGZLt6')
+ON CONFLICT (email) DO NOTHING;
+
 INSERT INTO suppliers (name, province, rating) VALUES
   ('Auto Peças Luanda', 'Luanda', 4.8),
   ('Moto Parts Angola', 'Luanda', 4.5),

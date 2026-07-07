@@ -221,6 +221,27 @@ CREATE TABLE IF NOT EXISTS sync_logs (
 CREATE INDEX IF NOT EXISTS idx_sync_logs_supplier ON sync_logs (supplier_id);
 
 -- ============================================================
+-- ADMIN_USERS — individual admin-panel accounts (replaces the single shared
+-- ADMIN_PASSWORD login). `phone` is required so a forgotten password can be
+-- reset via a WhatsApp-delivered code — no email/SMTP service exists in this
+-- project. reset_code_hash/reset_code_expires_at hold a single pending reset
+-- code at a time (bcrypt-hashed, not stored plain); NULL when none pending.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS admin_users (
+  id                      SERIAL PRIMARY KEY,
+  name                    TEXT NOT NULL,
+  email                   TEXT NOT NULL UNIQUE,
+  phone                   TEXT NOT NULL,
+  password_hash           TEXT NOT NULL,
+  reset_code_hash         TEXT,
+  reset_code_expires_at   TIMESTAMPTZ,
+  created_at              TIMESTAMPTZ DEFAULT NOW(),
+  updated_at              TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_users_email ON admin_users (email);
+
+-- ============================================================
 -- CRM
 -- ============================================================
 CREATE TABLE IF NOT EXISTS customers (
@@ -229,7 +250,7 @@ CREATE TABLE IF NOT EXISTS customers (
   nif                  TEXT,                    -- Angolan tax ID
   address              TEXT,
   email                TEXT,
-  registration_status  TEXT DEFAULT 'new',      -- new, awaiting_name, awaiting_nif, awaiting_nif_number, awaiting_address, awaiting_vehicle_id, complete
+  registration_status  TEXT DEFAULT 'new',      -- new, awaiting_name, awaiting_nif, awaiting_nif_number, awaiting_address, complete (profile only — vehicle ID is tracked independently via the `vehicles` table)
   first_contact_at     TIMESTAMPTZ DEFAULT NOW(),
   last_contact_at      TIMESTAMPTZ DEFAULT NOW(),
   registered_at        TIMESTAMPTZ,
@@ -244,15 +265,18 @@ CREATE INDEX IF NOT EXISTS idx_customers_registered_at ON customers (registered_
 DROP TABLE IF EXISTS campaign_sends;
 
 -- ============================================================
--- VEHICLES — per-customer identified vehicle (merged from the former
--- vehicle_sessions + manual_vehicle_collections). One row per phone;
--- `status` distinguishes a confirmed vehicle (NULL/'complete', 4-hour TTL
--- via updated_at) from an in-progress manual-entry wizard step
--- (30-minute TTL via created_at). Must be created after `customers`
--- (FK dependency).
+-- VEHICLES — a customer can have multiple identified vehicles (see "add
+-- another vehicle" in the message pipeline), so `id` is the primary key and
+-- `phone` is a plain FK, not unique. `status` distinguishes a confirmed
+-- vehicle (NULL/'complete', 4-hour TTL via updated_at) from an in-progress
+-- manual-entry wizard step (30-minute TTL via created_at) on that specific
+-- row — at most one in-progress row per phone is enforced by application
+-- logic, not a DB constraint. Must be created after `customers` (FK
+-- dependency).
 -- ============================================================
 CREATE TABLE IF NOT EXISTS vehicles (
-  phone           TEXT PRIMARY KEY REFERENCES customers(phone),
+  id              SERIAL PRIMARY KEY,
+  phone           TEXT NOT NULL REFERENCES customers(phone),
   vin             CHAR(17),
   make            TEXT,
   model           TEXT,
@@ -268,35 +292,27 @@ CREATE TABLE IF NOT EXISTS vehicles (
   updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS idx_vehicles_phone ON vehicles (phone);
 CREATE INDEX IF NOT EXISTS idx_vehicles_updated_at ON vehicles (updated_at);
 CREATE INDEX IF NOT EXISTS idx_vehicles_status_created ON vehicles (status, created_at);
 
--- One-time data migration from the old two-table design, then drop them
--- (idempotent: no-op once already dropped)
+-- One-time shape migration: `vehicles.phone` used to be the primary key (one
+-- vehicle per customer) before multi-vehicle support. Idempotent — a no-op
+-- once the `id` column exists.
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'vehicle_sessions') THEN
-    INSERT INTO vehicles (phone, vin, make, model, year, engine_number, license_plate, engine_size, fuel_type, source, updated_at, created_at)
-    SELECT phone, vin, make, model, year, engine_number, license_plate, engine_size, fuel_type, 'vin', updated_at, updated_at
-    FROM vehicle_sessions
-    WHERE phone IN (SELECT phone FROM customers)
-    ON CONFLICT (phone) DO NOTHING;
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'manual_vehicle_collections') THEN
-    INSERT INTO vehicles (phone, status, attempted_vin, make, model, year, engine_number, created_at, updated_at)
-    SELECT phone, status, attempted_vin, make, model, year, engine_number, created_at, created_at
-    FROM manual_vehicle_collections
-    WHERE phone IN (SELECT phone FROM customers)
-    ON CONFLICT (phone) DO UPDATE SET
-      status = EXCLUDED.status,
-      attempted_vin = EXCLUDED.attempted_vin,
-      make = COALESCE(EXCLUDED.make, vehicles.make),
-      model = COALESCE(EXCLUDED.model, vehicles.model),
-      year = COALESCE(EXCLUDED.year, vehicles.year),
-      engine_number = COALESCE(EXCLUDED.engine_number, vehicles.engine_number);
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'vehicles')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'vehicles' AND column_name = 'id') THEN
+    ALTER TABLE vehicles ADD COLUMN id SERIAL;
+    ALTER TABLE vehicles DROP CONSTRAINT vehicles_pkey;
+    ALTER TABLE vehicles ADD PRIMARY KEY (id);
   END IF;
 END $$;
+
+-- Customer registration and vehicle ID are now independent state machines (see
+-- CLAUDE.md "The message pipeline") — 'awaiting_vehicle_id' no longer exists as a
+-- registration_status value. Idempotent: a no-op once every row has been migrated.
+UPDATE customers SET registration_status = 'complete' WHERE registration_status = 'awaiting_vehicle_id';
 
 DROP TABLE IF EXISTS vehicle_sessions;
 DROP TABLE IF EXISTS manual_vehicle_collections;

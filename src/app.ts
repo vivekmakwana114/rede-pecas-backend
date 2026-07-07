@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import routes from './routes/index.js';
+import routes from './routes/v1/index.js';
 import { errorConverter, errorHandler } from './middlewares/error.js';
 import { ApiError } from './utils/ApiError.js';
 
@@ -12,8 +12,8 @@ app.use(express.json());
 // Enable cors
 app.use(cors());
 
-// api routes (each route module binds its own /v1/... prefix — see routes/index.ts)
-app.use(routes);
+// v1 api routes
+app.use('/v1', routes);
 
 // Send back 404 error for any unknown api request
 app.use((req, res, next) => {

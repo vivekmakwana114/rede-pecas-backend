@@ -6,87 +6,139 @@ export interface RestockNotification {
   phones: string[];
 }
 
+export interface ImportItem {
+  reference: string;
+  name: string;
+  price: number;
+  quantity: number;
+  // Per-row supplier — falls back to the request-level default supplier (the
+  // original one-supplier-per-file behavior) when none of these are given.
+  supplierId?: number;
+  supplierName?: string;
+  supplierNif?: string;
+  supplierProvince?: string;
+}
+
 /**
- * Core operation: Batch updates of parsed Excel shop items.
- * Performs clean upsert mapping to supplier_id and SKU reference.
+ * Core operation: batch updates of parsed CSV/XLSX rows, each optionally
+ * carrying its own supplier — a single file can mix products from several
+ * suppliers. Rows without per-row supplier info fall back to
+ * `defaultSupplierId` (the original single-supplier-per-file behavior).
+ * Rows that resolve to no supplier at all are skipped, same as rows missing
+ * a reference/name.
  */
 export async function importProductsBatch(
-  supplierId: number,
-  items: { reference: string; name: string; price: number; quantity: number }[]
+  items: ImportItem[],
+  defaultSupplierId: number | null = null
 ): Promise<{ inserted: number; updated: number; deactivated: number; restockNotifications: RestockNotification[] }> {
   let inserted = 0;
   let updated = 0;
+  let deactivated = 0;
   const restockNotifications: RestockNotification[] = [];
+
+  // Resolve each row's supplier id up front — cached by name so the same new
+  // supplier name repeated across many rows only gets created once — then
+  // group rows by resolved supplier so the "deactivate missing" step only
+  // ever touches suppliers actually present in this file.
+  const supplierCache = new Map<string, number>();
+  const bySupplier = new Map<number, ImportItem[]>();
+
+  for (const item of items) {
+    if (!item.reference || !item.name) continue;
+
+    let supplierId = item.supplierId ?? null;
+
+    if (!supplierId && item.supplierName) {
+      const cacheKey = `${item.supplierName.toLowerCase()}|${item.supplierNif || ''}`;
+      supplierId = supplierCache.get(cacheKey) ?? null;
+      if (!supplierId) {
+        supplierId = await getOrCreateSupplierByName(item.supplierName, item.supplierNif, item.supplierProvince);
+        supplierCache.set(cacheKey, supplierId);
+      }
+    }
+
+    if (!supplierId) supplierId = defaultSupplierId;
+    if (!supplierId) continue; // no way to resolve a supplier for this row — skip it
+
+    const group = bySupplier.get(supplierId) || [];
+    group.push(item);
+    bySupplier.set(supplierId, group);
+  }
 
   const client = await db.connect();
   try {
     await client.query("BEGIN");
 
-    const receivedReferences = new Set(items.map((i) => i.reference));
+    for (const [supplierId, supplierItems] of bySupplier) {
+      const receivedReferences = new Set(supplierItems.map((i) => i.reference));
+      let groupInserted = 0;
+      let groupUpdated = 0;
 
-    for (const item of items) {
-      if (!item.reference || !item.name) continue;
+      for (const item of supplierItems) {
+        // The "prev" CTE captures the pre-statement row state (before this
+        // INSERT/UPDATE mutates it), letting us detect a quantity 0→positive
+        // restock transition atomically, without a separate SELECT round trip.
+        const result = await client.query(
+          `WITH prev AS (
+             SELECT quantity, waitlist_phones FROM products WHERE supplier_id = $1 AND reference = $2
+           )
+           INSERT INTO products (supplier_id, reference, name, price, quantity, active, updated_at)
+           VALUES ($1, $2, $3, $4, $5, true, NOW())
+           ON CONFLICT (supplier_id, reference)
+           DO UPDATE SET
+             name = EXCLUDED.name,
+             price = EXCLUDED.price,
+             quantity = EXCLUDED.quantity,
+             active = true,
+             updated_at = NOW()
+           RETURNING
+             id,
+             (xmax = 0) AS was_inserted,
+             (SELECT quantity FROM prev) AS previous_quantity,
+             (SELECT waitlist_phones FROM prev) AS previous_waitlist_phones`,
+          [supplierId, item.reference, item.name, item.price, item.quantity]
+        );
 
-      // The "prev" CTE captures the pre-statement row state (before this
-      // INSERT/UPDATE mutates it), letting us detect a quantity 0→positive
-      // restock transition atomically, without a separate SELECT round trip.
-      const result = await client.query(
-        `WITH prev AS (
-           SELECT quantity, waitlist_phones FROM products WHERE supplier_id = $1 AND reference = $2
-         )
-         INSERT INTO products (supplier_id, reference, name, price, quantity, active, updated_at)
-         VALUES ($1, $2, $3, $4, $5, true, NOW())
-         ON CONFLICT (supplier_id, reference)
-         DO UPDATE SET
-           name = EXCLUDED.name,
-           price = EXCLUDED.price,
-           quantity = EXCLUDED.quantity,
-           active = true,
-           updated_at = NOW()
-         RETURNING
-           id,
-           (xmax = 0) AS was_inserted,
-           (SELECT quantity FROM prev) AS previous_quantity,
-           (SELECT waitlist_phones FROM prev) AS previous_waitlist_phones`,
-        [supplierId, item.reference, item.name, item.price, item.quantity]
-      );
+        const row = result.rows[0];
+        if (row?.was_inserted) {
+          groupInserted++;
+        } else {
+          groupUpdated++;
 
-      const row = result.rows[0];
-      if (row?.was_inserted) {
-        inserted++;
-      } else {
-        updated++;
-
-        if (row.previous_quantity === 0 && item.quantity > 0) {
-          const phones: string[] = row.previous_waitlist_phones || [];
-          if (phones.length) {
-            restockNotifications.push({ productId: row.id, productName: item.name, phones });
-            await client.query(`UPDATE products SET waitlist_phones = '{}' WHERE id = $1`, [row.id]);
+          if (row.previous_quantity === 0 && item.quantity > 0) {
+            const phones: string[] = row.previous_waitlist_phones || [];
+            if (phones.length) {
+              restockNotifications.push({ productId: row.id, productName: item.name, phones });
+              await client.query(`UPDATE products SET waitlist_phones = '{}' WHERE id = $1`, [row.id]);
+            }
           }
         }
       }
+
+      // Deactivate items from this supplier that are missing in the new document import
+      const deactivatedResult = await client.query(
+        `UPDATE products
+         SET active = false, quantity = 0, updated_at = NOW()
+         WHERE supplier_id = $1
+           AND active = true
+           AND reference != ALL($2::text[])`,
+        [supplierId, [...receivedReferences]]
+      );
+      const groupDeactivated = deactivatedResult.rowCount || 0;
+
+      // Log the synchronization event
+      await client.query(
+        `INSERT INTO sync_logs (supplier_id, inserted_count, updated_count, deactivated_count, created_at)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        [supplierId, groupInserted, groupUpdated, groupDeactivated]
+      );
+
+      inserted += groupInserted;
+      updated += groupUpdated;
+      deactivated += groupDeactivated;
     }
 
-    // Deactivate items from this supplier that are missing in the new document import
-    const deactivatedResult = await client.query(
-      `UPDATE products
-       SET active = false, quantity = 0, updated_at = NOW()
-       WHERE supplier_id = $1
-         AND active = true
-         AND reference != ALL($2::text[])`,
-      [supplierId, [...receivedReferences]]
-    );
-
-    const deactivated = deactivatedResult.rowCount || 0;
-
     await client.query("COMMIT");
-
-    // Log the synchronization event
-    await db.query(
-      `INSERT INTO sync_logs (supplier_id, inserted_count, updated_count, deactivated_count, created_at)
-       VALUES ($1, $2, $3, $4, NOW())`,
-      [supplierId, inserted, updated, deactivated]
-    );
 
     return { inserted, updated, deactivated, restockNotifications };
   } catch (error) {
@@ -110,10 +162,10 @@ export async function getSupplierPhoneById(supplierId: number): Promise<string |
 
 /**
  * Finds a supplier by name, or creates one if it doesn't exist yet.
- * Used by the CSV/XLSX file-upload endpoint when the admin references a
- * supplier by name instead of an existing id. No unique constraint exists
- * on suppliers.name/nif — this is a plain check-then-insert, acceptable
- * for low-concurrency admin-triggered usage.
+ * Used by the CSV/XLSX file-upload endpoint when the admin (or a row within
+ * the file) references a supplier by name instead of an existing id. No
+ * unique constraint exists on suppliers.name/nif — this is a plain
+ * check-then-insert, acceptable for low-concurrency admin-triggered usage.
  */
 export async function getOrCreateSupplierByName(
   name: string,
