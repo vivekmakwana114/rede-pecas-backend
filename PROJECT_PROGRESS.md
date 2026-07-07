@@ -1,5 +1,9 @@
 # Rede Peças — Progress Report
 
+## Update — 2026-07-07 (forgot/reset password now identified by phone, not email)
+
+- **`POST /admin/forgot/password` and `POST /admin/reset/password` now take `{ phone }` / `{ phone, code, newPassword }` instead of `{ email }`** — since the OTP is delivered to that same WhatsApp number, identifying by email and then requiring the admin to separately know their phone was redundant (and the OTP itself is the real identity check anyway). New `getAdminByPhone` (`adminUser.model.ts`) compares digits-only on both sides (`regexp_replace(phone, '[^0-9]', '', 'g')`) so the stored `phone` column's formatting doesn't matter. Anti-enumeration behavior carries over unchanged — identical response whether or not the phone matches an account. `login` is untouched, still email+password. Verified live: formatted phone, digits-only phone, and an unknown phone all behave correctly; old email-body requests now correctly 400 with a humanized validation error.
+
 ## Update — 2026-07-07 (uniform response envelope, refresh token, humanized validation errors)
 
 - **Every admin API response now shares one envelope**: success → `{ success: true, message, code, data, [accessToken], [refreshToken], meta: { timestamp } }`; error → `{ success: false, message, code, data: null, meta: { timestamp } }`. Deliberately **not** a shared response-builder function — each controller (`auth`, `order`, `product`) constructs its own `res.json({...})` literally; only the shape is a shared convention. `errorHandler`/`errorConverter` (`src/middlewares/error.ts`) produce the error side for every thrown `ApiError`; `order.controller.ts` and `product.controller.ts` were migrated from manual try/catch + inline `res.status(500).json({error})` to `catchAsync`/`ApiError` so they funnel through it too, matching what `CLAUDE.md` already documented but wasn't actually followed everywhere.
