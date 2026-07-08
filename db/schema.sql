@@ -268,7 +268,7 @@ DROP TABLE IF EXISTS campaign_sends;
 -- VEHICLES — a customer can have multiple identified vehicles (see "add
 -- another vehicle" in the message pipeline), so `id` is the primary key and
 -- `phone` is a plain FK, not unique. `status` distinguishes a confirmed
--- vehicle (NULL/'complete', 4-hour TTL via updated_at) from an in-progress
+-- vehicle (NULL/'complete', permanent — no expiry) from an in-progress
 -- manual-entry wizard step (30-minute TTL via created_at) on that specific
 -- row — at most one in-progress row per phone is enforced by application
 -- logic, not a DB constraint. Must be created after `customers` (FK

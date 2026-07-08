@@ -1,0 +1,413 @@
+REDE PECAS - WHATSAPP CONVERSATION SCRIPT
+Example used: customer "Vivek", vehicle Honda Accord 2003
+(User = what the customer types/taps | System = what the bot replies)
+
+================================================================
+1. FIRST CONTACT & REGISTRATION
+================================================================
+
+User: Hi
+
+System: Welcome to Rede Pecas!
+
+We're Angola's auto parts marketplace - we find the right parts
+for your vehicle as fast as possible.
+
+To help you better, let's set up your profile quickly.
+
+What's your name?
+
+User: Vivek Makwana
+
+System: Nice to meet you, Vivek!
+
+Do you have a NIF (tax ID) to include on invoices?
+(useful if you're buying on behalf of a company)
+(buttons: Yes, I have a NIF / No, thanks)
+
+User: No, thanks
+
+System: What's your preferred delivery address?
+
+Example: Bairro Morro Bento, Rua da Samba, No 12, Luanda
+
+(reply "skip" if you'd rather provide it when placing an order)
+
+User: Bairro Morro Bento, Rua da Samba, No 45, Luanda
+
+System: Profile created successfully, Vivek!
+
+Next time you message us, I'll already recognize you.
+
+Now I need to identify your vehicle. Pick an option:
+(buttons: I have the VIN / Send a photo / Manual entry)
+
+--- if "Yes, I have a NIF": ---
+System: Great! Type your NIF number.
+User: [NIF number]
+(then goes straight to the address question above)
+
+--- if the customer goes quiet mid-registration and returns later: ---
+System: Let's continue your registration!
+System: [repeats the exact question for the step they stalled on]
+
+
+================================================================
+2. VEHICLE IDENTIFICATION (3 possible paths)
+================================================================
+
+--- PATH A: VIN ---
+
+User: I have the VIN
+
+System: Perfect! Send the chassis number (VIN) - 17 characters,
+found on the vehicle document or stamped on the chassis itself.
+
+User: 1HGCM82633A004352
+
+System: Identifying the vehicle from the chassis number...
+
+System: Vehicle identified!
+
+Honda Accord 2003 - 2.3L - Gasoline - Sedan
+
+Is this your car?
+(buttons: Yes, that's it / No, different car)
+
+--- if the VIN isn't recognized by NHTSA: ---
+System: I couldn't identify that chassis number.
+
+Let's fill in the details manually. What's the make of the
+vehicle?
+
+Example: Toyota, Mercedes, Volvo...
+[continues into PATH C - Manual entry, below]
+
+
+--- PATH B: DOCUMENT PHOTO ---
+
+User: Send a photo
+
+System: Perfect! Take a clear photo of the vehicle document
+(registration/title) and send it here.
+
+User: [sends photo of the registration document]
+
+System: Got the photo. Reading the document's data...
+
+System: Data read from the document!
+
+Honda Accord 2003 - 2.3L - Gasoline - Plate: LD-45-67-AB
+
+Is this your car?
+(buttons: Yes, that's it / No, different car)
+
+--- possible errors at this step: ---
+- Couldn't download the image:
+  "I couldn't download the image. Please try sending it again,
+  or reply 'I don't have it' to fill in the details manually."
+- Error processing the document:
+  "Something went wrong processing the document. Please try
+  again, or reply 'I don't have it' to fill in the details
+  manually."
+- Image isn't a vehicle document:
+  "That image doesn't look like a vehicle document
+  (registration/title). You can send the chassis number (VIN)
+  as text, try another photo, or reply 'I don't have it'..."
+- Photo unreadable:
+  "[reason]. Please try again with a clearer photo, making sure
+  that: the image is well lit and in focus, the document is
+  fully visible, the text is legible with no glare or shadows."
+- Essential data missing (make/model):
+  "I read the document but essential data is missing
+  (make/model). Please try another photo, or reply
+  'I don't have it'..."
+
+
+--- PATH C: MANUAL ENTRY ---
+
+User: Manual entry
+
+System: No problem! Let's fill in the details manually.
+
+What's the make of the vehicle?
+
+Example: Toyota, Mercedes, Volvo...
+
+User: Honda
+
+System: Honda
+
+Now tell me the model of the vehicle.
+
+Example: Hilux, L200, Actros, Sprinter, Ranger...
+
+User: Accord
+
+System: Honda Accord
+
+What year is the vehicle?
+
+Example: 2015, 2018, 2020...
+
+User: 2003
+
+System: Honda Accord 2003
+
+What's the engine number? (optional)
+
+This number matters for engine parts, servicing, and
+maintenance.
+
+If you don't know it, reply "don't know" and we'll continue.
+
+User: don't know
+
+System: Great! I've saved your vehicle's details:
+
+Honda Accord 2003
+
+Now tell me which part you need and I'll search our stock.
+
+--- invalid year (not 4 digits, or out of range): ---
+System: Invalid year. Please enter the year with 4 digits.
+Example: 2018
+
+
+--- CONFIRMATION (after VIN or Photo) ---
+
+--- if "No, different car": ---
+System: No problem! Let's fill in the details manually.
+What's the make of the vehicle?
+Example: Toyota, Mercedes, Volvo...
+[enters PATH C - Manual entry, above. Only the rejected attempt
+is deleted, never any other vehicle the customer already has
+confirmed]
+
+
+================================================================
+3. FIRST VEHICLE EVER vs. "TELL ME WHAT PART YOU NEED"
+================================================================
+
+--- if this is the customer's very first confirmed vehicle: ---
+System: You're registered with Rede Pecas, Vivek!
+
+Honda Accord 2003
+
+How can I help you today? Tell me which part you need and I'll
+search our stock right away.
+(button: Add vehicle)
+
+--- if the customer already had a profile and/or vehicle before (re-confirmation, 2nd vehicle, etc.): ---
+System: Perfect!
+
+Now tell me which part you need for your Honda Accord 2003.
+
+Example: "oil filter", "brake pads", "timing belt"...
+(button: Add vehicle)
+
+--- if the customer has 2 or more confirmed vehicles: ---
+System: Which of your vehicles is this for?
+
+1. Honda Accord 2003
+2. Toyota Hilux 2018
+
+User: 1
+
+[the conversation continues for that chosen vehicle]
+
+--- if the reply doesn't match any number on the list: ---
+System: I didn't get that. Reply with just the vehicle's number.
+
+
+================================================================
+4. AI AGENT & STOCK SEARCH
+================================================================
+
+User: oil filter
+
+System: One moment, checking our stock for you...
+
+System: I found 2 option(s) for oil filter for your Honda
+Accord 2003:
+
+1. Bosch Oil Filter
+   Ref: OF-4471
+   Price: 8,500 Kz
+   Stock: 6 unit(s)
+   Delivery: 24h
+   Supplier: AutoPecas Luanda
+
+2. Mann Oil Filter
+   Ref: OF-9012
+   Price: 11,200 Kz
+   Stock: 3 unit(s)
+   Delivery: 48h
+
+Reply with the number of the option you prefer.
+
+User: 1
+
+--- if make/model/year is missing, the AI asks ONE short question before searching, e.g.: ---
+User: timing belt for a Toyota Hilux
+System: What year is your Hilux? (this matters for part
+compatibility)
+
+--- if the part isn't in stock: ---
+System: Unfortunately I couldn't find that part in stock right
+now. I can register your request and notify you when it's
+available. Want me to do that?
+User: Yes
+System: Perfect! I'll let you know as soon as [part] is
+available.
+
+--- if the customer declines the waitlist: ---
+System: No problem!
+
+--- weeks later, when the part is back in stock: ---
+System: Good news! [part] is back in stock. Want to place an
+order?
+
+
+================================================================
+5. ORDER CONFIRMATION & PAYMENT METHOD
+================================================================
+
+System: Order confirmed!
+
+Attached is your proforma invoice for:
+Bosch Oil Filter
+
+Reference: RP-2026-00482
+Total: 8,500 Kz
+Valid for: 48 hours
+
+After payment, send the proof here in this conversation.
+
+System: [PDF attachment: Proforma_RP-2026-00482.pdf]
+
+System: How would you like to pay?
+
+Order: RP-2026-00482
+Amount: 8,500 Kz
+
+Choose an option:
+(buttons: Transfer / Deposit - Multicaixa Express - Mobile POS
+/ Cash)
+
+User: Transfer / Deposit
+
+System: Would you prefer a bank transfer or a bank deposit?
+(buttons: Transfer / Deposit)
+
+User: Transfer
+
+System: Bank Transfer
+
+Bank: BFA / BAI / BIC (your choice)
+IBAN: AO06 0040 0000 XXXX XXXX XXXX X
+Account holder: Rede Pecas, Lda
+Amount: 8,500 Kz
+Reference: RP-2026-00482 (required)
+
+After the transfer, send the proof here (photo or PDF).
+
+--- other payment options (same structure, different details): ---
+
+If Deposit is chosen:
+"Bank Deposit - Account No. instead of IBAN, 'write the
+reference on the receipt' instead of 'required on the transfer',
+rest identical."
+
+If Multicaixa Express is chosen (no sub-choice):
+"Multicaixa Express - Number: +244 900 000 000, amount,
+reference to put in the description, asks for a screenshot of
+the confirmation."
+
+If Mobile POS / Cash is chosen:
+System: Would you prefer to pay by card on the terminal or cash
+on delivery?
+(buttons: POS (card) / Cash on delivery)
+-> For these two, the customer is NEVER asked for proof - staff
+is notified directly to bring the terminal or collect cash on
+delivery.
+
+
+================================================================
+6. PAYMENT PROOF & STAFF HANDOFF
+================================================================
+
+User: [sends photo of the proof]
+
+System: Proof received!
+
+Method: Bank Transfer
+Order: RP-2026-00482
+
+Our team will verify the payment and issue the invoice shortly.
+Usually takes under 30 minutes during business hours.
+
+--- internal message, sent only to the staff phone number, never the customer: ---
+System -> Staff: PAYMENT PROOF RECEIVED
+
+Order: RP-2026-00482
+Method: Bank Transfer
+Amount: 8,500 Kz
+Customer: 919313090929
+
+Go to the panel to verify and approve:
+https://app.redepecas.ao/admin/orders
+
+
+================================================================
+7. STAFF APPROVAL / REJECTION (done in the admin panel)
+================================================================
+
+--- if approved: ---
+System: Official AGT Invoice Issued!
+
+Your payment has been validated and the official invoice is now
+attached.
+Thanks for shopping with Rede Pecas!
+
+System: [attachment: Invoice_RP-2026-00482.pdf]
+
+--- if rejected: ---
+System: Your order RP-2026-00482 was rejected.
+
+Reason: payment proof not confirmed or invalid.
+
+If you think this is a mistake, reply here and a staff member
+will help you.
+
+
+================================================================
+8. RETURNING CUSTOMER, NEW CONVERSATION
+================================================================
+
+--- profile complete and already has a confirmed vehicle (the normal case): ---
+User: Hi
+System: Hey again, Vivek! Welcome back to Rede Pecas.
+System: Perfect!
+
+Now tell me which part you need for your Honda Accord 2003.
+
+Example: "oil filter", "brake pads", "timing belt"...
+(button: Add vehicle)
+
+--- profile complete but never confirmed a vehicle: ---
+User: Hi
+System: Welcome back, Vivek!
+
+I still need to identify your vehicle. Pick an option:
+(buttons: I have the VIN / Send a photo / Manual entry)
+
+--- asking to identify another vehicle mid-conversation: ---
+User: Add vehicle
+System: Let's identify your new vehicle. Pick an option:
+(buttons: I have the VIN / Send a photo / Manual entry)
+[repeats section 2 in full; the previous vehicle is unaffected]
+
+Note: a bare greeting ("Hi"/"Hello"/"Hey") at any point always
+resets to the "what part do you need" question, even if the
+customer was already mid-conversation with the AI agent.

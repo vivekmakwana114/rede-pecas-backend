@@ -31,16 +31,16 @@ export interface ManualCollection {
 }
 
 /**
- * Retrieves every confirmed vehicle on file for this customer (each expires 4 hours
- * after its own last update). A customer can have more than one — see "add another
- * vehicle" in the message pipeline.
+ * Retrieves every confirmed vehicle on file for this customer — permanent records,
+ * no expiry (a real vehicle doesn't stop existing because the customer went quiet
+ * on WhatsApp). A customer can have more than one — see "add another vehicle" in
+ * the message pipeline.
  */
 export async function getCustomerVehicles(phone: string): Promise<VehicleSession[]> {
   const { rows } = await db.query(
     `SELECT * FROM vehicles
      WHERE phone = $1
        AND (status IS NULL OR status = 'complete')
-       AND updated_at > NOW() - INTERVAL '4 hours'
      ORDER BY updated_at DESC`,
     [phone]
   );
@@ -58,7 +58,6 @@ export async function getMostRecentVehicle(phone: string): Promise<VehicleSessio
     `SELECT * FROM vehicles
      WHERE phone = $1
        AND (status IS NULL OR status = 'complete')
-       AND updated_at > NOW() - INTERVAL '4 hours'
      ORDER BY updated_at DESC
      LIMIT 1`,
     [phone]
@@ -68,14 +67,13 @@ export async function getMostRecentVehicle(phone: string): Promise<VehicleSessio
 
 /**
  * Fetches one specific confirmed vehicle by id (still scoped to the phone it
- * belongs to, and still subject to the same 4h freshness window).
+ * belongs to). No freshness window — see getCustomerVehicles.
  */
 export async function getVehicleById(phone: string, id: number): Promise<VehicleSession | null> {
   const { rows } = await db.query(
     `SELECT * FROM vehicles
      WHERE id = $1 AND phone = $2
-       AND (status IS NULL OR status = 'complete')
-       AND updated_at > NOW() - INTERVAL '4 hours'`,
+       AND (status IS NULL OR status = 'complete')`,
     [id, phone]
   );
   return rows.length ? rows[0] : null;

@@ -112,8 +112,11 @@ async function processMessageFlow(
     // An active manual-collection sub-flow can't coexist with freshSession === true (that
     // sub-flow has its own 30-min activity window, well inside this 4h session TTL), so
     // it's safe to just re-show the vehicle-ID choice instead of guessing from this message.
+    // Confirmed vehicles never expire (see vehicle.model.ts), so reaching this branch means
+    // the customer genuinely has no vehicle on file yet — never reuse askVehicleIdBody here,
+    // its "profile created" copy is only accurate right after registration completes.
     const firstName = customer.name?.split(' ')[0] || 'Cliente';
-    await sendWhatsAppButtons(phone, t.onboarding.askVehicleIdBody(firstName), t.onboarding.askVehicleIdButtons);
+    await sendWhatsAppButtons(phone, t.onboarding.resumeVehicleIdBody(firstName), t.onboarding.askVehicleIdButtons);
     return;
   }
 

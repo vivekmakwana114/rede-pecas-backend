@@ -1,5 +1,10 @@
 # Rede Peças — Progress Report
 
+## Update — 2026-07-08 (bug: confirmed vehicles were expiring after 4 hours)
+
+- **Bug fixed: a returning customer with an already-confirmed vehicle got treated as brand new** (re-shown "Profile created successfully!" + the VIN/photo/manual buttons) once 4+ hours passed since that vehicle's `updated_at`. Root cause: `getCustomerVehicles`/`getMostRecentVehicle`/`getVehicleById` (`vehicle.model.ts`) filtered confirmed vehicle rows on `updated_at > NOW() - INTERVAL '4 hours'` — a value copied from the unrelated Redis conversation-session TTL (`session.service.ts`) and mistakenly applied to the permanent vehicle record itself. Confirmed vehicles (`status IS NULL OR 'complete'`) no longer expire; only the in-progress manual-entry wizard row keeps its 30-minute TTL (`getActiveManualCollection`, keyed off `created_at`, which is legitimately about an abandoned step machine).
+- **Also fixed the copy for the still-legitimate "vehicle ID genuinely still missing" resume case** (`whatsapp.controller.ts`'s `freshSession && needsVehicleId` branch): it was reusing `t.onboarding.askVehicleIdBody`, whose text is hardcoded to "Profile created successfully" — wrong for a returning customer whose profile was created long ago. New `t.onboarding.resumeVehicleIdBody` (PT+EN) says "Welcome back" instead.
+
 ## Update — 2026-07-07 (CSV/XLSX import logic moved out of the controller)
 
 - **`product.controller.ts` no longer imports `xlsx` or parses spreadsheets directly.** The workbook reading, `HEADER_ALIASES` header-alias mapping, and row normalization all lived in the controller (a layering violation of `CLAUDE.md`'s own `routes → controllers → services → models` convention — it happened because the code predates that convention being applied consistently here, and got extended in place for multi-supplier support without being questioned). Moved into `product.service.ts` as `importInventoryBatch` (JSON-body path) and `importInventoryFromFile` (file-upload path, wraps the former after parsing) — both controller handlers are now just validate → call service → shape response.
