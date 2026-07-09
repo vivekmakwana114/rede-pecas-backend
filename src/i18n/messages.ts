@@ -36,6 +36,7 @@ interface Messages {
     askAddress: () => string;
     askVehicleIdBody: (name: string) => string;
     askVehicleIdButtons: [string, string, string];
+    resumeVehicleIdBody: (name: string) => string;
     onboardingComplete: (name: string, vehicleSummary: string) => string;
   };
   manual: {
@@ -201,6 +202,9 @@ const pt: Messages = {
       `Da próxima vez que nos contactares já te reconheço. 😊\n\n` +
       `Agora preciso identificar o teu veículo. Escolhe uma opção 👇`,
     askVehicleIdButtons: ['🔢 Tenho o VIN', '📄 Enviar foto', '✍️ Manual'],
+    resumeVehicleIdBody: (name) =>
+      `👋 Bem-vindo de volta, *${name}*!\n\n` +
+      `Ainda preciso identificar o teu veículo. Escolhe uma opção 👇`,
     onboardingComplete: (name, vehicleSummary) =>
       `✅ Ficaste registado na *Rede Peças*, ${name}! 🎉\n\n` +
       `${vehicleSummary}\n\n` +
@@ -550,6 +554,9 @@ const en: Messages = {
       `Next time you message us, I'll already recognize you. 😊\n\n` +
       `Now I need to identify your vehicle. Pick an option 👇`,
     askVehicleIdButtons: ['🔢 I have the VIN', '📄 Send a photo', '✍️ Manual entry'],
+    resumeVehicleIdBody: (name) =>
+      `👋 Welcome back, *${name}*!\n\n` +
+      `I still need to identify your vehicle. Pick an option 👇`,
     onboardingComplete: (name, vehicleSummary) =>
       `✅ You're registered with *Rede Peças*, ${name}! 🎉\n\n` +
       `${vehicleSummary}\n\n` +

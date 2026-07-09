@@ -26,3 +26,11 @@ Thumbs.db
 
 # Coverage/test output
 coverage/
+
+#files
+*.pdf
+*.txt
+*.docx
+
+# generated scripts
+scripts/
