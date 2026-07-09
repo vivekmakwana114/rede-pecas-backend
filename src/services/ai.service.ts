@@ -1,17 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
-import fs from 'fs';
 import { config } from "../config/config.js";
 import { logger } from "../config/logger.js";
-import { getCustomerVehicles } from '../models/vehicle.model.js';
-import { createOrder, generateOrderNumber } from '../models/order.model.js';
-import * as productService from './product.service.js';
-import { generateProformaPDF, sendProformaWhatsApp } from './pdf.service.js';
-import { askPaymentMethod } from './payment.service.js';
-import { getHistory, saveHistory, getPendingOptions, clearPendingOptions, clearPartPromptSent, getChosenVehicle } from './session.service.js';
-import { sendWhatsAppMessage } from './whatsapp.service.js';
-import { t } from '../i18n/messages.js';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
+
+// The only AI calls left anywhere in this system: both are Vision extraction
+// on customer-uploaded images (vehicle document, payment proof), never on
+// conversational chat text — that conversational agent was removed in favor
+// of deterministic DB search + rule-based routing (see whatsapp.controller.ts).
+const VISION_MODEL = "claude-haiku-4-5-20251001";
 
 export interface VisionData {
   document: boolean;
@@ -35,7 +32,7 @@ export interface VisionData {
 export async function extractDataWithClaudeVision(imageBase64: string): Promise<VisionData | null> {
   try {
     const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: VISION_MODEL,
       max_tokens: 1024,
       messages: [{
         role: "user",
@@ -99,170 +96,71 @@ REGRAS IMPORTANTES:
   }
 }
 
-/**
- * A customer can have several confirmed vehicles. With one, it's unambiguous; with
- * several, ai.service.ts must not guess — it uses whichever the customer picked via
- * the "which vehicle is this for?" prompt (sessionService.getChosenVehicle), falling
- * back to the most recent if that's somehow unset (e.g. it expired mid-conversation).
- */
-async function resolveSearchVehicle(phone: string) {
-  const vehicles = await getCustomerVehicles(phone);
-  if (vehicles.length === 0) return null;
-  if (vehicles.length === 1) return vehicles[0];
-
-  const chosenId = await getChosenVehicle(phone);
-  return vehicles.find((v) => v.id === chosenId) || vehicles[0];
+export interface PaymentProofData {
+  valid: boolean;
+  reason?: string | null;
+  amount?: string | null;
+  date?: string | null;
+  reference?: string | null;
 }
 
 /**
- * Conversation flow processing using Anthropic API.
+ * Sends a base64 encoded payment-proof image to Claude Vision to validate it
+ * actually looks like a payment receipt (bank transfer, deposit, Multicaixa
+ * Express, mobile payment confirmation) and extract what it can for the audit
+ * trail. Gates processPaymentProof in payment.service.ts — an invalid result
+ * asks the customer to re-upload instead of advancing the order status.
  */
-export async function processAIConversation(phone: string, customerText: string): Promise<void> {
+export async function extractPaymentProofData(imageBase64: string): Promise<PaymentProofData | null> {
   try {
-    const history = await getHistory(phone);
-    const vehicle = await resolveSearchVehicle(phone);
+    const response = await anthropic.messages.create({
+      model: VISION_MODEL,
+      max_tokens: 512,
+      messages: [{
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/jpeg",
+              data: imageBase64,
+            },
+          },
+          {
+            type: "text",
+            text: `Analisa esta imagem. Deve ser um comprovativo de pagamento (recibo de transferência
+bancária, depósito, Multicaixa Express, ou confirmação de pagamento móvel em Angola).
 
-    let enrichedText = customerText;
-    // Enrich query context with session vehicle metadata if the customer doesn't type it
-    if (vehicle && !customerText.toLowerCase().includes(vehicle.make.toLowerCase())) {
-      enrichedText =
-        `[Viatura do cliente: ${vehicle.make} ${vehicle.model} ${vehicle.year}] ` +
-        customerText;
+Responde APENAS em JSON válido neste formato:
+{
+  "valid": true ou false,
+  "reason": "razão se inválido ou ilegível (ex: não é um comprovativo, imagem ilegível)",
+  "amount": "valor do pagamento se visível (ex: 18.500 Kz)",
+  "date": "data do pagamento se visível",
+  "reference": "referência ou número de transacção se visível"
+}
+
+REGRAS IMPORTANTES:
+- "valid" deve ser false se a imagem não parecer um comprovativo de pagamento real, estiver
+  ilegível, ou for claramente outra coisa (ex: uma selfie, uma peça de carro, um documento de identificação)
+- Nunca inventes dados — se um campo não estiver visível ou legível, coloca null
+- Responde APENAS com o JSON, sem texto adicional`
+          }
+        ]
+      }]
+    });
+
+    const text = response.content[0].type === 'text' ? response.content[0].text.trim() : '';
+
+    try {
+      return JSON.parse(text.replace(/```json|```/g, "").trim()) as PaymentProofData;
+    } catch {
+      logger.error(`Error parsing payment-proof vision JSON: ${text}`);
+      return { valid: false, reason: "Erro ao interpretar o comprovativo." };
     }
-
-    history.push({ role: 'user', content: enrichedText });
-
-    const aiReply = await callAnthropic(history);
-    const action = tryParseJSON(aiReply);
-
-    if (!action) {
-      await sendWhatsAppMessage(phone, aiReply);
-      // Push the clean agent text response to session history
-      history.push({ role: 'assistant', content: aiReply });
-    } else {
-      // If agent requested search, inject vehicle parameters from session cache if missing
-      if (action.action === 'search' && vehicle) {
-        action.vehicle_make = action.vehicle_make || vehicle.make;
-        action.model = action.model || vehicle.model;
-        action.year = action.year || vehicle.year;
-      }
-      await executeStructuredAction(phone, action, history);
-    }
-
-    await saveHistory(phone, history);
   } catch (error: any) {
-    // Anthropic call or downstream action failed (e.g. bad ANTHROPIC_API_KEY) — without this,
-    // the customer gets silence (the outer webhook catch only logs) after already having
-    // received the session greeting, which reads as a broken/inconsistent bot.
-    logger.error(`AI agent pipeline failed for ${phone}`, error);
-    await sendWhatsAppMessage(phone, t.agent.serviceUnavailable());
-
-    // Close out this invitation on failure — the next message re-triggers the
-    // deterministic "what part do you need" prompt instead of blindly retrying
-    // (and failing) the AI again on every subsequent message.
-    await clearPartPromptSent(phone);
-
-    // Staff alert disabled for now — STAFF_PHONE_NUMBER isn't on the WhatsApp test
-    // allow-list yet, so this was erroring on every AI failure instead of helping.
-    // const staffPhone = config.admin.staffPhone;
-    // if (staffPhone) {
-    //   try {
-    //     await sendWhatsAppMessage(staffPhone, t.agent.aiFailureStaffAlert(phone, error.message));
-    //   } catch (staffError: any) {
-    //     logger.error('Failed to notify staff of AI agent failure', staffError);
-    //   }
-    // }
-  }
-}
-
-async function callAnthropic(history: any[]): Promise<string> {
-  // Strip temporary fields from history before sending to Anthropic SDK
-  const cleanMessages = history.map((h) => ({
-    role: h.role,
-    content: h.content,
-  }));
-
-  const response = await anthropic.messages.create({
-    model: 'claude-3-5-sonnet-20241022',
-    max_tokens: 1024,
-    system: t.systemPrompt,
-    messages: cleanMessages,
-  });
-
-  // Extract response text
-  const textContent = response.content.find(c => c.type === 'text');
-  return textContent?.type === 'text' ? textContent.text : '';
-}
-
-/**
- * Orchestrates backend JSON actions returned by the AI agent.
- */
-async function executeStructuredAction(phone: string, action: any, history: any): Promise<void> {
-  switch (action.action) {
-    case 'search': {
-      await productService.searchAndRespond(phone, action, history);
-      break;
-    }
-
-    case 'confirm_order': {
-      const options = await getPendingOptions(phone);
-      const idx = (action.chosen_option || 1) - 1;
-      const choice = options?.[idx];
-
-      if (!choice) {
-        await sendWhatsAppMessage(phone, t.agent.optionNotFound());
-        return;
-      }
-
-      const orderNumber = await generateOrderNumber();
-
-      // Save order record
-      await createOrder(orderNumber, phone, choice);
-
-      // Generate invoice proforma PDF
-      const proformaPath = await generateProformaPDF(orderNumber, phone, choice);
-
-      // Send confirmation text & PDF attachment
-      await sendProformaWhatsApp(phone, proformaPath, orderNumber, choice);
-
-      // Trigger payment selection prompt
-      await askPaymentMethod(phone, orderNumber, choice.price);
-
-      // Options consumed — prevent a stale numeric reply from creating a duplicate order
-      await clearPendingOptions(phone);
-
-      // Clean temp PDF asynchronously
-      setTimeout(() => {
-        try {
-          fs.unlinkSync(proformaPath);
-        } catch {
-          // best-effort cleanup, ignore if already removed
-        }
-      }, 60000);
-
-      const confirmation = t.agent.proformaSentChoosePayment();
-      history.push({ role: 'assistant', content: confirmation });
-      break;
-    }
-
-    case 'transfer_to_human': {
-      const msg = t.agent.transferToHuman();
-      await sendWhatsAppMessage(phone, msg);
-      logger.info(`[SUPPORT] Customer ${phone} requested human support. Reason: ${action.reason}`);
-      break;
-    }
-
-    default:
-      logger.warn('Unknown structured action from AI agent', action);
-  }
-}
-
-function tryParseJSON(text: string): any | null {
-  try {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    return JSON.parse(match[0]);
-  } catch {
-    return null;
+    logger.error(`Claude Vision payment-proof error: ${error.message}`);
+    throw error;
   }
 }

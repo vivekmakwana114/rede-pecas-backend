@@ -18,7 +18,7 @@ export interface Product {
  * longer used to filter results — the compatibility catalog that used to
  * back that matching was never populated by any code path, so this is a
  * deliberate simplification to a purely text-based search.
- * Limits result to top 5 cheapest products.
+ * Limits result to top 3 cheapest products.
  */
 export async function searchProductsInInventory({
   part,
@@ -45,7 +45,7 @@ export async function searchProductsInInventory({
     ORDER BY
       p.price ASC,
       s.rating DESC
-    LIMIT 5
+    LIMIT 3
     `,
     [part]
   );

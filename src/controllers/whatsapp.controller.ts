@@ -3,17 +3,21 @@ import { logger } from '../config/logger.js';
 import * as customerService from '../services/customer.service.js';
 import * as vehicleService from '../services/vehicle.service.js';
 import * as productService from '../services/product.service.js';
-import * as aiService from '../services/ai.service.js';
 import * as paymentService from '../services/payment.service.js';
 import * as sessionService from '../services/session.service.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons } from '../services/whatsapp.service.js';
 import { config } from '../config/config.js';
 import { t } from '../i18n/messages.js';
 
-// Bare greetings (PT/EN) never reach the AI, even once it's already been invited to
-// answer this session — they must always get the deterministic "what part do you need"
-// prompt instead, so a stray "Hi"/"Hey" after an AI failure doesn't retrigger it.
+// Bare greetings (PT/EN) never get treated as a part search, even once the customer's
+// already been invited to state one this session — they must always get the
+// deterministic "what part do you need" prompt instead, so a stray "Hi"/"Hey" doesn't
+// get sent into a nonsensical inventory search.
 const GREETING_PATTERN = /^(oi|ol[aá]|e\s*a[ií]|bom\s*dia|boa\s*tarde|boa\s*noite|hi|hello|hey+|yo)\b/i;
+
+// Deterministic keyword trigger for reaching a human — there's no conversational AI left
+// to infer this from tone/intent, so it's a plain keyword match (PT/EN).
+const HUMAN_HANDOFF_PATTERN = /\b(atendente|humano|falar com (algu[eé]m|pessoa)|operador|suporte humano|human|agent|representative)\b/i;
 
 // Meta Webhook Verification
 export async function verifyWebhook(req: Request, res: Response): Promise<void> {
@@ -43,18 +47,22 @@ export async function receiveWebhookMessage(req: Request, res: Response): Promis
     // Quick-reply button taps arrive as type "interactive" (button_reply.title/id) or,
     // for legacy template buttons, type "button" (button.text) — neither is msg.text,
     // so without this every button flow (VIN confirm, payment method, etc.) would see
-    // customerText as null and silently drop the customer's tap.
+    // customerText as null and silently drop the customer's tap. A list-message row tap
+    // is also type "interactive", under list_reply instead of button_reply.
     const customerText =
       msg.type === 'text' ? msg.text?.body :
-      msg.type === 'interactive' ? msg.interactive?.button_reply?.title :
+      msg.type === 'interactive' ? (msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title) :
       msg.type === 'button' ? msg.button?.text :
       null;
+    // The list row's stable id (e.g. "option_2") — used instead of its (possibly
+    // truncated) title to resolve a product-list tap unambiguously.
+    const listReplyId: string | null = msg.type === 'interactive' ? (msg.interactive?.list_reply?.id || null) : null;
     const mediaType = msg.type; // "image" | "document" | "text" | "interactive" | "button" etc.
     const mediaId = msg.image?.id || msg.document?.id || null;
 
     logger.debug(`[${phone}] Webhook type: ${mediaType}, text: ${customerText}`);
 
-    await processMessageFlow(phone, customerText, mediaType, mediaId);
+    await processMessageFlow(phone, customerText, mediaType, mediaId, listReplyId);
   } catch (error: any) {
     logger.error('Error in WhatsApp webhook processing', error);
   }
@@ -67,7 +75,8 @@ async function processMessageFlow(
   phone: string,
   customerText: string | null,
   mediaType: string,
-  mediaId: string | null
+  mediaId: string | null,
+  listReplyId: string | null = null
 ): Promise<void> {
   // 1. Get-or-create customer (handles pre-registration + welcome on first contact)
   const customer = await customerService.getOrCreateCustomer(phone);
@@ -230,11 +239,11 @@ async function processMessageFlow(
     if (handled) return;
   }
 
-  // 12. PRIORITY: only call the AI once the customer has actually been asked "what part
-  // do you need" this session (via onboarding/manual-collection completion, vehicle
-  // confirmation, or sendAskPartPrompt above) — never as the first response to a stray
-  // message. A bare greeting always gets re-prompted deterministically too, even if
-  // they were already invited — otherwise a later "Hi"/"Hey" would be sent to the AI
+  // 12. PRIORITY: only treat free text as a part search once the customer has actually
+  // been asked "what part do you need" this session (via onboarding/manual-collection
+  // completion, vehicle confirmation, or sendAskPartPrompt above) — never as the first
+  // response to a stray message. A bare greeting always gets re-prompted deterministically
+  // too, even if they were already invited — otherwise a later "Hi"/"Hey" would be searched
   // as if it were a product name.
   const invitedToAskForPart = await sessionService.wasPartPromptSent(phone);
   if (!invitedToAskForPart || GREETING_PATTERN.test(customerText.trim())) {
@@ -242,6 +251,26 @@ async function processMessageFlow(
     if (asked) return;
   }
 
-  // 13. Conversational AI agent pipeline
-  await aiService.processAIConversation(phone, customerText);
+  // 13. PRIORITY: reply to a just-shown product list (row tap or typed 1/2/3) — must run
+  // before the human-handoff/search fallback below, which would otherwise treat a stray
+  // "2" as a new (nonsensical) search query. Not selection-shaped (e.g. a new part name
+  // typed instead) falls through to a fresh search below rather than a dead end.
+  const pendingProductOptions = await sessionService.getPendingOptions(phone);
+  if (pendingProductOptions) {
+    const handled = await productService.processProductSelection(phone, customerText, listReplyId, pendingProductOptions);
+    if (handled) return;
+  }
+
+  // 14. Explicit request to talk to a human — deterministic keyword match. There's no
+  // conversational AI left to infer this from tone/intent, so it only fires on an
+  // exact keyword hit.
+  if (HUMAN_HANDOFF_PATTERN.test(customerText)) {
+    await sendWhatsAppMessage(phone, t.agent.transferToHuman());
+    logger.info(`[SUPPORT] Customer ${phone} requested human support.`);
+    return;
+  }
+
+  // 15. Deterministic product search — full-text match against the inventory DB (already
+  // handles PT synonyms/typos via the 'portuguese' tsquery config). No AI involved.
+  await productService.searchAndRespond(phone, customerText);
 }

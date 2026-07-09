@@ -1,5 +1,15 @@
 # Rede Peças — Progress Report
 
+## Update — 2026-07-09 (conversational AI agent removed — deterministic search + List Message picker; Vision calls moved to Haiku)
+
+- **The conversational Claude agent is gone entirely.** `ai.service.ts`'s `processAIConversation`/`executeStructuredAction`/`callAnthropic`/`tryParseJSON` and the `t.systemPrompt` dictionary entry (both locales) were deleted outright, not consolidated — no customer chat text is sent to Claude anywhere in this codebase anymore. Per-decision: product search doesn't need an LLM to parse intent (the existing `plainto_tsquery('portuguese', ...)` full-text search already tolerates synonyms/typos on the customer's raw message), and neither does matching their reply to a shown option or detecting a request for a human — all three are now plain deterministic code, the same style as the existing Sim/Não handlers elsewhere in the pipeline.
+- **Product search results now render as a WhatsApp List Message** (`whatsapp.service.ts` → new `sendWhatsAppList`) instead of a numbered text message — up to 3 rows (cheapest first, was top 5), row id `option_N`. Considered a Meta Commerce Catalog for true image product cards; ruled out because the inventory has no product photos today and an AI-generated stock photo for an exact-reference auto part (e.g. "KYB334816") risks looking like the wrong part and misleading a customer more than no photo at all — plus it would mean standing up and continuously syncing an external catalog feed for no accuracy gain in a reference-code-driven marketplace.
+- **Selection is resolved by `productService.processProductSelection`**: either the tapped row's stable id (`option_2`) or a typed digit. If the reply isn't shaped like a selection at all (e.g. the customer types a brand-new part name instead), it's treated as a fresh search rather than a dead-end "didn't understand" reply — order creation → proforma PDF → `askPaymentMethod` (unchanged) then runs exactly as it did under the old AI-driven `confirm_order` action.
+- **"Talk to a human" is now a keyword match** (`HUMAN_HANDOFF_PATTERN` in `whatsapp.controller.ts`, PT+EN) instead of an AI inference from tone/intent — there's no AI left to make that judgment call.
+- **Redis conversation history removed as dead weight.** `getHistory`/`saveHistory` and the rolling 20-message `session:<phone>` key existed only to feed the now-deleted agent; `sessionService.clearPartPromptSent` (AI-retry-after-failure guard) was removed for the same reason. Pending search options (`options:<phone>`) are unaffected — still used by the new deterministic selection handler.
+- **The only AI calls left anywhere in this system are two Claude Vision extraction calls**, both switched to `claude-haiku-4-5-20251001`: the existing `extractDataWithClaudeVision` (vehicle document/VIN photo), and a new `extractPaymentProofData` (payment-proof image) wired into `processPaymentProof` in `payment.service.ts` — mirrors the document extractor's `valid`/`reason` shape, extracting amount/date/reference for the audit log (`logger.info`) and asking the customer to re-upload when Vision flags the image as not actually a payment proof. Only runs for image proofs — Vision can't inspect a PDF proof, so those still skip straight to acceptance as before.
+- Confirmed against a decoded requirement, not assumed: raw customer text is passed straight into the existing DB search with no pre-cleanup (the tsquery/synonym setup already absorbs phrasing variance).
+
 ## Update — 2026-07-08 (bug: confirmed vehicles were expiring after 4 hours)
 
 - **Bug fixed: a returning customer with an already-confirmed vehicle got treated as brand new** (re-shown "Profile created successfully!" + the VIN/photo/manual buttons) once 4+ hours passed since that vehicle's `updated_at`. Root cause: `getCustomerVehicles`/`getMostRecentVehicle`/`getVehicleById` (`vehicle.model.ts`) filtered confirmed vehicle rows on `updated_at > NOW() - INTERVAL '4 hours'` — a value copied from the unrelated Redis conversation-session TTL (`session.service.ts`) and mistakenly applied to the permanent vehicle record itself. Confirmed vehicles (`status IS NULL OR 'complete'`) no longer expire; only the in-progress manual-entry wizard row keeps its 30-minute TTL (`getActiveManualCollection`, keyed off `created_at`, which is legitimately about an abandoned step machine).
@@ -151,15 +161,14 @@ The customer-facing journey the system is meant to support, end to end. Not all 
 
 ---
 
-## 2. AI Agent & Session Management
+## 2. AI Usage (as of 2026-07-09: vision-only, no conversational agent)
 
 | Item | Status | Notes |
 |---|---|---|
-| Claude API integration (conversational agent) | ✅ | Working end-to-end in `whatsapp.controller.ts` (`processarAgenteConversa`) |
-| Structured action parsing (search / confirm / handoff) | ✅ | `executarAccaoEstruturada` handles `pesquisar`, `confirmar_pedido`, `transferir_humano` |
-| Redis-backed conversation history | ✅ | 20-message rolling window, 4h TTL |
-| Duplicate AI logic | 🟡 | `ai.service.ts` has a clean `callAIAgent()` implementation that is **never called** — `whatsapp.controller.ts` has its own inline copy of the system prompt and Claude call, on a *different* model version. Needs consolidation to avoid prompt drift. |
-| Claude Vision document extraction | ✅ | `extractDataWithClaudeVision` (`ai.service.ts`) is now wired into the webhook via `processVehicleDocument` in `whatsapp.controller.ts`, gated by state-aware image routing (2026-07-02). |
+| Conversational Claude agent (product search / order confirmation / human handoff) | ❌ Removed | Replaced entirely with deterministic logic: full-text DB search (`productService.searchAndRespond`), WhatsApp List Message picker + digit/tap matching (`processProductSelection`), keyword-based human handoff (`HUMAN_HANDOFF_PATTERN`). No chat text is ever sent to Claude. |
+| Redis-backed conversation history | ❌ Removed | The rolling 20-message `session:<phone>` key and `getHistory`/`saveHistory` were dead weight once the agent that read them was removed. |
+| Claude Vision — vehicle document/VIN photo extraction | ✅ | `extractDataWithClaudeVision` (`ai.service.ts`), model switched to `claude-haiku-4-5-20251001`, wired in via `processVehicleDocument` in `whatsapp.controller.ts`. |
+| Claude Vision — payment-proof image extraction | ✅ | New `extractPaymentProofData` (`ai.service.ts`), same Haiku model, wired in via `processPaymentProof` in `payment.service.ts`. Image proofs only (Vision can't inspect a PDF proof); `valid: false` asks the customer to re-upload instead of advancing `orders.status`. |
 | CRM auto-registration & returning customer recognition | ✅ | See section 3 |
 
 ---
@@ -201,7 +210,7 @@ The customer-facing journey the system is meant to support, end to end. Not all 
 | Meta webhook message intake (POST) | ✅ | `receberMensagemWebhook`, responds 200 immediately per Meta's 5s rule |
 | Text message sending | ✅ | `whatsapp.service.ts` |
 | Interactive button messages | ✅ | `enviarMensagemComBotoes` |
-| Message routing priority chain (CRM → media → manual collection → VIN → confirmation → payment state → AI) | ✅ | `processarFluxoMensagem` — well-structured priority pipeline |
+| Message routing priority chain (CRM → media → manual collection → VIN → confirmation → payment state → product search) | ✅ | `processMessageFlow` — well-structured priority pipeline, no AI in this chain as of 2026-07-09 |
 | PDF document sending (proforma/invoice) | ✅ | Media upload + document message, `pdf.service.ts` |
 | Supplier delivery notification | ✅ | `notificarFornecedorEntrega` in `payment.service.ts` |
 | Staff notification on payment proof / presential payment | ✅ | via `TELEFONE_FUNCIONARIO_REDE_PECAS` |
@@ -214,7 +223,7 @@ The customer-facing journey the system is meant to support, end to end. Not all 
 |---|---|---|
 | Unified inventory table with full-text search | ✅ | `pecas` table (in old schema.sql — not yet in this repo), Portuguese `tsvector`, GIN index |
 | Compatibility matching (marca/modelo/ano) | ✅ | `buscarPecasNoInventario` join across `pecas` → `compatibilidades` → `veiculos` |
-| Price-ordered results, top 5 | ✅ | |
+| Price-ordered results, top 3 | ✅ | Was top 5 until 2026-07-09, when results moved from a numbered text message to a WhatsApp List Message (max useful rows dropped to 3) |
 | Batch upsert import (insert/update/deactivate missing SKUs) | ✅ | `importarPecasBatch` — transactional, logs to `logs_sincronizacao` |
 | CSV/XLS/XLSX file parsing | 🟡 | Currently done **client-side only** in the admin panel (`rede-pecas-admin/src/App.tsx` uses the `xlsx` npm package in the browser, then POSTs parsed JSON). The `xlsx` package is also installed in this backend but **never used** — no server-side upload endpoint exists yet. |
 | Import history visibility | 🟡 | Logged to `logs_sincronizacao` table but no API route reads it back — admin panel can't display import history |
@@ -254,7 +263,7 @@ The customer-facing journey the system is meant to support, end to end. Not all 
 5. ~~Wire Claude Vision document reading into the WhatsApp webhook flow~~ ✅ Done 2026-07-02 (`processVehicleDocument`).
 6. ~~Merge the registration and manual-vehicle-collection step machines into a single new-customer onboarding flow~~ ✅ Done 2026-07-02.
 7. Move the staff/admin WhatsApp notification trigger from payment-proof/presential-payment to order creation (proforma sent), per the 2026-07-02 workflow decisions.
-8. Consolidate the duplicated AI agent logic into `ai.service.ts`.
+8. ~~Consolidate the duplicated AI agent logic into `ai.service.ts`~~ ✅ Moot as of 2026-07-09 — the conversational agent (and its duplicate) were removed outright, not merged.
 9. Add a server-side multipart upload endpoint for CSV/XLS/XLSX import (backend currently has the `xlsx` dependency installed but unused).
 10. Add a GET endpoint to expose `sync_logs` so the admin panel can show import history.
 11. Manually verify the three onboarding vehicle-ID paths end to end against a real/sandbox WhatsApp number (VIN typed, document photo via Vision, manual fallback) — no automated test suite exists in this repo yet.

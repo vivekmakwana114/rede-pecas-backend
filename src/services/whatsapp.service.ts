@@ -114,3 +114,51 @@ export async function sendWhatsAppButtons(
     throw error;
   }
 }
+
+/**
+ * Sends an interactive list message (up to 10 tappable rows in one section).
+ * Meta enforces row title <= 24 chars and description <= 72 chars — callers
+ * must pre-truncate, this function does not.
+ */
+export async function sendWhatsAppList(
+  phone: string,
+  body: string,
+  buttonText: string,
+  rows: { id: string; title: string; description?: string }[]
+): Promise<any> {
+  const payload = {
+    messaging_product: "whatsapp",
+    to: phone,
+    type: "interactive",
+    interactive: {
+      type: "list",
+      body: { text: body },
+      action: {
+        button: buttonText,
+        sections: [{ rows: rows.slice(0, 10) }],
+      },
+    },
+  };
+
+  try {
+    const response = await fetch(WHATSAPP_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.whatsapp.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      logger.error('WhatsApp API sending list error', error);
+      throw new Error(`WhatsApp API list error: ${response.status}`);
+    }
+
+    return response.json();
+  } catch (error: any) {
+    logger.error(`Error sending list to ${phone}: ${error.message}`);
+    throw error;
+  }
+}

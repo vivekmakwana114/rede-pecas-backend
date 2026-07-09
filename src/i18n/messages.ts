@@ -9,16 +9,6 @@ import { config } from '../config/config.js';
  * defaults to 'pt' regardless of this file's contents.
  */
 
-interface SearchItemInput {
-  emoji: string;
-  name: string;
-  reference: string;
-  price: string;
-  quantity: number;
-  deliveryTime: string;
-  supplier?: string | null;
-}
-
 interface PaymentMethodCopy {
   name: string;
   instructions: (orderNumber: string, amount: string) => string;
@@ -79,15 +69,14 @@ interface Messages {
     noStockFound: () => string;
     optionNotFound: () => string;
     serviceUnavailable: () => string;
-    aiFailureStaffAlert: (phone: string, errorMessage: string) => string;
     waitlistConfirmed: (productName: string) => string;
     waitlistDeclined: () => string;
     restockNotification: (productName: string) => string;
     proformaSentChoosePayment: () => string;
     transferToHuman: () => string;
-    searchHeader: (count: number, part: string, make: string, model: string, year: string) => string;
-    searchItem: (item: SearchItemInput) => string;
-    searchFooter: () => string;
+    searchListBody: (count: number, part: string) => string;
+    searchListBodyForVehicle: (count: number, part: string, make: string, model: string, year: string) => string;
+    searchListButton: () => string;
   };
   order: {
     rejected: (orderNumber: string) => string;
@@ -107,6 +96,8 @@ interface Messages {
     askInPersonSubtypeBody: () => string;
     askInPersonSubtypeButtons: [string, string];
     proofReceivedCustomer: (methodName: string, orderNumber: string) => string;
+    proofInvalid: (reason: string) => string;
+    proofInvalidDefaultReason: string;
     proofReceivedStaff: (orderNumber: string, methodName: string, amount: string, phone: string, adminUrl: string) => string;
     inPersonPaymentStaff: (orderNumber: string, methodName: string, emoji: string, amount: string, phone: string, isMobilePOS: boolean, adminUrl: string) => string;
     supplierDeliveryNotice: (productName: string, reference: string, quantity: number, orderNumber: string) => string;
@@ -170,7 +161,6 @@ interface Messages {
   adminAuth: {
     resetCode: (code: string) => string;
   };
-  systemPrompt: string;
 }
 
 const pt: Messages = {
@@ -297,11 +287,6 @@ const pt: Messages = {
       `Não consegui identificar a opção escolhida. Por favor responde com o número (ex: 1, 2 ou 3).`,
     serviceUnavailable: () =>
       `⚠️ Estamos com uma instabilidade temporária na nossa plataforma. Por favor tenta novamente daqui a alguns minutos. 🙏`,
-    aiFailureStaffAlert: (phone, errorMessage) =>
-      `⚠️ *Falha no agente de IA*\n\n` +
-      `Cliente: ${phone}\n` +
-      `Erro: ${errorMessage}\n\n` +
-      `Por favor verifica a configuração da API Claude ou contacta o cliente manualmente.`,
     waitlistConfirmed: (productName) =>
       `✅ Perfeito! Vou avisar-te assim que *${productName}* estiver disponível.`,
     waitlistDeclined: () => `Sem problema! 👍`,
@@ -311,19 +296,11 @@ const pt: Messages = {
       `Proforma enviada! Por favor escolhe um dos métodos de pagamento abaixo. 👇`,
     transferToHuman: () =>
       `Entendido! Vou transferir-te para um dos nossos atendentes. Um momento por favor 🙏`,
-    searchHeader: (count, part, make, model, year) =>
-      `Encontrei ${count} opção(ões) de *${part}* para o teu *${make} ${model} ${year}*:\n\n`,
-    searchItem: (item) => {
-      let block =
-        `${item.emoji} *${item.name}*\n` +
-        `   Ref: ${item.reference}\n` +
-        `   Preço: ${item.price}\n` +
-        `   Stock: ${item.quantity} unidade(s)\n` +
-        `   Entrega: ${item.deliveryTime}\n`;
-      if (item.supplier) block += `   Fornecedor: ${item.supplier}\n`;
-      return block + '\n';
-    },
-    searchFooter: () => 'Responde com o *número* da opção que preferes 👇',
+    searchListBody: (count, part) =>
+      `Encontrei ${count} opção(ões) de *${part}*. Escolhe uma abaixo 👇`,
+    searchListBodyForVehicle: (count, part, make, model, year) =>
+      `Encontrei ${count} opção(ões) de *${part}* para o teu *${make} ${model} ${year}*. Escolhe uma abaixo 👇`,
+    searchListButton: () => 'Ver opções',
   },
   order: {
     rejected: (orderNumber) =>
@@ -399,6 +376,11 @@ const pt: Messages = {
       `Pedido: *${orderNumber}*\n\n` +
       `A nossa equipa irá verificar o pagamento e emitir a factura em breve.\n` +
       `Normalmente demora menos de 30 minutos em horário de expediente. 🙏`,
+    proofInvalid: (reason) =>
+      `⚠️ ${reason}\n\n` +
+      `Por favor envia novamente o comprovativo, garantindo que a imagem está nítida e mostra ` +
+      `claramente o valor, a data e a referência do pagamento. 📸`,
+    proofInvalidDefaultReason: 'Não consegui confirmar que esta imagem é um comprovativo de pagamento válido.',
     proofReceivedStaff: (orderNumber, methodName, amount, phone, adminUrl) =>
       `📸 *COMPROVATIVO RECEBIDO*\n\n` +
       `Pedido: *${orderNumber}*\n` +
@@ -502,27 +484,6 @@ const pt: Messages = {
       `🔐 Código de recuperação de senha do painel Rede Peças: *${code}*\n\n` +
       `Válido por 10 minutos. Se não pediste isto, ignora esta mensagem.`,
   },
-  systemPrompt: `
-És o assistente virtual da Rede Peças, um marketplace automotivo em Angola.
-O teu trabalho é ajudar clientes a encontrar peças para os seus veículos.
-
-REGRAS:
-1. Sê sempre simpático e directo. Fala em português angolano informal.
-2. Extrai do pedido do cliente: peça, marca do veículo, modelo e ano.
-3. Se faltarem dados críticos (marca ou modelo), faz UMA pergunta curta para obtê-los.
-4. Quando tiveres informação suficiente, devolve APENAS um JSON válido neste formato:
-   { "action": "search", "part": "...", "vehicle_make": "...", "model": "...", "year": "..." }
-5. Se o cliente escolher uma opção (ex: responde "2" ou "quero a segunda"), devolve:
-   { "action": "confirm_order", "chosen_option": 2 }
-6. Se o cliente quiser falar com humano, devolve:
-   { "action": "transfer_to_human", "reason": "..." }
-7. Para qualquer outra mensagem de conversa normal, responde em texto simples — NÃO em JSON.
-
-EXEMPLOS DE EXTRACÇÃO:
-- "filtro de óleo pra Golf 2019" → { "action": "search", "part": "filtro de óleo", "vehicle_make": "Volkswagen", "model": "Golf", "year": "2019" }
-- "correia da Toyota Hilux" → pede o ano, pois é crítico para compatibilidade
-- "preciso de amortecedor dianteiro" → pede marca e modelo do carro
-`,
 };
 
 const en: Messages = {
@@ -649,11 +610,6 @@ const en: Messages = {
       `I couldn't identify which option you chose. Please reply with the number (e.g. 1, 2, or 3).`,
     serviceUnavailable: () =>
       `⚠️ We're experiencing temporary instability on our platform. Please try again in a few minutes. 🙏`,
-    aiFailureStaffAlert: (phone, errorMessage) =>
-      `⚠️ *AI agent failure*\n\n` +
-      `Customer: ${phone}\n` +
-      `Error: ${errorMessage}\n\n` +
-      `Please check the Claude API configuration or contact the customer manually.`,
     waitlistConfirmed: (productName) =>
       `✅ Perfect! I'll let you know as soon as *${productName}* is available.`,
     waitlistDeclined: () => `No problem! 👍`,
@@ -663,19 +619,11 @@ const en: Messages = {
       `Proforma sent! Please choose one of the payment methods below. 👇`,
     transferToHuman: () =>
       `Got it! I'll transfer you to one of our staff. One moment please 🙏`,
-    searchHeader: (count, part, make, model, year) =>
-      `I found ${count} option(s) for *${part}* for your *${make} ${model} ${year}*:\n\n`,
-    searchItem: (item) => {
-      let block =
-        `${item.emoji} *${item.name}*\n` +
-        `   Ref: ${item.reference}\n` +
-        `   Price: ${item.price}\n` +
-        `   Stock: ${item.quantity} unit(s)\n` +
-        `   Delivery: ${item.deliveryTime}\n`;
-      if (item.supplier) block += `   Supplier: ${item.supplier}\n`;
-      return block + '\n';
-    },
-    searchFooter: () => 'Reply with the *number* of the option you prefer 👇',
+    searchListBody: (count, part) =>
+      `I found ${count} option(s) for *${part}*. Pick one below 👇`,
+    searchListBodyForVehicle: (count, part, make, model, year) =>
+      `I found ${count} option(s) for *${part}* for your *${make} ${model} ${year}*. Pick one below 👇`,
+    searchListButton: () => 'View options',
   },
   order: {
     rejected: (orderNumber) =>
@@ -751,6 +699,11 @@ const en: Messages = {
       `Order: *${orderNumber}*\n\n` +
       `Our team will verify the payment and issue the invoice shortly.\n` +
       `Usually takes under 30 minutes during business hours. 🙏`,
+    proofInvalid: (reason) =>
+      `⚠️ ${reason}\n\n` +
+      `Please resend the payment proof, making sure the image is clear and shows the ` +
+      `amount, date, and payment reference. 📸`,
+    proofInvalidDefaultReason: "I couldn't confirm this image is a valid payment proof.",
     proofReceivedStaff: (orderNumber, methodName, amount, phone, adminUrl) =>
       `📸 *PAYMENT PROOF RECEIVED*\n\n` +
       `Order: *${orderNumber}*\n` +
@@ -854,27 +807,6 @@ const en: Messages = {
       `🔐 Rede Peças admin panel password reset code: *${code}*\n\n` +
       `Valid for 10 minutes. If you didn't request this, ignore this message.`,
   },
-  systemPrompt: `
-You are the virtual assistant for Rede Peças, an auto parts marketplace in Angola.
-Your job is to help customers find parts for their vehicles.
-
-RULES:
-1. Always be friendly and direct. Speak in informal English.
-2. Extract from the customer's request: part, vehicle make, model, and year.
-3. If critical data is missing (make or model), ask ONE short question to get it.
-4. When you have enough information, return ONLY valid JSON in this format:
-   { "action": "search", "part": "...", "vehicle_make": "...", "model": "...", "year": "..." }
-5. If the customer picks an option (e.g. replies "2" or "I want the second one"), return:
-   { "action": "confirm_order", "chosen_option": 2 }
-6. If the customer wants to talk to a human, return:
-   { "action": "transfer_to_human", "reason": "..." }
-7. For any other normal conversational message, reply in plain text — NOT JSON.
-
-EXTRACTION EXAMPLES:
-- "oil filter for a Golf 2019" → { "action": "search", "part": "oil filter", "vehicle_make": "Volkswagen", "model": "Golf", "year": "2019" }
-- "timing belt for a Toyota Hilux" → ask for the year, it's critical for compatibility
-- "I need a front shock absorber" → ask for the car's make and model
-`,
 };
 
 export const t: Messages = config.messageLocale === 'en' ? en : pt;

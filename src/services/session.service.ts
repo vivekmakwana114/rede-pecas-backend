@@ -33,60 +33,9 @@ if (config.redis.url) {
   useMemoryFallback = true;
 }
 
-export async function getHistory(phone: string): Promise<any[]> {
-  const key = `session:${phone}`;
-  if (useMemoryFallback || !redisClient?.isOpen) {
-    return memoryCache.get(key) || [];
-  }
-
-  try {
-    const data = await redisClient.get(key);
-    return data ? JSON.parse(data) : [];
-  } catch (err) {
-    logger.error('Error fetching session history from Redis', err);
-    return memoryCache.get(key) || [];
-  }
-}
-
-export async function saveHistory(phone: string, history: any[]): Promise<void> {
-  const key = `session:${phone}`;
-  const trimmedHistory = history.slice(-20);
-
-  if (useMemoryFallback || !redisClient?.isOpen) {
-    memoryCache.set(key, trimmedHistory);
-    return;
-  }
-
-  try {
-    // Keep local cache synced in case of sudden Redis dropouts
-    memoryCache.set(key, trimmedHistory);
-    await redisClient.setEx(key, SESSION_TTL, JSON.stringify(trimmedHistory));
-  } catch (err) {
-    logger.error('Error saving session history to Redis', err);
-  }
-}
-
-export async function clearSession(phone: string): Promise<void> {
-  const key = `session:${phone}`;
-  memoryCache.delete(key);
-  await clearPendingOptions(phone);
-  await clearPendingWaitlistOffer(phone);
-
-  if (useMemoryFallback || !redisClient?.isOpen) {
-    return;
-  }
-
-  try {
-    await redisClient.del(key);
-  } catch (err) {
-    logger.error('Error deleting session from Redis', err);
-  }
-}
-
 /**
- * Persists search result options awaiting the customer's numeric choice.
- * Stored under a dedicated key — custom properties on the history array
- * do not survive JSON serialization or the rolling-window slice.
+ * Persists search result options awaiting the customer's list tap or typed
+ * numeric choice.
  */
 export async function savePendingOptions(phone: string, options: any[]): Promise<void> {
   const key = `options:${phone}`;
@@ -133,10 +82,8 @@ export async function clearPendingOptions(phone: string): Promise<void> {
   }
 }
 
-// Tracks "have we heard from this number in the last 4h" independently of the AI
-// conversation transcript above — a customer stuck in registration or mid-payment
-// never touches getHistory/saveHistory, so that array can't be used as a session
-// boundary. This is a plain presence marker, touched on every incoming message.
+// Tracks "have we heard from this number in the last 4h" — a plain presence marker,
+// touched on every incoming message regardless of which stage of the pipeline handles it.
 const activeSessions = new Map<string, number>();
 
 export async function isNewSession(phone: string): Promise<boolean> {
@@ -172,10 +119,9 @@ export async function markSessionActive(phone: string): Promise<void> {
 }
 
 // Tracks "has this customer actually been asked 'what part do you need?'" (via
-// onboardingComplete/collectionComplete/confirmedAskPart/sendAskPartPrompt) independently
-// of the AI history. The conversational Claude agent is only invoked once this is set —
-// it must never be the first thing that answers a message, both to avoid burning an API
-// call on stray chatter and so a Claude/Anthropic outage doesn't surface on every message.
+// onboardingComplete/collectionComplete/confirmedAskPart/sendAskPartPrompt). Free text
+// is only ever treated as a product search once this is set — it must never be the
+// first thing that answers a stray message.
 const partPromptSessions = new Map<string, number>();
 
 export async function wasPartPromptSent(phone: string): Promise<boolean> {
@@ -207,28 +153,6 @@ export async function markPartPromptSent(phone: string): Promise<void> {
     await redisClient.setEx(key, SESSION_TTL, '1');
   } catch (err) {
     logger.error('Error marking part-prompt state in Redis', err);
-  }
-}
-
-/**
- * Clears the part-prompt invitation after a failed AI call so the customer's next
- * message re-triggers the deterministic "what part do you need" prompt instead of
- * blindly retrying (and failing) the AI again. Never called on a successful AI
- * reply — the AI still owns the conversation then (pending options, order
- * confirmation, etc.) and needs to see the next message directly.
- */
-export async function clearPartPromptSent(phone: string): Promise<void> {
-  const key = `partPrompt:${phone}`;
-  partPromptSessions.delete(key);
-
-  if (useMemoryFallback || !redisClient?.isOpen) {
-    return;
-  }
-
-  try {
-    await redisClient.del(key);
-  } catch (err) {
-    logger.error('Error clearing part-prompt state in Redis', err);
   }
 }
 

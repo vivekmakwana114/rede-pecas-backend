@@ -1,8 +1,9 @@
 import { db } from '../config/db.js';
 import { config } from '../config/config.js';
 import { logger } from '../config/logger.js';
-import { sendWhatsAppMessage, sendWhatsAppButtons } from './whatsapp.service.js';
+import { sendWhatsAppMessage, sendWhatsAppButtons, downloadWhatsAppMedia } from './whatsapp.service.js';
 import { generatePrimaveraInvoice, sendFinalInvoiceWhatsApp } from './pdf.service.js';
+import { extractPaymentProofData } from './ai.service.js';
 import { getOrderByNumber, getLatestOrderByStatus } from '../models/order.model.js';
 import { getSupplierPhoneById } from '../models/supplier.model.js';
 import { formatPrice } from '../utils/helpers.js';
@@ -194,6 +195,28 @@ export async function processPaymentProof(phone: string, mediaId: string, mediaT
   if (!rows.length) return false;
 
   const { number, unit_price, payment_method } = rows[0];
+
+  // Vision can only inspect images, not PDFs — a 'document' proof skips
+  // straight to acceptance below, same as before this check existed.
+  if (mediaType === 'image') {
+    const imageBase64 = await downloadWhatsAppMedia(mediaId);
+    if (imageBase64) {
+      const extracted = await extractPaymentProofData(imageBase64);
+      if (extracted && extracted.valid === false) {
+        logger.info(`[PAYMENT] Rejected proof for order ${number} from ${phone}: ${extracted.reason}`);
+        await sendWhatsAppMessage(
+          phone,
+          t.payment.proofInvalid(extracted.reason || t.payment.proofInvalidDefaultReason)
+        );
+        return true;
+      }
+      if (extracted) {
+        logger.info(
+          `[PAYMENT] Proof extracted for order ${number}: amount=${extracted.amount} date=${extracted.date} reference=${extracted.reference}`
+        );
+      }
+    }
+  }
 
   await db.query(
     `UPDATE orders

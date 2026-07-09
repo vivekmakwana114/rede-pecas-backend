@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import fs from 'fs';
 import { logger } from '../config/logger.js';
 import { ApiError } from '../utils/ApiError.js';
 import {
@@ -13,43 +14,142 @@ import {
   ImportItem,
   RestockNotification
 } from '../models/supplier.model.js';
-import { sendWhatsAppMessage } from './whatsapp.service.js';
+import { createOrder, generateOrderNumber } from '../models/order.model.js';
+import { getCustomerVehicles } from '../models/vehicle.model.js';
+import { sendWhatsAppMessage, sendWhatsAppList } from './whatsapp.service.js';
+import { generateProformaPDF, sendProformaWhatsApp } from './pdf.service.js';
+import { askPaymentMethod } from './payment.service.js';
 import {
   savePendingOptions,
+  clearPendingOptions,
   savePendingWaitlistOffer,
-  clearPendingWaitlistOffer
+  clearPendingWaitlistOffer,
+  getChosenVehicle
 } from './session.service.js';
 import { formatPrice } from '../utils/helpers.js';
 import { t } from '../i18n/messages.js';
 
 /**
- * Searches inventory for the requested part and either sends the numbered
- * options list, or — on no stock — offers to waitlist the customer against
- * the closest out-of-stock match.
+ * A customer can have several confirmed vehicles. With one, it's unambiguous; with
+ * several, whichever they picked via the "which vehicle is this for?" prompt
+ * (sessionService.getChosenVehicle) is used to label the results, falling back to
+ * the most recently added if that's somehow unset (e.g. it expired mid-conversation).
  */
-export async function searchAndRespond(phone: string, action: any, history: any[]): Promise<void> {
+async function resolveSearchVehicle(phone: string) {
+  const vehicles = await getCustomerVehicles(phone);
+  if (vehicles.length === 0) return null;
+  if (vehicles.length === 1) return vehicles[0];
+
+  const chosenId = await getChosenVehicle(phone);
+  return vehicles.find((v) => v.id === chosenId) || vehicles[0];
+}
+
+/**
+ * Searches inventory for the customer's raw message (deterministic full-text
+ * match against name/brand/reference/synonyms — no AI involved) and either
+ * sends a tappable list of the up-to-3 cheapest matches, or — on no stock —
+ * offers to waitlist the customer against the closest out-of-stock match.
+ */
+export async function searchAndRespond(phone: string, customerText: string): Promise<void> {
   await sendWhatsAppMessage(phone, t.agent.checkingStock());
 
-  const options = await searchProductsInInventory({ part: action.part });
+  const options = await searchProductsInInventory({ part: customerText });
 
   if (!options || options.length === 0) {
-    const msg = t.agent.noStockFound();
-    await sendWhatsAppMessage(phone, msg);
-    history.push({ role: 'assistant', content: msg });
+    await sendWhatsAppMessage(phone, t.agent.noStockFound());
 
-    const candidate = await findZeroQuantityProductMatch({ part: action.part });
+    const candidate = await findZeroQuantityProductMatch({ part: customerText });
     if (candidate) {
       await savePendingWaitlistOffer(phone, { productId: candidate.id, productName: candidate.name });
     }
     return;
   }
 
-  // Persist results so the customer's numeric choice in the next message can resolve them
+  // Persist results so the customer's list tap / typed digit in the next message can resolve them
   await savePendingOptions(phone, options);
 
-  const optionsMessage = formatSearchOptions(options, action);
-  await sendWhatsAppMessage(phone, optionsMessage);
-  history.push({ role: 'assistant', content: optionsMessage });
+  const vehicle = await resolveSearchVehicle(phone);
+  const body = vehicle
+    ? t.agent.searchListBodyForVehicle(options.length, customerText, vehicle.make, vehicle.model, vehicle.year)
+    : t.agent.searchListBody(options.length, customerText);
+  await sendWhatsAppList(phone, body, t.agent.searchListButton(), buildProductListRows(options));
+}
+
+// WhatsApp caps list row title at 24 chars and description at 72 — truncate
+// rather than let the whole message get rejected by the API.
+function truncate(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max - 1) + '…' : text;
+}
+
+function buildProductListRows(options: Product[]): { id: string; title: string; description: string }[] {
+  return options.map((item, i) => ({
+    id: `option_${i + 1}`,
+    title: truncate(item.name, 24),
+    description: truncate(
+      `${formatPrice(item.price)} • ${item.delivery_time}${item.supplier ? ` • ${item.supplier}` : ''}`,
+      72
+    ),
+  }));
+}
+
+/**
+ * Resolves a reply against a just-shown product list to a 0-based index —
+ * either the tapped row's id ("option_2") or a typed digit ("2"). Returns
+ * null when the reply isn't shaped like a selection at all, so the caller
+ * can fall back to treating it as a brand-new search instead of a dead end.
+ */
+function resolveOptionIndex(customerText: string | null, listReplyId: string | null): number | null {
+  const idMatch = listReplyId?.match(/^option_(\d+)$/);
+  if (idMatch) return parseInt(idMatch[1], 10) - 1;
+
+  const digitMatch = customerText?.trim().match(/^(\d+)$/);
+  if (digitMatch) return parseInt(digitMatch[1], 10) - 1;
+
+  return null;
+}
+
+/**
+ * Handles the customer's reply to a just-shown product list — creates the
+ * order, sends the proforma PDF, and kicks off the payment-method flow.
+ * Returns false (not handled) when the reply doesn't look like a selection
+ * at all, so the pipeline can fall through to a fresh search instead of a
+ * dead-end "didn't understand" reply.
+ */
+export async function processProductSelection(
+  phone: string,
+  customerText: string | null,
+  listReplyId: string | null,
+  pendingOptions: Product[]
+): Promise<boolean> {
+  const idx = resolveOptionIndex(customerText, listReplyId);
+  if (idx === null) return false;
+
+  const choice = pendingOptions[idx];
+  if (!choice) {
+    await sendWhatsAppMessage(phone, t.agent.optionNotFound());
+    return true;
+  }
+
+  const orderNumber = await generateOrderNumber();
+  await createOrder(orderNumber, phone, choice);
+
+  const proformaPath = await generateProformaPDF(orderNumber, phone, choice);
+  await sendProformaWhatsApp(phone, proformaPath, orderNumber, choice);
+  await askPaymentMethod(phone, orderNumber, choice.price);
+
+  // Options consumed — prevent a stale reply from creating a duplicate order
+  await clearPendingOptions(phone);
+
+  // Clean temp PDF asynchronously
+  setTimeout(() => {
+    try {
+      fs.unlinkSync(proformaPath);
+    } catch {
+      // best-effort cleanup, ignore if already removed
+    }
+  }, 60000);
+
+  return true;
 }
 
 /**
@@ -195,26 +295,4 @@ export async function importInventoryFromFile(
   }
 
   return importInventoryBatch(items, defaultSupplierId);
-}
-
-function formatSearchOptions(options: Product[], action: any): string {
-  const numberEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'];
-  const top5 = options.slice(0, 5);
-
-  let msg = t.agent.searchHeader(top5.length, action.part, action.vehicle_make, action.model, action.year);
-
-  top5.forEach((item, i) => {
-    msg += t.agent.searchItem({
-      emoji: numberEmojis[i],
-      name: item.name,
-      reference: item.reference,
-      price: formatPrice(item.price),
-      quantity: item.quantity,
-      deliveryTime: item.delivery_time,
-      supplier: item.supplier,
-    });
-  });
-
-  msg += t.agent.searchFooter();
-  return msg;
 }
