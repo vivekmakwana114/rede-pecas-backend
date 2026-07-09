@@ -1,5 +1,5 @@
 {
-  "name": "rede-pecas-backend",
+  "name": "rede-pecas-api",
   "version": "1.0.0",
   "description": "Rede Peças - Central API Backend for WhatsApp AI Agent and Admin Panel",
   "type": "module",
