@@ -216,6 +216,15 @@ async function processMessageFlow(
     if (handled) return;
   }
 
+  // 8.6 PRIORITY: pending service-offer opt-in reply ("sim"/"não" after picking a
+  // product that has an attached service). Same reasoning as 8.5 above — must run
+  // before stage 9's vehicle-confirmation sim/não catch-all would otherwise swallow it.
+  const pendingServiceOffer = await sessionService.getPendingServiceOffer(phone);
+  if (pendingServiceOffer) {
+    const handled = await productService.processServiceOptIn(phone, customerText, pendingServiceOffer);
+    if (handled) return;
+  }
+
   // 9. PRIORITY: Customer is confirming/rejecting decoded VIN car
   const confirmedVehicle = await vehicleService.processVehicleConfirmation(phone, customerText, customer);
   if (confirmedVehicle) return;

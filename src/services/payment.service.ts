@@ -90,7 +90,7 @@ export async function getPendingPaymentOrder(phone: string) {
  */
 export async function processMethodChoice(phone: string, customerReply: string): Promise<boolean> {
   const { rows } = await db.query(
-    `SELECT number, unit_price FROM orders
+    `SELECT number, unit_price, service_price FROM orders
      WHERE customer_phone = $1
        AND status = 'awaiting_payment_method'
      ORDER BY created_at DESC LIMIT 1`,
@@ -98,7 +98,8 @@ export async function processMethodChoice(phone: string, customerReply: string):
   );
   if (!rows.length) return false;
 
-  const { number, unit_price } = rows[0];
+  const { number, unit_price, service_price } = rows[0];
+  const amount = Number(unit_price) + Number(service_price || 0);
   const reply = customerReply.toLowerCase();
 
   if (reply.includes('transfer') || reply.includes('deposit') || reply.includes('banco') || reply === '1') {
@@ -109,7 +110,7 @@ export async function processMethodChoice(phone: string, customerReply: string):
     );
     return true;
   } else if (reply.includes('multicaixa') || reply.includes('express') || reply === '2') {
-    await confirmMethodAndSendInstructions(phone, number, unit_price, PAYMENT_METHODS.MULTICAIXA_EXPRESS);
+    await confirmMethodAndSendInstructions(phone, number, amount, PAYMENT_METHODS.MULTICAIXA_EXPRESS);
     return true;
   } else if (reply.includes('tpa') || reply.includes('terminal') || reply.includes('dinheiro') || reply === '3') {
     await sendWhatsAppButtons(phone, t.payment.askInPersonSubtypeBody(), t.payment.askInPersonSubtypeButtons);
@@ -119,7 +120,7 @@ export async function processMethodChoice(phone: string, customerReply: string):
     );
     return true;
   } else {
-    await askPaymentMethod(phone, number, unit_price);
+    await askPaymentMethod(phone, number, amount);
     return true;
   }
 }
@@ -129,7 +130,7 @@ export async function processMethodChoice(phone: string, customerReply: string):
  */
 export async function processMethodSubtype(phone: string, reply: string): Promise<boolean> {
   const { rows } = await db.query(
-    `SELECT number, unit_price, status FROM orders
+    `SELECT number, unit_price, service_price, status FROM orders
      WHERE customer_phone = $1
        AND status IN ('awaiting_bank_subtype', 'awaiting_in_person_subtype')
      ORDER BY created_at DESC LIMIT 1`,
@@ -137,7 +138,8 @@ export async function processMethodSubtype(phone: string, reply: string): Promis
   );
   if (!rows.length) return false;
 
-  const { number, unit_price, status } = rows[0];
+  const { number, unit_price, service_price, status } = rows[0];
+  const amount = Number(unit_price) + Number(service_price || 0);
   const r = reply.toLowerCase();
 
   let method: any;
@@ -149,7 +151,7 @@ export async function processMethodSubtype(phone: string, reply: string): Promis
       : PAYMENT_METHODS.MOBILE_POS;
   }
 
-  await confirmMethodAndSendInstructions(phone, number, unit_price, method);
+  await confirmMethodAndSendInstructions(phone, number, amount, method);
   return true;
 }
 
@@ -186,7 +188,7 @@ export async function confirmMethodAndSendInstructions(
  */
 export async function processPaymentProof(phone: string, mediaId: string, mediaType: string | null): Promise<boolean> {
   const { rows } = await db.query(
-    `SELECT number, unit_price, payment_method FROM orders
+    `SELECT number, unit_price, service_price, payment_method FROM orders
      WHERE customer_phone = $1
        AND status = 'awaiting_payment_proof'
      ORDER BY created_at DESC LIMIT 1`,
@@ -194,7 +196,8 @@ export async function processPaymentProof(phone: string, mediaId: string, mediaT
   );
   if (!rows.length) return false;
 
-  const { number, unit_price, payment_method } = rows[0];
+  const { number, unit_price, service_price, payment_method } = rows[0];
+  const amount = Number(unit_price) + Number(service_price || 0);
 
   // Vision can only inspect images, not PDFs — a 'document' proof skips
   // straight to acceptance below, same as before this check existed.
@@ -237,7 +240,7 @@ export async function processPaymentProof(phone: string, mediaId: string, mediaT
   if (staffPhone) {
     await sendWhatsAppMessage(
       staffPhone,
-      t.payment.proofReceivedStaff(number, methodName, formatPrice(unit_price), phone, `${config.appUrl}/admin/orders`)
+      t.payment.proofReceivedStaff(number, methodName, formatPrice(amount), phone, `${config.appUrl}/admin/orders`)
     );
   }
 

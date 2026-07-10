@@ -14,9 +14,9 @@ import {
   ImportItem,
   RestockNotification
 } from '../models/supplier.model.js';
-import { createOrder, generateOrderNumber } from '../models/order.model.js';
+import { createOrder, addServiceToOrder, generateOrderNumber } from '../models/order.model.js';
 import { getCustomerVehicles } from '../models/vehicle.model.js';
-import { sendWhatsAppMessage, sendWhatsAppList } from './whatsapp.service.js';
+import { sendWhatsAppMessage, sendWhatsAppList, sendWhatsAppButtons } from './whatsapp.service.js';
 import { generateProformaPDF, sendProformaWhatsApp } from './pdf.service.js';
 import { askPaymentMethod } from './payment.service.js';
 import {
@@ -24,7 +24,10 @@ import {
   clearPendingOptions,
   savePendingWaitlistOffer,
   clearPendingWaitlistOffer,
-  getChosenVehicle
+  savePendingServiceOffer,
+  clearPendingServiceOffer,
+  getChosenVehicle,
+  PendingServiceOffer
 } from './session.service.js';
 import { formatPrice } from '../utils/helpers.js';
 import { t } from '../i18n/messages.js';
@@ -51,19 +54,24 @@ async function resolveSearchVehicle(phone: string) {
  * offers to waitlist the customer against the closest out-of-stock match.
  */
 export async function searchAndRespond(phone: string, customerText: string): Promise<void> {
+  logger.info(`[PRODUCT SEARCH] ${phone} searching for: "${customerText}"`);
   await sendWhatsAppMessage(phone, t.agent.checkingStock());
 
   const options = await searchProductsInInventory({ part: customerText });
 
   if (!options || options.length === 0) {
+    logger.info(`[PRODUCT SEARCH] ${phone} no matches for "${customerText}"`);
     await sendWhatsAppMessage(phone, t.agent.noStockFound());
 
     const candidate = await findZeroQuantityProductMatch({ part: customerText });
     if (candidate) {
+      logger.info(`[PRODUCT SEARCH] ${phone} offering waitlist for out-of-stock match: ${candidate.name}`);
       await savePendingWaitlistOffer(phone, { productId: candidate.id, productName: candidate.name });
     }
     return;
   }
+
+  logger.info(`[PRODUCT SEARCH] ${phone} found ${options.length} match(es) for "${customerText}": ${options.map(o => o.name).join(', ')}`);
 
   // Persist results so the customer's list tap / typed digit in the next message can resolve them
   await savePendingOptions(phone, options);
@@ -109,11 +117,42 @@ function resolveOptionIndex(customerText: string | null, listReplyId: string | n
 }
 
 /**
+ * Generates and sends the proforma for a resolved order (product, plus an
+ * optional accepted service line), then kicks off the payment-method flow
+ * with their combined total. Shared by the no-service path in
+ * processProductSelection and both branches of processServiceOptIn below,
+ * so the proforma/payment sequence only lives in one place.
+ */
+async function finalizeOrder(
+  phone: string,
+  orderNumber: string,
+  product: Product,
+  service: { name: string; price: number } | null
+): Promise<void> {
+  const total = product.price + (service?.price ?? 0);
+
+  const proformaPath = await generateProformaPDF(orderNumber, phone, product, service);
+  await sendProformaWhatsApp(phone, proformaPath, orderNumber, product, total);
+  await askPaymentMethod(phone, orderNumber, total);
+
+  // Clean temp PDF asynchronously
+  setTimeout(() => {
+    try {
+      fs.unlinkSync(proformaPath);
+    } catch {
+      // best-effort cleanup, ignore if already removed
+    }
+  }, 60000);
+}
+
+/**
  * Handles the customer's reply to a just-shown product list — creates the
- * order, sends the proforma PDF, and kicks off the payment-method flow.
- * Returns false (not handled) when the reply doesn't look like a selection
- * at all, so the pipeline can fall through to a fresh search instead of a
- * dead-end "didn't understand" reply.
+ * order, then either offers the product's attached service as a sequential
+ * follow-up (leaving the proforma/payment for processServiceOptIn to
+ * finish once they answer) or, when there's no service to offer, finalizes
+ * the order immediately as before. Returns false (not handled) when the
+ * reply doesn't look like a selection at all, so the pipeline can fall
+ * through to a fresh search instead of a dead-end "didn't understand" reply.
  */
 export async function processProductSelection(
   phone: string,
@@ -133,23 +172,59 @@ export async function processProductSelection(
   const orderNumber = await generateOrderNumber();
   await createOrder(orderNumber, phone, choice);
 
-  const proformaPath = await generateProformaPDF(orderNumber, phone, choice);
-  await sendProformaWhatsApp(phone, proformaPath, orderNumber, choice);
-  await askPaymentMethod(phone, orderNumber, choice.price);
-
   // Options consumed — prevent a stale reply from creating a duplicate order
   await clearPendingOptions(phone);
 
-  // Clean temp PDF asynchronously
-  setTimeout(() => {
-    try {
-      fs.unlinkSync(proformaPath);
-    } catch {
-      // best-effort cleanup, ignore if already removed
-    }
-  }, 60000);
+  if (choice.service_offered && choice.service_name && choice.service_price) {
+    await sendWhatsAppMessage(phone, t.agent.productSelected(choice.name, formatPrice(choice.price)));
+    await savePendingServiceOffer(phone, {
+      orderNumber,
+      product: choice,
+      serviceName: choice.service_name,
+      servicePrice: choice.service_price,
+    });
+    await sendWhatsAppButtons(
+      phone,
+      t.agent.serviceOfferBody(choice.service_name, formatPrice(choice.service_price)),
+      t.agent.serviceOfferButtons
+    );
+    return true;
+  }
 
+  await finalizeOrder(phone, orderNumber, choice, null);
   return true;
+}
+
+/**
+ * Handles the customer's yes/no reply to a pending "want to add this
+ * service to your order?" offer — adds the service to the order (or not)
+ * and finalizes it either way (proforma + payment kickoff), same yes/no
+ * detection as processWaitlistOptIn below.
+ */
+export async function processServiceOptIn(
+  phone: string,
+  reply: string,
+  offer: PendingServiceOffer
+): Promise<boolean> {
+  const r = reply.toLowerCase();
+  const isYes = r.includes('sim') || r.includes('yes') || r === '1' || r.includes('✅') || r.includes('btn_0');
+  const isNo = r.includes('não') || r.includes('nao') || r === '2' || r.includes('❌') || r.includes('btn_1');
+
+  if (isYes) {
+    await addServiceToOrder(offer.orderNumber, offer.serviceName, offer.servicePrice);
+    await clearPendingServiceOffer(phone);
+    const total = offer.product.price + offer.servicePrice;
+    await sendWhatsAppMessage(phone, t.agent.serviceAdded(offer.serviceName, formatPrice(total)));
+    await finalizeOrder(phone, offer.orderNumber, offer.product, { name: offer.serviceName, price: offer.servicePrice });
+    return true;
+  }
+  if (isNo) {
+    await clearPendingServiceOffer(phone);
+    await sendWhatsAppMessage(phone, t.agent.serviceDeclined());
+    await finalizeOrder(phone, offer.orderNumber, offer.product, null);
+    return true;
+  }
+  return false; // leave the offer pending; let the message fall through to normal processing
 }
 
 /**
@@ -225,13 +300,23 @@ const HEADER_ALIASES: Record<string, string[]> = {
   supplierName: ['supplier', 'supplier_name', 'fornecedor', 'nome_fornecedor'],
   supplierNif: ['supplier_nif', 'nif_fornecedor'],
   supplierProvince: ['supplier_province', 'provincia_fornecedor'],
+  service: ['service', 'servico', 'serviço'],
+  serviceName: ['service_name', 'nome_servico', 'nome_serviço'],
+  servicePrice: ['service_price', 'preco_servico', 'preço_serviço'],
 };
+
+// Values a CSV/XLSX author would plausibly type in the "service: yes/no" column.
+const YES_VALUES = new Set(['yes', 'sim', 'true', '1']);
 
 /**
  * Maps one spreadsheet row to an import item. Supplier columns are optional —
  * a row without them falls back to the request-level default supplier
  * (importInventoryBatch/importProductsBatch handle that fallback), so a
  * single-supplier file doesn't need to repeat the supplier on every row.
+ *
+ * The service columns fail soft: a row with `service = yes` but a missing/invalid
+ * service_name or service_price still imports the product — just without the
+ * service attached — rather than discarding the whole row over a bad sub-field.
  */
 function normalizeRow(row: Record<string, any>): ImportItem | null {
   const lowerRow = Object.fromEntries(Object.entries(row).map(([k, v]) => [k.trim().toLowerCase(), v]));
@@ -249,6 +334,16 @@ function normalizeRow(row: Record<string, any>): ImportItem | null {
 
   const supplierName = pick('supplierName');
 
+  const wantsService = YES_VALUES.has(String(pick('service') ?? '').trim().toLowerCase());
+  const serviceName = pick('serviceName');
+  const servicePrice = Number(pick('servicePrice'));
+  const serviceValid = wantsService && !!serviceName && !Number.isNaN(servicePrice);
+  if (wantsService && !serviceValid) {
+    logger.warn(
+      `[INVENTORY IMPORT] Row for reference="${reference}" has service=yes but an invalid/missing service_name or service_price — importing the product without the service.`
+    );
+  }
+
   return {
     reference: String(reference),
     name: String(name),
@@ -257,6 +352,9 @@ function normalizeRow(row: Record<string, any>): ImportItem | null {
     supplierName: supplierName ? String(supplierName) : undefined,
     supplierNif: pick('supplierNif') ? String(pick('supplierNif')) : undefined,
     supplierProvince: pick('supplierProvince') ? String(pick('supplierProvince')) : undefined,
+    serviceOffered: serviceValid,
+    serviceName: serviceValid ? String(serviceName) : undefined,
+    servicePrice: serviceValid ? servicePrice : undefined,
   };
 }
 

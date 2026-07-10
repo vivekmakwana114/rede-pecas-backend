@@ -23,13 +23,16 @@ function addDays(date: Date, days: number): Date {
 }
 
 /**
- * Generates an A4 PDF Proforma invoice for the customer.
+ * Generates an A4 PDF Proforma invoice for the customer. When `service` is
+ * given, it's rendered as its own table row (own reference-less line, own
+ * price) below the product, and the total box sums both.
  * Document text is Portuguese (customer-facing).
  */
 export async function generateProformaPDF(
   orderNumber: string,
   phone: string,
-  item: any
+  item: any,
+  service: { name: string; price: number } | null = null
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
@@ -68,6 +71,7 @@ export async function generateProformaPDF(
 
     // Table Header
     const tY = 240;
+    const ROW_HEIGHT = 36;
     doc.rect(50, tY, 495, 28).fillColor('#1A3A5C').fill();
     doc.fontSize(10).fillColor('#FFFFFF').font('Helvetica-Bold')
       .text(pc.tableDescription, 60, tY + 9)
@@ -76,25 +80,37 @@ export async function generateProformaPDF(
       .text(pc.tableUnitPrice, 420, tY + 9, { width: 80, align: 'right' })
       .text(pc.tableTotal, 480, tY + 9, { width: 60, align: 'right' });
 
-    // Table Row
-    const iY = tY + 28;
-    doc.rect(50, iY, 495, 36).fillColor('#F5F7FA').fill();
-    doc.fontSize(10).fillColor('#333333').font('Helvetica')
-      .text(item.name, 60, iY + 6, { width: 210 })
-      .text(item.reference, 280, iY + 12)
-      .text('1', 380, iY + 12, { width: 40, align: 'center' })
-      .text(formatPrice(item.price), 420, iY + 12, { width: 80, align: 'right' })
-      .text(formatPrice(item.price), 480, iY + 12, { width: 60, align: 'right' });
-    doc.fontSize(8).fillColor('#777777')
-      .text(pc.supplierLabel(item.supplier || 'Rede Peças'), 60, iY + 22);
-    doc.rect(50, tY, 495, 64).strokeColor('#CCCCCC').lineWidth(0.5).stroke();
+    // Table Rows — the product, then the accepted service (if any)
+    const lineItems = [
+      { description: item.name, reference: item.reference, price: item.price, supplierNote: pc.supplierLabel(item.supplier || 'Rede Peças') },
+      ...(service ? [{ description: service.name, reference: '—', price: service.price, supplierNote: null as string | null }] : []),
+    ];
+
+    lineItems.forEach((line, i) => {
+      const iY = tY + 28 + i * ROW_HEIGHT;
+      doc.rect(50, iY, 495, ROW_HEIGHT).fillColor('#F5F7FA').fill();
+      doc.fontSize(10).fillColor('#333333').font('Helvetica')
+        .text(line.description, 60, iY + 6, { width: 210 })
+        .text(line.reference, 280, iY + 12)
+        .text('1', 380, iY + 12, { width: 40, align: 'center' })
+        .text(formatPrice(line.price), 420, iY + 12, { width: 80, align: 'right' })
+        .text(formatPrice(line.price), 480, iY + 12, { width: 60, align: 'right' });
+      if (line.supplierNote) {
+        doc.fontSize(8).fillColor('#777777').text(line.supplierNote, 60, iY + 22);
+      }
+    });
+
+    const tableBodyHeight = lineItems.length * ROW_HEIGHT;
+    doc.rect(50, tY, 495, 28 + tableBodyHeight).strokeColor('#CCCCCC').lineWidth(0.5).stroke();
+
+    const total = lineItems.reduce((sum, line) => sum + line.price, 0);
 
     // Total Area
-    const totalY = tY + 100;
+    const totalY = tY + 28 + tableBodyHeight + 36;
     doc.rect(350, totalY, 195, 28).fillColor('#1A3A5C').fill();
     doc.fontSize(12).fillColor('#FFFFFF').font('Helvetica-Bold')
       .text(pc.totalDue, 360, totalY + 8)
-      .text(formatPrice(item.price), 480, totalY + 8, { width: 60, align: 'right' });
+      .text(formatPrice(total), 480, totalY + 8, { width: 60, align: 'right' });
 
     // Payment Instructions
     const payY = totalY + 60;
@@ -124,12 +140,16 @@ export async function generateProformaPDF(
 
 /**
  * Sends the generated proforma PDF to the customer via Meta WhatsApp Business API.
+ * `totalAmount` is the order's combined total (product + accepted service, if
+ * any) — passed explicitly rather than read off `item.price` alone, so the
+ * confirmation text always matches what generateProformaPDF's total box shows.
  */
 export async function sendProformaWhatsApp(
   phone: string,
   pdfPath: string,
   orderNumber: string,
-  item: any
+  item: any,
+  totalAmount: number
 ): Promise<void> {
   const API_URL = `https://graph.facebook.com/v19.0/${config.whatsapp.phoneNumberId}`;
   const token = config.whatsapp.token;
@@ -169,7 +189,7 @@ export async function sendProformaWhatsApp(
         to: phone,
         type: 'text',
         text: {
-          body: t.pdf.sendMessage.orderConfirmed(item.name, orderNumber, formatPrice(item.price)),
+          body: t.pdf.sendMessage.orderConfirmed(item.name, orderNumber, formatPrice(totalAmount)),
         },
       }),
     });
@@ -225,13 +245,22 @@ export async function generatePrimaveraInvoice(order: any): Promise<string> {
         tipoDocumento: 'FA', // Factura
         serie: 'A',
         cliente: order.customer_phone,
-        linhas: [{
-          artigo: order.reference || 'PEC-GEN',
-          descricao: order.product_name || 'Peça Automóvel',
-          quantidade: order.quantity || 1,
-          precoUnitario: order.unit_price,
-          iva: 14, // VAT in Angola (14%)
-        }],
+        linhas: [
+          {
+            artigo: order.reference || 'PEC-GEN',
+            descricao: order.product_name || 'Peça Automóvel',
+            quantidade: order.quantity || 1,
+            precoUnitario: order.unit_price,
+            iva: 14, // VAT in Angola (14%)
+          },
+          ...(order.service_price ? [{
+            artigo: 'SERVICO',
+            descricao: order.service_name || 'Serviço',
+            quantidade: 1,
+            precoUnitario: order.service_price,
+            iva: 14,
+          }] : []),
+        ],
         referencia: order.number,
       }),
     });
@@ -386,21 +415,31 @@ async function generateMockInvoicePDF(order: any): Promise<string> {
       .text(mc.tableUnitPrice, 420, tY + 9, { width: 80, align: 'right' })
       .text(mc.tableTotal, 480, tY + 9, { width: 60, align: 'right' });
 
-    const iY = tY + 28;
-    doc.rect(50, iY, 495, 36).fillColor('#F1F8E9').fill();
-    doc.fontSize(10).fillColor('#333333').font('Helvetica')
-      .text(order.product_name || mc.defaultProductName, 60, iY + 6, { width: 210 })
-      .text(order.reference || 'PEC-GEN', 280, iY + 12)
-      .text('1', 380, iY + 12, { width: 40, align: 'center' })
-      .text(formatPrice(order.unit_price), 420, iY + 12, { width: 80, align: 'right' })
-      .text(formatPrice(order.unit_price), 480, iY + 12, { width: 60, align: 'right' });
+    const ROW_HEIGHT = 36;
+    const lineItems = [
+      { description: order.product_name || mc.defaultProductName, reference: order.reference || 'PEC-GEN', price: order.unit_price },
+      ...(order.service_price ? [{ description: order.service_name || 'Serviço', reference: '—', price: order.service_price }] : []),
+    ];
+
+    lineItems.forEach((line, i) => {
+      const iY = tY + 28 + i * ROW_HEIGHT;
+      doc.rect(50, iY, 495, ROW_HEIGHT).fillColor('#F1F8E9').fill();
+      doc.fontSize(10).fillColor('#333333').font('Helvetica')
+        .text(line.description, 60, iY + 6, { width: 210 })
+        .text(line.reference, 280, iY + 12)
+        .text('1', 380, iY + 12, { width: 40, align: 'center' })
+        .text(formatPrice(line.price), 420, iY + 12, { width: 80, align: 'right' })
+        .text(formatPrice(line.price), 480, iY + 12, { width: 60, align: 'right' });
+    });
+
+    const total = lineItems.reduce((sum, line) => sum + line.price, 0);
 
     // Total
-    const totalY = tY + 100;
+    const totalY = tY + 28 + lineItems.length * ROW_HEIGHT + 36;
     doc.rect(350, totalY, 195, 28).fillColor('#2E7D32').fill();
     doc.fontSize(12).fillColor('#FFFFFF').font('Helvetica-Bold')
       .text(mc.totalPaid, 360, totalY + 8)
-      .text(formatPrice(order.unit_price), 480, totalY + 8, { width: 60, align: 'right' });
+      .text(formatPrice(total), 480, totalY + 8, { width: 60, align: 'right' });
 
     // AGT Stamp
     doc.fontSize(8).fillColor('#555555').font('Helvetica-Oblique')

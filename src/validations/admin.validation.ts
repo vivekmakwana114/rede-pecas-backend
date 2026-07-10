@@ -23,6 +23,9 @@ export const importProductsBatch: ValidationSchema = {
           supplierName: Joi.string(),
           supplierNif: Joi.string().allow(''),
           supplierProvince: Joi.string().allow(''),
+          serviceOffered: Joi.boolean(),
+          serviceName: Joi.string().allow(''),
+          servicePrice: Joi.number(),
         })
       )
       .required(),

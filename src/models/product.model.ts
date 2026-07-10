@@ -1,4 +1,5 @@
 import { db } from '../config/db.js';
+import { logger } from '../config/logger.js';
 
 export interface Product {
   id?: number;
@@ -10,7 +11,23 @@ export interface Product {
   supplier?: string;
   supplier_id?: number;
   supplier_rating?: number;
+  service_offered?: boolean;
+  service_name?: string;
+  service_price?: number;
 }
+
+/**
+ * Builds an OR-of-terms tsquery from raw customer text: to_tsvector on the input
+ * applies the same 'portuguese' tokenizing/stemming/stopword-removal as the
+ * search_vector column, then the resulting lexemes are joined with '|' instead of
+ * AND-ing them (plainto_tsquery's default). AND-ing was the bug — a customer message
+ * always carries filler words ("I need...", "para o meu...") that aren't in the
+ * Portuguese stopword list (it doesn't know English, and doesn't catch every PT
+ * filler either), so plainto_tsquery required the product to literally contain
+ * "need"/"para" etc. and matched nothing. OR-ing means any one real keyword overlap
+ * (e.g. "oil"/"filter") is enough — customers can phrase the request however they want.
+ */
+const OR_TSQUERY = `to_tsquery('portuguese', array_to_string(tsvector_to_array(to_tsvector('portuguese', unaccent($1))), ' | '))`;
 
 /**
  * Searches the inventory for products matching the customer's request by
@@ -34,6 +51,9 @@ export async function searchProductsInInventory({
       p.price,
       p.quantity,
       p.delivery_time,
+      p.service_offered,
+      p.service_name,
+      p.service_price,
       s.name AS supplier,
       s.rating AS supplier_rating
     FROM products p
@@ -41,7 +61,7 @@ export async function searchProductsInInventory({
     WHERE
       p.quantity > 0
       AND p.active = true
-      AND p.search_vector @@ plainto_tsquery('portuguese', unaccent($1))
+      AND p.search_vector @@ ${OR_TSQUERY}
     ORDER BY
       p.price ASC,
       s.rating DESC
@@ -49,6 +69,7 @@ export async function searchProductsInInventory({
     `,
     [part]
   );
+  logger.debug(`[PRODUCT SEARCH] query="${part}" matches=${rows.length}`);
   return rows;
 }
 
@@ -84,7 +105,7 @@ export async function findZeroQuantityProductMatch({
      FROM products
      WHERE quantity = 0
        AND active = true
-       AND search_vector @@ plainto_tsquery('portuguese', unaccent($1))
+       AND search_vector @@ ${OR_TSQUERY}
      ORDER BY updated_at DESC
      LIMIT 1`,
     [part]

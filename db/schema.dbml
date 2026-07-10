@@ -35,6 +35,9 @@ Table products {
   unit text [default: 'unidade']
   waitlist_phones "text[]" [default: '{}', note: 'phones awaiting a restock notification']
   delivery_time text [default: 'Em stock']
+  service_offered boolean [default: false, note: 'optional attached service, e.g. installation']
+  service_name text
+  service_price numeric(12,2)
   active boolean [default: true]
   created_at timestamptz [default: `NOW()`]
   updated_at timestamptz [default: `NOW()`]
@@ -61,6 +64,8 @@ Table orders {
   customer_engine_number text
   payment_proof_media_id text [note: 'WhatsApp media id; folded in from the former payment_proofs table (strict 1:1 with the order)']
   payment_proof_media_type text
+  service_name text [note: 'snapshot of the accepted product service, if any — copied at accept-time like unit_price']
+  service_price numeric(12,2)
   created_at timestamptz [default: `NOW()`]
   updated_at timestamptz [default: `NOW()`]
 

@@ -86,6 +86,12 @@ CREATE TABLE IF NOT EXISTS products (
   -- Delivery
   delivery_time    TEXT DEFAULT 'Em stock',     -- e.g. "Hoje", "2 dias", "Sob encomenda"
 
+  -- Optional attached service (e.g. installation), offered as a follow-up
+  -- when a customer picks this product — see CLAUDE.md message pipeline.
+  service_offered  BOOLEAN DEFAULT false,
+  service_name     TEXT,
+  service_price    NUMERIC(12,2),
+
   -- Control
   active           BOOLEAN DEFAULT true,
   created_at       TIMESTAMPTZ DEFAULT NOW(),
@@ -110,6 +116,9 @@ CREATE TABLE IF NOT EXISTS products (
 
 ALTER TABLE products DROP COLUMN IF EXISTS category_id;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS waitlist_phones TEXT[] DEFAULT '{}';
+ALTER TABLE products ADD COLUMN IF NOT EXISTS service_offered BOOLEAN DEFAULT false;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS service_name TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS service_price NUMERIC(12,2);
 
 CREATE INDEX IF NOT EXISTS idx_products_fts ON products USING GIN (search_vector);
 CREATE INDEX IF NOT EXISTS idx_products_supplier ON products (supplier_id);
@@ -152,12 +161,20 @@ CREATE TABLE IF NOT EXISTS orders (
   -- always a strict 1:1 with the order, so no benefit to a separate table)
   payment_proof_media_id  TEXT,
   payment_proof_media_type TEXT,
+  -- Snapshot of the attached service accepted on this order (see
+  -- products.service_offered) — copied at accept-time, same idiom as
+  -- unit_price, so a later catalog price change never alters a placed order.
+  -- NULL means no service was offered or the customer declined it.
+  service_name            TEXT,
+  service_price           NUMERIC(12,2),
   created_at              TIMESTAMPTZ DEFAULT NOW(),
   updated_at              TIMESTAMPTZ DEFAULT NOW()
 );
 
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_proof_media_id TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_proof_media_type TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS service_name TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS service_price NUMERIC(12,2);
 
 CREATE INDEX IF NOT EXISTS idx_orders_customer_phone ON orders (customer_phone);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);

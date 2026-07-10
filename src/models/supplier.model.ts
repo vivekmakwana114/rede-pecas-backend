@@ -17,6 +17,13 @@ export interface ImportItem {
   supplierName?: string;
   supplierNif?: string;
   supplierProvince?: string;
+  // Optional attached service (e.g. installation) offered as a WhatsApp
+  // follow-up when a customer picks this product. serviceOffered is only
+  // ever true when serviceName/servicePrice both parsed successfully — see
+  // normalizeRow in product.service.ts.
+  serviceOffered?: boolean;
+  serviceName?: string;
+  servicePrice?: number;
 }
 
 /**
@@ -82,13 +89,16 @@ export async function importProductsBatch(
           `WITH prev AS (
              SELECT quantity, waitlist_phones FROM products WHERE supplier_id = $1 AND reference = $2
            )
-           INSERT INTO products (supplier_id, reference, name, price, quantity, active, updated_at)
-           VALUES ($1, $2, $3, $4, $5, true, NOW())
+           INSERT INTO products (supplier_id, reference, name, price, quantity, service_offered, service_name, service_price, active, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NOW())
            ON CONFLICT (supplier_id, reference)
            DO UPDATE SET
              name = EXCLUDED.name,
              price = EXCLUDED.price,
              quantity = EXCLUDED.quantity,
+             service_offered = EXCLUDED.service_offered,
+             service_name = EXCLUDED.service_name,
+             service_price = EXCLUDED.service_price,
              active = true,
              updated_at = NOW()
            RETURNING
@@ -96,7 +106,16 @@ export async function importProductsBatch(
              (xmax = 0) AS was_inserted,
              (SELECT quantity FROM prev) AS previous_quantity,
              (SELECT waitlist_phones FROM prev) AS previous_waitlist_phones`,
-          [supplierId, item.reference, item.name, item.price, item.quantity]
+          [
+            supplierId,
+            item.reference,
+            item.name,
+            item.price,
+            item.quantity,
+            item.serviceOffered ?? false,
+            item.serviceName ?? null,
+            item.servicePrice ?? null,
+          ]
         );
 
         const row = result.rows[0];

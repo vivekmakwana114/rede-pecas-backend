@@ -1,6 +1,7 @@
 import { createClient } from 'redis';
 import { config } from '../config/config.js';
 import { logger } from '../config/logger.js';
+import { Product } from '../models/product.model.js';
 
 let redisClient: any = null;
 let useMemoryFallback = false;
@@ -344,5 +345,67 @@ export async function clearPendingWaitlistOffer(phone: string): Promise<void> {
     await redisClient.del(key);
   } catch (err) {
     logger.error('Error deleting pending waitlist offer from Redis', err);
+  }
+}
+
+/**
+ * Tracks a pending "want to add this service to your order?" offer awaiting
+ * the customer's yes/no reply — same shape/lifecycle as
+ * savePendingWaitlistOffer above, just a distinct offer payload/key since a
+ * customer could in principle have both pending at slightly different points.
+ * Carries the full selected product (not just its name) so the proforma can
+ * be generated once the offer resolves, without a re-fetch.
+ */
+export interface PendingServiceOffer {
+  orderNumber: string;
+  product: Product;
+  serviceName: string;
+  servicePrice: number;
+}
+
+const serviceOfferCache = new Map<string, PendingServiceOffer>();
+
+export async function savePendingServiceOffer(phone: string, offer: PendingServiceOffer): Promise<void> {
+  const key = `serviceOffer:${phone}`;
+  serviceOfferCache.set(key, offer);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, SESSION_TTL, JSON.stringify(offer));
+  } catch (err) {
+    logger.error('Error saving pending service offer to Redis', err);
+  }
+}
+
+export async function getPendingServiceOffer(phone: string): Promise<PendingServiceOffer | null> {
+  const key = `serviceOffer:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return serviceOfferCache.get(key) || null;
+  }
+
+  try {
+    const data = await redisClient.get(key);
+    return data ? JSON.parse(data) : null;
+  } catch (err) {
+    logger.error('Error fetching pending service offer from Redis', err);
+    return serviceOfferCache.get(key) || null;
+  }
+}
+
+export async function clearPendingServiceOffer(phone: string): Promise<void> {
+  const key = `serviceOffer:${phone}`;
+  serviceOfferCache.delete(key);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.del(key);
+  } catch (err) {
+    logger.error('Error deleting pending service offer from Redis', err);
   }
 }
