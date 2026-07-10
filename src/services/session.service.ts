@@ -293,6 +293,28 @@ export async function wasVehicleIdChoiceShown(phone: string): Promise<boolean> {
 }
 
 /**
+ * Clears the vehicle-ID choice flag once identification concludes (vehicle
+ * confirmed/rejected, or manual collection completes) — without this, the
+ * flag only expired via its 30-min TTL, which let it linger stale after the
+ * customer had already moved on (e.g. into a part search), a latent risk now
+ * that whatsapp.controller.ts's stage 10 fallback also reads this flag.
+ */
+export async function clearVehicleIdChoiceShown(phone: string): Promise<void> {
+  const key = `vehicleIdChoice:${phone}`;
+  vehicleIdChoiceSessions.delete(key);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.del(key);
+  } catch (err) {
+    logger.error('Error clearing vehicle-ID choice in Redis', err);
+  }
+}
+
+/**
  * Tracks a pending "want me to notify you when this product is back in
  * stock?" offer awaiting the customer's yes/no reply. Uses a dedicated map
  * (not the options `memoryCache`) since a single offer object is a
@@ -345,6 +367,63 @@ export async function clearPendingWaitlistOffer(phone: string): Promise<void> {
     await redisClient.del(key);
   } catch (err) {
     logger.error('Error deleting pending waitlist offer from Redis', err);
+  }
+}
+
+/**
+ * Tracks a pending "your waitlisted product is back in stock — order now?"
+ * offer awaiting the customer's yes/no reply. Kept separate from
+ * waitlistOfferCache above even though the shape is identical — that one
+ * means "yes, notify me later"; this one means "yes, order right now" — and
+ * a customer could plausibly have both pending for different products.
+ */
+const restockOrderOfferCache = new Map<string, { productId: number; productName: string }>();
+
+export async function savePendingRestockOrderOffer(
+  phone: string,
+  offer: { productId: number; productName: string }
+): Promise<void> {
+  const key = `restockOrder:${phone}`;
+  restockOrderOfferCache.set(key, offer);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, SESSION_TTL, JSON.stringify(offer));
+  } catch (err) {
+    logger.error('Error saving pending restock-order offer to Redis', err);
+  }
+}
+
+export async function getPendingRestockOrderOffer(phone: string): Promise<{ productId: number; productName: string } | null> {
+  const key = `restockOrder:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return restockOrderOfferCache.get(key) || null;
+  }
+
+  try {
+    const data = await redisClient.get(key);
+    return data ? JSON.parse(data) : null;
+  } catch (err) {
+    logger.error('Error fetching pending restock-order offer from Redis', err);
+    return restockOrderOfferCache.get(key) || null;
+  }
+}
+
+export async function clearPendingRestockOrderOffer(phone: string): Promise<void> {
+  const key = `restockOrder:${phone}`;
+  restockOrderOfferCache.delete(key);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.del(key);
+  } catch (err) {
+    logger.error('Error deleting pending restock-order offer from Redis', err);
   }
 }
 
@@ -407,5 +486,167 @@ export async function clearPendingServiceOffer(phone: string): Promise<void> {
     await redisClient.del(key);
   } catch (err) {
     logger.error('Error deleting pending service offer from Redis', err);
+  }
+}
+
+/**
+ * Tracks a pending "the admin marked this order's stock unavailable — want
+ * alternatives or the waitlist?" offer awaiting the customer's yes/no reply.
+ * Same shape/lifecycle as savePendingWaitlistOffer above.
+ */
+export interface PendingStockUnavailableOffer {
+  orderNumber: string;
+  productId: number;
+  productName: string;
+}
+
+const stockUnavailableOfferCache = new Map<string, PendingStockUnavailableOffer>();
+
+export async function savePendingStockUnavailableOffer(phone: string, offer: PendingStockUnavailableOffer): Promise<void> {
+  const key = `stockUnavailable:${phone}`;
+  stockUnavailableOfferCache.set(key, offer);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, SESSION_TTL, JSON.stringify(offer));
+  } catch (err) {
+    logger.error('Error saving pending stock-unavailable offer to Redis', err);
+  }
+}
+
+export async function getPendingStockUnavailableOffer(phone: string): Promise<PendingStockUnavailableOffer | null> {
+  const key = `stockUnavailable:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return stockUnavailableOfferCache.get(key) || null;
+  }
+
+  try {
+    const data = await redisClient.get(key);
+    return data ? JSON.parse(data) : null;
+  } catch (err) {
+    logger.error('Error fetching pending stock-unavailable offer from Redis', err);
+    return stockUnavailableOfferCache.get(key) || null;
+  }
+}
+
+export async function clearPendingStockUnavailableOffer(phone: string): Promise<void> {
+  const key = `stockUnavailable:${phone}`;
+  stockUnavailableOfferCache.delete(key);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.del(key);
+  } catch (err) {
+    logger.error('Error deleting pending stock-unavailable offer from Redis', err);
+  }
+}
+
+// Tracks "the customer was just shown the VIN-already-registered choice"
+// (Search for a part / Add different vehicle) — same shape/lifecycle as
+// vehicleIdChoiceSessions above, 30-min TTL.
+const vinDuplicateChoiceSessions = new Map<string, number>();
+
+export async function markVinDuplicateChoiceShown(phone: string): Promise<void> {
+  const key = `vinDuplicateChoice:${phone}`;
+  vinDuplicateChoiceSessions.set(key, Date.now() + VEHICLE_ID_CHOICE_TTL * 1000);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, VEHICLE_ID_CHOICE_TTL, '1');
+  } catch (err) {
+    logger.error('Error marking VIN-duplicate choice shown in Redis', err);
+  }
+}
+
+export async function wasVinDuplicateChoiceShown(phone: string): Promise<boolean> {
+  const key = `vinDuplicateChoice:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    const expiresAt = vinDuplicateChoiceSessions.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
+  }
+
+  try {
+    const exists = await redisClient.exists(key);
+    return exists === 1;
+  } catch (err) {
+    logger.error('Error checking VIN-duplicate choice state in Redis', err);
+    const expiresAt = vinDuplicateChoiceSessions.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
+  }
+}
+
+export async function clearVinDuplicateChoice(phone: string): Promise<void> {
+  const key = `vinDuplicateChoice:${phone}`;
+  vinDuplicateChoiceSessions.delete(key);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.del(key);
+  } catch (err) {
+    logger.error('Error clearing VIN-duplicate choice in Redis', err);
+  }
+}
+
+// Tracks "the customer was just shown the document-unreadable retry/manual-entry
+// choice" (processVehicleDocument's failure paths) — same shape/lifecycle as
+// vehicleIdChoiceSessions above, 30-min TTL.
+const documentRetryChoiceSessions = new Map<string, number>();
+
+export async function markDocumentRetryChoiceShown(phone: string): Promise<void> {
+  const key = `documentRetryChoice:${phone}`;
+  documentRetryChoiceSessions.set(key, Date.now() + VEHICLE_ID_CHOICE_TTL * 1000);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, VEHICLE_ID_CHOICE_TTL, '1');
+  } catch (err) {
+    logger.error('Error marking document-retry choice shown in Redis', err);
+  }
+}
+
+export async function wasDocumentRetryChoiceShown(phone: string): Promise<boolean> {
+  const key = `documentRetryChoice:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    const expiresAt = documentRetryChoiceSessions.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
+  }
+
+  try {
+    const exists = await redisClient.exists(key);
+    return exists === 1;
+  } catch (err) {
+    logger.error('Error checking document-retry choice state in Redis', err);
+    const expiresAt = documentRetryChoiceSessions.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
+  }
+}
+
+export async function clearDocumentRetryChoice(phone: string): Promise<void> {
+  const key = `documentRetryChoice:${phone}`;
+  documentRetryChoiceSessions.delete(key);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.del(key);
+  } catch (err) {
+    logger.error('Error clearing document-retry choice in Redis', err);
   }
 }

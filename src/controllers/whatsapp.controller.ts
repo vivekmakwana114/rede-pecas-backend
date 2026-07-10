@@ -140,7 +140,7 @@ async function processMessageFlow(
   // here — those stages already implement this logic, don't duplicate it.
   if (customer.registration_status !== 'complete') {
     if (!customerText) return;
-    const handled = await customerService.processCustomerRegistration(phone, customer.registration_status, customerText);
+    const handled = await customerService.processCustomerRegistration(phone, customer, customerText);
     if (handled) return;
   }
 
@@ -198,12 +198,32 @@ async function processMessageFlow(
     return;
   }
 
+  // 8.2 PRIORITY: pending "try again" / "manual entry" reply after a document
+  // processing failure. Must run before stage 10's generic "start manual collection
+  // for any unmatched text" catch-all, which would otherwise misroute a "try again"
+  // reply straight into manual collection instead of re-prompting for a fresh photo.
+  const documentRetryChoiceShown = await sessionService.wasDocumentRetryChoiceShown(phone);
+  if (documentRetryChoiceShown) {
+    const handled = await vehicleService.processDocumentRetryChoice(phone, customerText);
+    if (handled) return;
+  }
+
   // 8.3 PRIORITY: pending "which vehicle is this for?" reply (customers with 2+
   // vehicles, shown by sendAskPartPrompt before inviting a part search). Must run
   // before the waitlist/confirmation checks below, which also interpret short
   // numeric/yes-no replies.
   const vehicleChoiceHandled = await vehicleService.resolvePendingVehicleChoice(phone, customerText);
   if (vehicleChoiceHandled) return;
+
+  // 8.4 PRIORITY: pending "this vehicle is already in your profile — search for a
+  // part, or add a different vehicle?" choice (VIN dedup check in processVIN). Same
+  // reasoning as 8.3 above — a "1"/"2" reply must resolve here before stage 9's
+  // sim/não catch-all would otherwise treat it as a vehicle (re)confirmation.
+  const vinDuplicateChoiceShown = await sessionService.wasVinDuplicateChoiceShown(phone);
+  if (vinDuplicateChoiceShown) {
+    const handled = await vehicleService.processVinDuplicateChoice(phone, customerText);
+    if (handled) return;
+  }
 
   // 8.5 PRIORITY: pending waitlist opt-in reply ("sim"/"não" after a no-stock message).
   // Must run before step 9 — processVehicleConfirmation treats any "sim"/"não"-shaped
@@ -225,14 +245,35 @@ async function processMessageFlow(
     if (handled) return;
   }
 
+  // 8.7 PRIORITY: pending "stock unavailable — want alternatives or the waitlist?"
+  // reply (admin marked an order's stock unavailable via the admin panel). Same
+  // reasoning as 8.5/8.6 above.
+  const pendingStockUnavailableOffer = await sessionService.getPendingStockUnavailableOffer(phone);
+  if (pendingStockUnavailableOffer) {
+    const stockUnavailableFirstName = customer.name?.split(' ')[0] || 'Cliente';
+    const handled = await productService.processStockUnavailableChoice(phone, customerText, pendingStockUnavailableOffer, stockUnavailableFirstName);
+    if (handled) return;
+  }
+
+  // 8.8 PRIORITY: pending "your waitlisted product is back in stock — order
+  // now?" reply. Same reasoning as 8.5/8.6/8.7 above.
+  const pendingRestockOrderOffer = await sessionService.getPendingRestockOrderOffer(phone);
+  if (pendingRestockOrderOffer) {
+    const handled = await productService.processRestockOrderChoice(phone, customerText, pendingRestockOrderOffer);
+    if (handled) return;
+  }
+
   // 9. PRIORITY: Customer is confirming/rejecting decoded VIN car
   const confirmedVehicle = await vehicleService.processVehicleConfirmation(phone, customerText, customer);
   if (confirmedVehicle) return;
 
-  // 10. PRIORITY: vehicle ID still missing and nothing above matched — treat as "no VIN
-  // available", start the deterministic manual collection instead of falling through to
-  // the AI agent.
-  if (needsVehicleId) {
+  // 10. PRIORITY: vehicle ID still missing, OR the VIN/photo/manual choice was just
+  // shown (including via "add another vehicle" — a customer already has a confirmed
+  // vehicle then, so needsVehicleId alone is false), and nothing above matched — treat
+  // as "no VIN available", start the deterministic manual collection instead of falling
+  // through to product search with whatever text they sent (e.g. a mistyped/partial
+  // VIN or a license plate, which isn't a valid 17-char VIN and isn't a part name either).
+  if (needsVehicleId || vehicleIdChoiceShown) {
     await vehicleService.startManualCollection(phone, 'awaiting_make');
     await sendWhatsAppMessage(phone, t.manual.askMakePrompt());
     return;
@@ -255,8 +296,13 @@ async function processMessageFlow(
   // too, even if they were already invited — otherwise a later "Hi"/"Hey" would be searched
   // as if it were a product name.
   const invitedToAskForPart = await sessionService.wasPartPromptSent(phone);
-  if (!invitedToAskForPart || GREETING_PATTERN.test(customerText.trim())) {
-    const asked = await vehicleService.sendAskPartPrompt(phone);
+  const isGreeting = GREETING_PATTERN.test(customerText.trim());
+  if (!invitedToAskForPart || isGreeting) {
+    // A bare greeting mid-conversation gets the warmer "Hey {name}! Good to have you
+    // back" wording (matches the doc's Stage 08), not the "Perfect!" tone meant for
+    // right after confirming a vehicle — nothing was actually just confirmed here.
+    const greeting = isGreeting ? { name: customer.name?.split(' ')[0] || 'Cliente' } : undefined;
+    const asked = await vehicleService.sendAskPartPrompt(phone, greeting);
     if (asked) return;
   }
 
@@ -281,5 +327,6 @@ async function processMessageFlow(
 
   // 15. Deterministic product search — full-text match against the inventory DB (already
   // handles PT synonyms/typos via the 'portuguese' tsquery config). No AI involved.
-  await productService.searchAndRespond(phone, customerText);
+  const searchFirstName = customer.name?.split(' ')[0] || 'Cliente';
+  await productService.searchAndRespond(phone, customerText, searchFirstName);
 }

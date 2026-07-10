@@ -137,6 +137,53 @@ export async function getOrdersPendingApproval(): Promise<OrderInfo[]> {
 }
 
 /**
+ * Retrieves orders awaiting the admin's stock-with-supplier confirmation
+ * (the panel's dedicated queue — see order.controller.ts). waiting_minutes
+ * lets the panel flag anything over 15 minutes itself; there's no backend
+ * timer/reminder for this since it's admin-panel-only, not a WhatsApp push.
+ */
+export async function getOrdersPendingStockConfirmation(): Promise<any[]> {
+  const { rows } = await db.query(`
+    SELECT
+      o.number, o.customer_phone AS customer,
+      o.unit_price AS price, o.created_at,
+      o.service_name, o.service_price,
+      p.id AS product_id, p.name AS part, p.reference,
+      s.name AS supplier,
+      EXTRACT(EPOCH FROM (NOW() - o.created_at)) / 60 AS waiting_minutes
+    FROM orders o
+    JOIN products p ON p.id = o.product_id
+    JOIN suppliers s ON s.id = o.supplier_id
+    WHERE o.status = 'awaiting_stock_confirmation'
+    ORDER BY o.created_at ASC
+  `);
+  return rows;
+}
+
+/**
+ * Orders that have been sitting in awaiting_stock_confirmation past
+ * `minMinutes` and haven't had the customer courtesy message sent yet —
+ * polled by the sweep in product.service.ts.
+ */
+export async function getOrdersAwaitingCourtesyMessage(minMinutes: number): Promise<{ number: string; customer_phone: string }[]> {
+  const { rows } = await db.query(
+    `SELECT number, customer_phone FROM orders
+     WHERE status = 'awaiting_stock_confirmation'
+       AND stock_confirmation_courtesy_sent = false
+       AND created_at < NOW() - ($1 || ' minutes')::interval`,
+    [minMinutes]
+  );
+  return rows;
+}
+
+export async function markCourtesyMessageSent(orderNumber: string): Promise<void> {
+  await db.query(
+    `UPDATE orders SET stock_confirmation_courtesy_sent = true WHERE number = $1`,
+    [orderNumber]
+  );
+}
+
+/**
  * Retrieves orders approved on the current date.
  */
 export async function getOrdersApprovedToday(): Promise<any[]> {

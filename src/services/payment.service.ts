@@ -1,11 +1,11 @@
 import { db } from '../config/db.js';
-import { config } from '../config/config.js';
 import { logger } from '../config/logger.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons, downloadWhatsAppMedia } from './whatsapp.service.js';
 import { generatePrimaveraInvoice, sendFinalInvoiceWhatsApp } from './pdf.service.js';
 import { extractPaymentProofData } from './ai.service.js';
 import { getOrderByNumber, getLatestOrderByStatus } from '../models/order.model.js';
 import { getSupplierPhoneById } from '../models/supplier.model.js';
+import { createAlert } from '../models/alert.model.js';
 import { formatPrice } from '../utils/helpers.js';
 import { t } from '../i18n/messages.js';
 
@@ -236,13 +236,11 @@ export async function processPaymentProof(phone: string, mediaId: string, mediaT
 
   await sendWhatsAppMessage(phone, t.payment.proofReceivedCustomer(methodName, number));
 
-  const staffPhone = config.admin.staffPhone;
-  if (staffPhone) {
-    await sendWhatsAppMessage(
-      staffPhone,
-      t.payment.proofReceivedStaff(number, methodName, formatPrice(amount), phone, `${config.appUrl}/admin/orders`)
-    );
-  }
+  await createAlert(
+    'payment_proof',
+    number,
+    `Comprovativo de pagamento recebido para o pedido ${number} (${methodName}, ${formatPrice(amount)}) — cliente ${phone}.`
+  );
 
   return true;
 }
@@ -294,7 +292,9 @@ export async function confirmInPersonPayment(orderNumber: string, employeeId: nu
 }
 
 /**
- * Notifies the internal team member about a physical payment request.
+ * Alerts the admin panel about a physical payment request (mobile POS or cash
+ * on delivery) so staff can arrange it — no WhatsApp push to the admin's own
+ * phone, this lands in the admin alerts feed instead.
  */
 async function notifyAgentInPersonPayment(
   orderNumber: string,
@@ -302,20 +302,10 @@ async function notifyAgentInPersonPayment(
   amount: number,
   method: any
 ): Promise<void> {
-  const staffPhone = config.admin.staffPhone;
-  if (!staffPhone) return;
-
-  await sendWhatsAppMessage(
-    staffPhone,
-    t.payment.inPersonPaymentStaff(
-      orderNumber,
-      method.name,
-      method.emoji,
-      formatPrice(amount),
-      customerPhone,
-      method.id === 'mobile_pos',
-      `${config.appUrl}/admin/orders`
-    )
+  await createAlert(
+    'in_person_payment',
+    orderNumber,
+    `Pagamento presencial solicitado para o pedido ${orderNumber} (${method.name}, ${formatPrice(amount)}) — cliente ${customerPhone}.`
   );
 }
 

@@ -81,7 +81,6 @@ CREATE TABLE IF NOT EXISTS products (
   price            NUMERIC(12,2) NOT NULL,      -- in Kwanzas (AOA)
   quantity         INT NOT NULL DEFAULT 0,
   unit             TEXT DEFAULT 'unidade',
-  waitlist_phones  TEXT[] DEFAULT '{}',         -- phones awaiting a restock notification
 
   -- Delivery
   delivery_time    TEXT DEFAULT 'Em stock',     -- e.g. "Hoje", "2 dias", "Sob encomenda"
@@ -115,7 +114,9 @@ CREATE TABLE IF NOT EXISTS products (
 );
 
 ALTER TABLE products DROP COLUMN IF EXISTS category_id;
-ALTER TABLE products ADD COLUMN IF NOT EXISTS waitlist_phones TEXT[] DEFAULT '{}';
+-- Replaced by the waitlist_requests table below — a real table records who
+-- joined and when, which an opaque array column couldn't.
+ALTER TABLE products DROP COLUMN IF EXISTS waitlist_phones;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS service_offered BOOLEAN DEFAULT false;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS service_name TEXT;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS service_price NUMERIC(12,2);
@@ -148,10 +149,13 @@ CREATE TABLE IF NOT EXISTS orders (
   supplier_id             INT REFERENCES suppliers(id),
   quantity                INT DEFAULT 1,
   unit_price              NUMERIC(12,2),
-  -- Status state machine: awaiting_payment → awaiting_payment_method
-  -- → awaiting_bank_subtype | awaiting_in_person_subtype
-  -- → awaiting_payment_proof | awaiting_agent_confirmation
-  -- → payment_proof_received → approved | rejected
+  -- Status state machine: awaiting_payment (placeholder while the customer is
+  -- still deciding on an attached service, if any — see product.service.ts)
+  -- → awaiting_stock_confirmation (admin confirms availability with the
+  -- supplier via the admin panel, not WhatsApp) → stock_unavailable (terminal,
+  -- admin declines) | awaiting_payment_method → awaiting_bank_subtype |
+  -- awaiting_in_person_subtype → awaiting_payment_proof |
+  -- awaiting_agent_confirmation → payment_proof_received → approved | rejected
   status                  TEXT DEFAULT 'awaiting_payment',
   payment_method          TEXT,
   approved_by             TEXT,
@@ -167,6 +171,9 @@ CREATE TABLE IF NOT EXISTS orders (
   -- NULL means no service was offered or the customer declined it.
   service_name            TEXT,
   service_price           NUMERIC(12,2),
+  -- Set once the 20-minute "still confirming with the supplier" courtesy
+  -- message has gone out, so the sweep in product.service.ts never resends it.
+  stock_confirmation_courtesy_sent BOOLEAN DEFAULT false,
   created_at              TIMESTAMPTZ DEFAULT NOW(),
   updated_at              TIMESTAMPTZ DEFAULT NOW()
 );
@@ -175,6 +182,7 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_proof_media_id TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_proof_media_type TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS service_name TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS service_price NUMERIC(12,2);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS stock_confirmation_courtesy_sent BOOLEAN DEFAULT false;
 
 CREATE INDEX IF NOT EXISTS idx_orders_customer_phone ON orders (customer_phone);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
@@ -194,9 +202,40 @@ END $$;
 DROP TABLE IF EXISTS payment_proofs;
 
 -- ============================================================
--- WAITLIST — replaced by products.waitlist_phones (see PRODUCTS section)
+-- WAITLIST_REQUESTS — customers waiting for a restocked product. A real
+-- table (not the earlier products.waitlist_phones array) so the admin panel
+-- can list requests with who/which product/when, and notified_at tracks
+-- whether the restock notification already went out for that request.
 -- ============================================================
-DROP TABLE IF EXISTS waitlist_requests;
+CREATE TABLE IF NOT EXISTS waitlist_requests (
+  id             SERIAL PRIMARY KEY,
+  product_id     INT NOT NULL REFERENCES products(id),
+  customer_phone TEXT NOT NULL,
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  notified_at    TIMESTAMPTZ,
+  UNIQUE (product_id, customer_phone)
+);
+
+CREATE INDEX IF NOT EXISTS idx_waitlist_requests_product ON waitlist_requests (product_id);
+CREATE INDEX IF NOT EXISTS idx_waitlist_requests_notified ON waitlist_requests (notified_at);
+
+-- ============================================================
+-- ADMIN_ALERTS — replaces the old "push a WhatsApp message to the admin's
+-- own phone" pattern for payment-proof-received and in-person-payment-
+-- requested events. Every SYSTEM → ADMIN notification now lives in the admin
+-- panel as a queue the admin reads/marks read, not a WhatsApp push.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS admin_alerts (
+  id            SERIAL PRIMARY KEY,
+  type          TEXT NOT NULL,              -- 'payment_proof' | 'in_person_payment'
+  order_number  TEXT REFERENCES orders(number),
+  message       TEXT NOT NULL,
+  read_at       TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_alerts_read ON admin_alerts (read_at);
+CREATE INDEX IF NOT EXISTS idx_admin_alerts_created ON admin_alerts (created_at);
 
 -- ============================================================
 -- NHTSA vehicle cache (avoids repeated NHTSA API calls for the same VIN)

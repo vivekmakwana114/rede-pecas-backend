@@ -31,8 +31,12 @@ export async function getOrCreateCustomer(phone: string): Promise<Customer | nul
  * Handles customer profile registration steps (name/NIF/address). Independent of
  * vehicle identification, which is tracked separately via the `vehicles` table.
  */
-export async function processCustomerRegistration(phone: string, status: string, reply: string): Promise<boolean> {
+export async function processCustomerRegistration(phone: string, customer: Customer, reply: string): Promise<boolean> {
   const r = reply.trim();
+  const status = customer.registration_status;
+  // The name captured in the 'awaiting_name' step below, available on `customer` for
+  // every later step since it was saved on a previous turn before this one started.
+  const firstName = customer.name?.split(' ')[0] || 'Cliente';
 
   if (status === 'awaiting_name') {
     const name = capitalize(r);
@@ -47,7 +51,7 @@ export async function processCustomerRegistration(phone: string, status: string,
 
     if (noNif) {
       await updateCustomer(phone, { nif: null, registration_status: 'awaiting_address' });
-      await sendWhatsAppMessage(phone, t.onboarding.askAddress());
+      await sendWhatsAppMessage(phone, t.onboarding.askAddress(firstName));
     } else {
       // "Sim, tenho NIF" only confirms they have one — the button reply itself isn't the
       // NIF number, so ask for it separately instead of saving the button title as data.
@@ -60,7 +64,7 @@ export async function processCustomerRegistration(phone: string, status: string,
   if (status === 'awaiting_nif_number') {
     const nif = r.replace(/\s/g, '').toUpperCase();
     await updateCustomer(phone, { nif, registration_status: 'awaiting_address' });
-    await sendWhatsAppMessage(phone, t.onboarding.askAddress());
+    await sendWhatsAppMessage(phone, t.onboarding.askAddress(firstName));
     return true;
   }
 
@@ -104,7 +108,8 @@ export async function sendResumeRegistrationPrompt(phone: string, customer: Cust
   } else if (customer.registration_status === 'awaiting_nif_number') {
     await sendWhatsAppMessage(phone, t.onboarding.askNifNumber());
   } else if (customer.registration_status === 'awaiting_address') {
-    await sendWhatsAppMessage(phone, t.onboarding.askAddress());
+    const firstName = customer.name?.split(' ')[0] || 'Cliente';
+    await sendWhatsAppMessage(phone, t.onboarding.askAddress(firstName));
   }
 }
 
