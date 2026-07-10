@@ -47,34 +47,46 @@ export async function extractDataWithClaudeVision(imageBase64: string): Promise<
           },
           {
             type: "text",
-            text: `Analisa esta imagem. Pode ser um livrete angolano, Título do Veículo (Vehicle Certificate),
-ficha técnica, ou outro documento de registo de viatura.
+            text: `Analyze this image related to vehicle identification. It can be ANY of the following:
+- An Angolan livrete, Vehicle Certificate (Título do Veículo), technical datasheet (ficha técnica), or
+  other vehicle registration document
+- A chassis identification plate (VIN plate) — usually found in the engine bay, door frame, dashboard,
+  or stamped directly into the vehicle's structure
+- A label, sticker, or engraving showing the chassis number (VIN)
+- Any other photo where the chassis number (VIN), license plate, or vehicle data is legible
 
-Se NÃO for um documento de viatura, responde exactamente: {"document": false}
+It does not need to be a formal paper document — even a photo showing only the VIN plate counts.
 
-Se FOR um documento de viatura, extrai os seguintes dados e responde APENAS em JSON válido:
+If the image has NO vehicle identification information visible at all (no VIN, no license plate, no
+make/model), respond exactly: {"document": false}
+
+If the image shows ANY vehicle identification information, extract the visible data and respond ONLY
+with valid JSON:
 {
   "document": true,
-  "valid": true ou false,
-  "reason": "razão se inválido ou ilegível",
-  "make": "marca do veículo (ex: Toyota, Mercedes, Volvo)",
-  "model": "modelo (ex: Hilux, Actros, FH16)",
-  "year": "ano de fabrico ou matrícula (4 dígitos)",
-  "license_plate": "matrícula/placa se visível",
-  "chassis_number": "VIN ou número de chassi se visível (17 caracteres)",
-  "engine_number": "número do motor se visível",
-  "engine_size": "cilindrada do motor (ex: 2.4, 3.0)",
-  "fuel_type": "tipo de combustível (Gasolina, Diesel, Eléctrico)",
-  "color": "cor do veículo se visível",
-  "body_type": "tipo de carroçaria (Ligeiro, Pesado, SUV, Comercial, etc)",
+  "valid": true or false,
+  "reason": "reason if invalid or unreadable",
+  "make": "vehicle make (e.g. Toyota, Mercedes, Volvo)",
+  "model": "model (e.g. Hilux, Actros, FH16)",
+  "year": "manufacture or registration year (4 digits)",
+  "license_plate": "license plate if visible",
+  "chassis_number": "VIN or chassis number if visible (17 characters)",
+  "engine_number": "engine number if visible",
+  "engine_size": "engine displacement (e.g. 2.4, 3.0)",
+  "fuel_type": "fuel type (Gasoline, Diesel, Electric)",
+  "color": "vehicle color if visible",
+  "body_type": "body type (Light, Heavy, SUV, Commercial, etc)",
   "owner": null
 }
 
-REGRAS IMPORTANTES:
-- Nunca inventes dados — se um campo não estiver visível ou legível, coloca null
-- O campo "owner" deve ser SEMPRE null (privacidade)
-- Se a imagem estiver desfocada ou ilegível, coloca valid: false e explica no reason
-- Responde APENAS com o JSON, sem texto adicional`
+IMPORTANT RULES:
+- A photo that clearly shows a 17-character chassis number (VIN) is always valid (valid: true), even if
+  no other field is visible — make/model/year can be null, the VIN alone is enough
+- Never invent data — if a field isn't visible or legible, set it to null
+- The "owner" field must ALWAYS be null (privacy)
+- If the image is too blurry or unreadable to confidently read anything, set valid: false and explain
+  in reason
+- Respond ONLY with the JSON, no additional text`
           }
         ]
       }]
@@ -129,23 +141,23 @@ export async function extractPaymentProofData(imageBase64: string): Promise<Paym
           },
           {
             type: "text",
-            text: `Analisa esta imagem. Deve ser um comprovativo de pagamento (recibo de transferência
-bancária, depósito, Multicaixa Express, ou confirmação de pagamento móvel em Angola).
+            text: `Analyze this image. It should be a payment proof (bank transfer receipt, deposit slip,
+Multicaixa Express, or mobile payment confirmation in Angola).
 
-Responde APENAS em JSON válido neste formato:
+Respond ONLY with valid JSON in this format:
 {
-  "valid": true ou false,
-  "reason": "razão se inválido ou ilegível (ex: não é um comprovativo, imagem ilegível)",
-  "amount": "valor do pagamento se visível (ex: 18.500 Kz)",
-  "date": "data do pagamento se visível",
-  "reference": "referência ou número de transacção se visível"
+  "valid": true or false,
+  "reason": "reason if invalid or unreadable (e.g. not a payment proof, unreadable image)",
+  "amount": "payment amount if visible (e.g. 18,500 Kz)",
+  "date": "payment date if visible",
+  "reference": "reference or transaction number if visible"
 }
 
-REGRAS IMPORTANTES:
-- "valid" deve ser false se a imagem não parecer um comprovativo de pagamento real, estiver
-  ilegível, ou for claramente outra coisa (ex: uma selfie, uma peça de carro, um documento de identificação)
-- Nunca inventes dados — se um campo não estiver visível ou legível, coloca null
-- Responde APENAS com o JSON, sem texto adicional`
+IMPORTANT RULES:
+- "valid" must be false if the image doesn't look like a real payment proof, is unreadable, or is
+  clearly something else (e.g. a selfie, a car part, an identity document)
+- Never invent data — if a field isn't visible or legible, set it to null
+- Respond ONLY with the JSON, no additional text`
           }
         ]
       }]
