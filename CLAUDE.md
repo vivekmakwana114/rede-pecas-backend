@@ -25,7 +25,7 @@ Boot requires a `.env` at the project root (copy `.env.example`) — `src/config
 
 ## Critical conventions
 
-- **Language split**: code identifiers, DB tables/columns, stored status values, API routes, and JSON payload keys are **English**. Customer-facing content is **Portuguese (Angola)** and must stay that way: WhatsApp messages to customers/staff/suppliers, PDF document text, and the AI prompt bodies (their embedded JSON action keys are English — machine protocol). Part data (names, synonyms) is Portuguese, which is why the full-text search uses the `'portuguese'` config.
+- **Language split**: code identifiers, DB tables/columns, stored status values, API routes, and JSON payload keys are **English**. Customer-facing content is **Portuguese (Angola)** and must stay that way: WhatsApp messages to customers/staff/suppliers, PDF document text. Part data (names, synonyms) is Portuguese, which is why the full-text search uses the `'portuguese'` config. The two AI vision-extraction prompt bodies (`src/services/ai.service.ts`) are the one exception — the model only ever sees them, never the customer, so they were switched to **English** (as of 2026-07-10) since Claude reasons more reliably in English; their embedded JSON field keys were already English (machine protocol).
 - **ESM with NodeNext resolution**: `"type": "module"` + `moduleResolution: NodeNext`. All relative imports **must use the `.js` extension**, even inside `.ts` files (`import { config } from '../config/config.js'`). Omitting it breaks the build.
 - Layering is `routes → controllers → services → models`, with raw `pg` queries in `src/models/` (no ORM) against a shared `Pool` from `src/config/db.ts`. Config is only read via the `config` object, never `process.env` directly.
 - **Schema lives in `db/schema.sql`** (with `db/seed.sql` and `db/schema.dbml` for dbdiagram.io). SQL in models must match it — when you change one, change all three.
@@ -61,10 +61,12 @@ Pipeline order:
 7. 17-char VIN detected → NHTSA decode → confirm buttons (falls back to manual collection, now with a message, on decode failure)
 8. Vehicle confirmation reply (Sim/Não) — "Não" deletes only the just-rejected row (`vehicleService.getMostRecentVehicle` + `clearVehicleSession(id)`), never any other vehicle on file. If this is the customer's first-ever confirmed vehicle (`customers.registered_at` still `NULL`), stamps `registered_at` and sends the combined welcome message instead of the lighter "what part do you need" prompt
 9. Pending "which vehicle is this for?" reply (2+ vehicles) — must resolve before the waitlist/confirmation checks below, which also interpret short numeric/yes-no replies
-10. `needsVehicleId` still true and nothing above matched (e.g. non-VIN text with no VIN typed and no document sent) → starts manual collection deterministically rather than falling through to the AI agent
+10. `needsVehicleId` still true and nothing above matched (e.g. non-VIN text with no VIN typed and no document sent) → starts manual collection deterministically rather than falling through to product search
 11. Order awaiting payment input (`awaiting_payment_method` / `awaiting_*_subtype` states)
-12. AI gate: the conversational Claude agent is only called once the customer has actually been asked "what part do you need" this session (`sessionService.wasPartPromptSent`) — otherwise (or on a bare greeting, PT/EN, matched via `GREETING_PATTERN` — this always wins even if already invited) the bot (re-)sends that deterministic prompt instead of spending an API call
-13. Fallback: conversational Claude agent
+12. Part-search gate: free text is only ever treated as a product search once the customer has actually been asked "what part do you need" this session (`sessionService.wasPartPromptSent`) — otherwise (or on a bare greeting, PT/EN, matched via `GREETING_PATTERN` — this always wins even if already invited) the bot (re-)sends that deterministic prompt instead
+13. Reply to a just-shown product search-results list (row tap or typed digit, `sessionService.getPendingOptions` + `productService.processProductSelection`) — not selection-shaped (e.g. a new part name typed instead) falls through to a fresh search below rather than a dead end
+14. Explicit request to talk to a human — deterministic keyword match (`HUMAN_HANDOFF_PATTERN` in `whatsapp.controller.ts`), no AI judgment call
+15. Fallback: deterministic product search (`productService.searchAndRespond`) — full-text match against the inventory DB, no AI involved
 
 New message-handling behavior must slot into this chain deliberately — position determines what can intercept what.
 
@@ -73,13 +75,17 @@ New message-handling behavior must slot into this chain deliberately — positio
 State is per-phone-number and lives in two places:
 
 - **PostgreSQL** — durable step-machine state: `customers.registration_status`, `vehicles.status` (the merged per-customer vehicle-identification table — see below), and `orders.status` (state machine in `src/services/payment.service.ts`: `awaiting_payment → awaiting_payment_method → awaiting_bank_subtype | awaiting_in_person_subtype → awaiting_payment_proof | awaiting_agent_confirmation → payment_proof_received → approved | rejected`).
-- **Redis** — rolling 20-message conversation history (key `session:<phone>`) and pending search options awaiting the customer's numeric choice (key `options:<phone>`), both 4h TTL (`src/services/session.service.ts`), with silent in-memory fallback when Redis is down.
+- **Redis** — pending search options awaiting the customer's list tap or typed digit (key `options:<phone>`), 4h TTL (`src/services/session.service.ts`), with silent in-memory fallback when Redis is down.
 
-The AI agent (`processAIConversation`) sends this history plus a system prompt to Claude; replies are either plain text (forwarded to the customer) or a structured JSON action (`search` / `confirm_order` / `transfer_to_human`, English keys) dispatched by `executeStructuredAction`.
+### No conversational AI (as of 2026-07-09)
 
-### Known duplication
+There is no conversational AI agent anywhere in the WhatsApp flow. Product search (`productService.searchAndRespond`) is a deterministic full-text query against the inventory DB (`plainto_tsquery('portuguese', ...)`, already synonym/typo-tolerant) on the customer's raw message — no query cleanup, no intent parsing. Results are sent as a WhatsApp **List Message** (`whatsapp.service.ts` → `sendWhatsAppList`, up to 3 rows, cheapest first) rather than a numbered text message; the customer's reply (row tap or typed digit) is resolved deterministically by `productService.processProductSelection`, same style as the existing Sim/Não handlers elsewhere in the pipeline. "Talk to a human" is a plain keyword match (`HUMAN_HANDOFF_PATTERN`), not an AI inference.
 
-`src/services/ai.service.ts` contains an unused, cleaner copy of the conversational agent call (`callAIAgent`). The live agent logic (and system prompt) is inlined in `whatsapp.controller.ts` on a different model version. Consolidation is still a pending task — don't extend both copies. (The Vision document extractor `extractDataWithClaudeVision` from the same file **is** now wired into the webhook, via `processVehicleDocument` — no longer duplicated/unused.)
+The **only** AI calls anywhere in this codebase are two Claude Vision extraction calls, both in `src/services/ai.service.ts`, both on the `claude-haiku-4-5-20251001` model:
+- `extractDataWithClaudeVision` — vehicle document/VIN photo extraction, wired in via `processVehicleDocument`.
+- `extractPaymentProofData` — payment-proof image extraction, wired in via `processPaymentProof` in `payment.service.ts`. Only runs when the proof is an image (Vision can't inspect a PDF proof); an image proof that comes back `valid: false` (e.g. not actually a receipt, illegible) asks the customer to re-upload instead of advancing `orders.status`.
+
+Neither call ever sees customer chat text — both take an image only. There is no system prompt, no JSON action dispatch, and no Redis-held conversation history anymore (the old rolling 20-message `session:<phone>` key and `getHistory`/`saveHistory` were removed as dead weight along with the agent that used them).
 
 ### Intended end-to-end workflow (agreed with Vivek, 2026-07-02; registration/vehicle split reversed 2026-07-07)
 

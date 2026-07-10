@@ -1,17 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
-import fs from 'fs';
 import { config } from "../config/config.js";
 import { logger } from "../config/logger.js";
-import { getCustomerVehicles } from '../models/vehicle.model.js';
-import { createOrder, generateOrderNumber } from '../models/order.model.js';
-import * as productService from './product.service.js';
-import { generateProformaPDF, sendProformaWhatsApp } from './pdf.service.js';
-import { askPaymentMethod } from './payment.service.js';
-import { getHistory, saveHistory, getPendingOptions, clearPendingOptions, clearPartPromptSent, getChosenVehicle } from './session.service.js';
-import { sendWhatsAppMessage } from './whatsapp.service.js';
-import { t } from '../i18n/messages.js';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
+
+// The only AI calls left anywhere in this system: both are Vision extraction
+// on customer-uploaded images (vehicle document, payment proof), never on
+// conversational chat text — that conversational agent was removed in favor
+// of deterministic DB search + rule-based routing (see whatsapp.controller.ts).
+const VISION_MODEL = "claude-haiku-4-5-20251001";
 
 export interface VisionData {
   document: boolean;
@@ -35,7 +32,7 @@ export interface VisionData {
 export async function extractDataWithClaudeVision(imageBase64: string): Promise<VisionData | null> {
   try {
     const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: VISION_MODEL,
       max_tokens: 1024,
       messages: [{
         role: "user",
@@ -50,34 +47,46 @@ export async function extractDataWithClaudeVision(imageBase64: string): Promise<
           },
           {
             type: "text",
-            text: `Analisa esta imagem. Pode ser um livrete angolano, Título do Veículo (Vehicle Certificate),
-ficha técnica, ou outro documento de registo de viatura.
+            text: `Analyze this image related to vehicle identification. It can be ANY of the following:
+- An Angolan livrete, Vehicle Certificate (Título do Veículo), technical datasheet (ficha técnica), or
+  other vehicle registration document
+- A chassis identification plate (VIN plate) — usually found in the engine bay, door frame, dashboard,
+  or stamped directly into the vehicle's structure
+- A label, sticker, or engraving showing the chassis number (VIN)
+- Any other photo where the chassis number (VIN), license plate, or vehicle data is legible
 
-Se NÃO for um documento de viatura, responde exactamente: {"document": false}
+It does not need to be a formal paper document — even a photo showing only the VIN plate counts.
 
-Se FOR um documento de viatura, extrai os seguintes dados e responde APENAS em JSON válido:
+If the image has NO vehicle identification information visible at all (no VIN, no license plate, no
+make/model), respond exactly: {"document": false}
+
+If the image shows ANY vehicle identification information, extract the visible data and respond ONLY
+with valid JSON:
 {
   "document": true,
-  "valid": true ou false,
-  "reason": "razão se inválido ou ilegível",
-  "make": "marca do veículo (ex: Toyota, Mercedes, Volvo)",
-  "model": "modelo (ex: Hilux, Actros, FH16)",
-  "year": "ano de fabrico ou matrícula (4 dígitos)",
-  "license_plate": "matrícula/placa se visível",
-  "chassis_number": "VIN ou número de chassi se visível (17 caracteres)",
-  "engine_number": "número do motor se visível",
-  "engine_size": "cilindrada do motor (ex: 2.4, 3.0)",
-  "fuel_type": "tipo de combustível (Gasolina, Diesel, Eléctrico)",
-  "color": "cor do veículo se visível",
-  "body_type": "tipo de carroçaria (Ligeiro, Pesado, SUV, Comercial, etc)",
+  "valid": true or false,
+  "reason": "reason if invalid or unreadable",
+  "make": "vehicle make (e.g. Toyota, Mercedes, Volvo)",
+  "model": "model (e.g. Hilux, Actros, FH16)",
+  "year": "manufacture or registration year (4 digits)",
+  "license_plate": "license plate if visible",
+  "chassis_number": "VIN or chassis number if visible (17 characters)",
+  "engine_number": "engine number if visible",
+  "engine_size": "engine displacement (e.g. 2.4, 3.0)",
+  "fuel_type": "fuel type (Gasoline, Diesel, Electric)",
+  "color": "vehicle color if visible",
+  "body_type": "body type (Light, Heavy, SUV, Commercial, etc)",
   "owner": null
 }
 
-REGRAS IMPORTANTES:
-- Nunca inventes dados — se um campo não estiver visível ou legível, coloca null
-- O campo "owner" deve ser SEMPRE null (privacidade)
-- Se a imagem estiver desfocada ou ilegível, coloca valid: false e explica no reason
-- Responde APENAS com o JSON, sem texto adicional`
+IMPORTANT RULES:
+- A photo that clearly shows a 17-character chassis number (VIN) is always valid (valid: true), even if
+  no other field is visible — make/model/year can be null, the VIN alone is enough
+- Never invent data — if a field isn't visible or legible, set it to null
+- The "owner" field must ALWAYS be null (privacy)
+- If the image is too blurry or unreadable to confidently read anything, set valid: false and explain
+  in reason
+- Respond ONLY with the JSON, no additional text`
           }
         ]
       }]
@@ -99,170 +108,71 @@ REGRAS IMPORTANTES:
   }
 }
 
-/**
- * A customer can have several confirmed vehicles. With one, it's unambiguous; with
- * several, ai.service.ts must not guess — it uses whichever the customer picked via
- * the "which vehicle is this for?" prompt (sessionService.getChosenVehicle), falling
- * back to the most recent if that's somehow unset (e.g. it expired mid-conversation).
- */
-async function resolveSearchVehicle(phone: string) {
-  const vehicles = await getCustomerVehicles(phone);
-  if (vehicles.length === 0) return null;
-  if (vehicles.length === 1) return vehicles[0];
-
-  const chosenId = await getChosenVehicle(phone);
-  return vehicles.find((v) => v.id === chosenId) || vehicles[0];
+export interface PaymentProofData {
+  valid: boolean;
+  reason?: string | null;
+  amount?: string | null;
+  date?: string | null;
+  reference?: string | null;
 }
 
 /**
- * Conversation flow processing using Anthropic API.
+ * Sends a base64 encoded payment-proof image to Claude Vision to validate it
+ * actually looks like a payment receipt (bank transfer, deposit, Multicaixa
+ * Express, mobile payment confirmation) and extract what it can for the audit
+ * trail. Gates processPaymentProof in payment.service.ts — an invalid result
+ * asks the customer to re-upload instead of advancing the order status.
  */
-export async function processAIConversation(phone: string, customerText: string): Promise<void> {
+export async function extractPaymentProofData(imageBase64: string): Promise<PaymentProofData | null> {
   try {
-    const history = await getHistory(phone);
-    const vehicle = await resolveSearchVehicle(phone);
+    const response = await anthropic.messages.create({
+      model: VISION_MODEL,
+      max_tokens: 512,
+      messages: [{
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/jpeg",
+              data: imageBase64,
+            },
+          },
+          {
+            type: "text",
+            text: `Analyze this image. It should be a payment proof (bank transfer receipt, deposit slip,
+Multicaixa Express, or mobile payment confirmation in Angola).
 
-    let enrichedText = customerText;
-    // Enrich query context with session vehicle metadata if the customer doesn't type it
-    if (vehicle && !customerText.toLowerCase().includes(vehicle.make.toLowerCase())) {
-      enrichedText =
-        `[Viatura do cliente: ${vehicle.make} ${vehicle.model} ${vehicle.year}] ` +
-        customerText;
+Respond ONLY with valid JSON in this format:
+{
+  "valid": true or false,
+  "reason": "reason if invalid or unreadable (e.g. not a payment proof, unreadable image)",
+  "amount": "payment amount if visible (e.g. 18,500 Kz)",
+  "date": "payment date if visible",
+  "reference": "reference or transaction number if visible"
+}
+
+IMPORTANT RULES:
+- "valid" must be false if the image doesn't look like a real payment proof, is unreadable, or is
+  clearly something else (e.g. a selfie, a car part, an identity document)
+- Never invent data — if a field isn't visible or legible, set it to null
+- Respond ONLY with the JSON, no additional text`
+          }
+        ]
+      }]
+    });
+
+    const text = response.content[0].type === 'text' ? response.content[0].text.trim() : '';
+
+    try {
+      return JSON.parse(text.replace(/```json|```/g, "").trim()) as PaymentProofData;
+    } catch {
+      logger.error(`Error parsing payment-proof vision JSON: ${text}`);
+      return { valid: false, reason: "Erro ao interpretar o comprovativo." };
     }
-
-    history.push({ role: 'user', content: enrichedText });
-
-    const aiReply = await callAnthropic(history);
-    const action = tryParseJSON(aiReply);
-
-    if (!action) {
-      await sendWhatsAppMessage(phone, aiReply);
-      // Push the clean agent text response to session history
-      history.push({ role: 'assistant', content: aiReply });
-    } else {
-      // If agent requested search, inject vehicle parameters from session cache if missing
-      if (action.action === 'search' && vehicle) {
-        action.vehicle_make = action.vehicle_make || vehicle.make;
-        action.model = action.model || vehicle.model;
-        action.year = action.year || vehicle.year;
-      }
-      await executeStructuredAction(phone, action, history);
-    }
-
-    await saveHistory(phone, history);
   } catch (error: any) {
-    // Anthropic call or downstream action failed (e.g. bad ANTHROPIC_API_KEY) — without this,
-    // the customer gets silence (the outer webhook catch only logs) after already having
-    // received the session greeting, which reads as a broken/inconsistent bot.
-    logger.error(`AI agent pipeline failed for ${phone}`, error);
-    await sendWhatsAppMessage(phone, t.agent.serviceUnavailable());
-
-    // Close out this invitation on failure — the next message re-triggers the
-    // deterministic "what part do you need" prompt instead of blindly retrying
-    // (and failing) the AI again on every subsequent message.
-    await clearPartPromptSent(phone);
-
-    // Staff alert disabled for now — STAFF_PHONE_NUMBER isn't on the WhatsApp test
-    // allow-list yet, so this was erroring on every AI failure instead of helping.
-    // const staffPhone = config.admin.staffPhone;
-    // if (staffPhone) {
-    //   try {
-    //     await sendWhatsAppMessage(staffPhone, t.agent.aiFailureStaffAlert(phone, error.message));
-    //   } catch (staffError: any) {
-    //     logger.error('Failed to notify staff of AI agent failure', staffError);
-    //   }
-    // }
-  }
-}
-
-async function callAnthropic(history: any[]): Promise<string> {
-  // Strip temporary fields from history before sending to Anthropic SDK
-  const cleanMessages = history.map((h) => ({
-    role: h.role,
-    content: h.content,
-  }));
-
-  const response = await anthropic.messages.create({
-    model: 'claude-3-5-sonnet-20241022',
-    max_tokens: 1024,
-    system: t.systemPrompt,
-    messages: cleanMessages,
-  });
-
-  // Extract response text
-  const textContent = response.content.find(c => c.type === 'text');
-  return textContent?.type === 'text' ? textContent.text : '';
-}
-
-/**
- * Orchestrates backend JSON actions returned by the AI agent.
- */
-async function executeStructuredAction(phone: string, action: any, history: any): Promise<void> {
-  switch (action.action) {
-    case 'search': {
-      await productService.searchAndRespond(phone, action, history);
-      break;
-    }
-
-    case 'confirm_order': {
-      const options = await getPendingOptions(phone);
-      const idx = (action.chosen_option || 1) - 1;
-      const choice = options?.[idx];
-
-      if (!choice) {
-        await sendWhatsAppMessage(phone, t.agent.optionNotFound());
-        return;
-      }
-
-      const orderNumber = await generateOrderNumber();
-
-      // Save order record
-      await createOrder(orderNumber, phone, choice);
-
-      // Generate invoice proforma PDF
-      const proformaPath = await generateProformaPDF(orderNumber, phone, choice);
-
-      // Send confirmation text & PDF attachment
-      await sendProformaWhatsApp(phone, proformaPath, orderNumber, choice);
-
-      // Trigger payment selection prompt
-      await askPaymentMethod(phone, orderNumber, choice.price);
-
-      // Options consumed — prevent a stale numeric reply from creating a duplicate order
-      await clearPendingOptions(phone);
-
-      // Clean temp PDF asynchronously
-      setTimeout(() => {
-        try {
-          fs.unlinkSync(proformaPath);
-        } catch {
-          // best-effort cleanup, ignore if already removed
-        }
-      }, 60000);
-
-      const confirmation = t.agent.proformaSentChoosePayment();
-      history.push({ role: 'assistant', content: confirmation });
-      break;
-    }
-
-    case 'transfer_to_human': {
-      const msg = t.agent.transferToHuman();
-      await sendWhatsAppMessage(phone, msg);
-      logger.info(`[SUPPORT] Customer ${phone} requested human support. Reason: ${action.reason}`);
-      break;
-    }
-
-    default:
-      logger.warn('Unknown structured action from AI agent', action);
-  }
-}
-
-function tryParseJSON(text: string): any | null {
-  try {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    return JSON.parse(match[0]);
-  } catch {
-    return null;
+    logger.error(`Claude Vision payment-proof error: ${error.message}`);
+    throw error;
   }
 }

@@ -22,6 +22,11 @@ import {
   clearPendingVehicleChoice,
   saveChosenVehicle,
   markVehicleIdChoiceShown,
+  clearVehicleIdChoiceShown,
+  markVinDuplicateChoiceShown,
+  clearVinDuplicateChoice,
+  markDocumentRetryChoiceShown,
+  clearDocumentRetryChoice,
 } from './session.service.js';
 import { t } from '../i18n/messages.js';
 
@@ -34,18 +39,23 @@ export { getActiveManualCollection, startManualCollection };
  * greeting doesn't need an AI call. With one vehicle on file, asks directly; with
  * several, asks which one first (see resolvePendingVehicleChoice) before inviting
  * a part search — ai.service.ts picks up the resolved choice via getChosenVehicle.
+ *
+ * `greeting` is set when this fires in response to a bare "Hi"/"Hey" mid-conversation
+ * (whatsapp.controller.ts stage 12) rather than right after confirming a vehicle —
+ * the doc gives that case its own warmer, name-personalized wording (greetingAskPart)
+ * instead of confirmedAskPart's "Perfect! Now tell me..." tone, which reads oddly as
+ * a response to a stray greeting since nothing was actually just confirmed.
  */
-export async function sendAskPartPrompt(phone: string): Promise<boolean> {
+export async function sendAskPartPrompt(phone: string, greeting?: { name: string }): Promise<boolean> {
   const vehicles = await getCustomerVehicles(phone);
   if (!vehicles.length) return false;
 
   if (vehicles.length === 1) {
     const v = vehicles[0];
-    await sendWhatsAppButtons(
-      phone,
-      t.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year),
-      [t.vehicleConfirm.addVehicleButton()]
-    );
+    const body = greeting
+      ? t.vehicleConfirm.greetingAskPart(greeting.name, v.make, v.model, v.year)
+      : t.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year);
+    await sendWhatsAppButtons(phone, body, [t.vehicleConfirm.addVehicleButton()]);
     await markPartPromptSent(phone);
     return true;
   }
@@ -255,6 +265,35 @@ export async function processVehicleIdOptionChoice(phone: string, reply: string)
 }
 
 /**
+ * Handles the customer's reply to the "this vehicle is already in your
+ * profile — search for a part, or add a different vehicle?" choice shown by
+ * the VIN dedup check in processVIN. Only fires when that choice was just
+ * shown (wasVinDuplicateChoiceShown gate in the pipeline) so it doesn't
+ * misfire on unrelated free text.
+ */
+export async function processVinDuplicateChoice(phone: string, reply: string): Promise<boolean> {
+  const r = reply.toLowerCase();
+
+  if (r.includes('procurar') || r.includes('search') || r.includes('peça') || r.includes('part') || r === '1' || r.includes('btn_0')) {
+    await clearVinDuplicateChoice(phone);
+    // Vehicle interaction concluded without touching manual collection — clear so a
+    // later part-search message isn't misrouted by the stage-10 fallback while this
+    // flag (set by the earlier VIN-choice tap) hasn't expired yet.
+    await clearVehicleIdChoiceShown(phone);
+    await sendAskPartPrompt(phone);
+    return true;
+  }
+
+  if (r.includes('diferente') || r.includes('different') || r.includes('adicionar') || r.includes('add') || r === '2' || r.includes('btn_1')) {
+    await clearVinDuplicateChoice(phone);
+    await startAddVehicleFlow(phone);
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Handles manual vehicle information inputs.
  */
 export async function processManualCollectionStep(
@@ -314,6 +353,10 @@ export async function processManualCollectionStep(
       engineNumber ? t.manual.engineLabel(engineNumber) : null,
     ].filter(Boolean).join('\n');
 
+    // Identification concluded via the manual wizard — same reasoning as the VIN
+    // confirm branches above.
+    await clearVehicleIdChoiceShown(phone);
+
     const completedOnboarding = await completeOnboardingIfNeeded(phone, customer, summary);
     if (!completedOnboarding) {
       await sendWhatsAppButtons(phone, t.manual.collectionComplete(summary), [t.vehicleConfirm.addVehicleButton()]);
@@ -330,6 +373,22 @@ export async function processManualCollectionStep(
  */
 export async function processVIN(phone: string, vin: string): Promise<void> {
   const vinClean = vin.trim().toUpperCase();
+
+  // Dedup check first — a VIN already confirmed on this customer's profile skips
+  // the NHTSA round-trip entirely and offers to just search for a part instead.
+  const existing = (await getCustomerVehicles(phone)).find((v) => v.vin === vinClean);
+  if (existing) {
+    const description = [
+      `${existing.make} ${existing.model} ${existing.year}`,
+      existing.engine_size || null,
+      existing.fuel_type || null,
+    ].filter(Boolean).join(' · ');
+
+    await sendWhatsAppButtons(phone, t.vin.alreadyRegistered(description), t.vin.alreadyRegisteredButtons);
+    await saveChosenVehicle(phone, existing.id);
+    await markVinDuplicateChoiceShown(phone);
+    return;
+  }
 
   await sendWhatsAppMessage(phone, t.vin.identifying());
 
@@ -363,6 +422,18 @@ export async function processVIN(phone: string, vin: string): Promise<void> {
 }
 
 /**
+ * Sends a document-processing failure message with "Try again" / "Manual entry"
+ * buttons attached (shared by every failure branch in processVehicleDocument
+ * below), and marks the choice shown so the customer's reply resolves via
+ * processDocumentRetryChoice instead of falling through to the generic
+ * manual-collection catch-all.
+ */
+async function sendRetryOrManualPrompt(phone: string, body: string): Promise<void> {
+  await sendWhatsAppButtons(phone, body, t.document.retryButtons);
+  await markDocumentRetryChoiceShown(phone);
+}
+
+/**
  * Handles a photo of the vehicle's registration document (livrete / Título do Veículo)
  * sent while a vehicle ID is pending. Extracts data via Claude Vision, cross-checks any
  * legible VIN against the free NHTSA API (more authoritative than OCR when available),
@@ -373,7 +444,7 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
 
   const imageBase64 = await downloadWhatsAppMedia(mediaId);
   if (!imageBase64) {
-    await sendWhatsAppMessage(phone, t.document.downloadFailed());
+    await sendRetryOrManualPrompt(phone, t.document.downloadFailed());
     return;
   }
 
@@ -382,17 +453,17 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
     extracted = await extractDataWithClaudeVision(imageBase64);
   } catch (error: any) {
     logger.error(`[VISION] Error processing document for ${phone}: ${error.message}`);
-    await sendWhatsAppMessage(phone, t.document.processingError());
+    await sendRetryOrManualPrompt(phone, t.document.processingError());
     return;
   }
 
   if (!extracted) {
-    await sendWhatsAppMessage(phone, t.document.notRecognized());
+    await sendRetryOrManualPrompt(phone, t.document.notRecognized());
     return;
   }
 
   if (!extracted.valid) {
-    await sendWhatsAppMessage(phone, t.document.invalid(extracted.reason || t.document.defaultInvalidReason));
+    await sendRetryOrManualPrompt(phone, t.document.invalid(extracted.reason || t.document.defaultInvalidReason));
     return;
   }
 
@@ -415,7 +486,7 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
   }
 
   if (!make || !model) {
-    await sendWhatsAppMessage(phone, t.document.missingEssentialData());
+    await sendRetryOrManualPrompt(phone, t.document.missingEssentialData());
     return;
   }
 
@@ -435,9 +506,37 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
     engineSize || null,
     fuelType || null,
     extracted.license_plate ? t.document.licensePlateLabel(extracted.license_plate) : null,
+    extracted.chassis_number ? t.document.chassisLabel(extracted.chassis_number.toUpperCase()) : null,
   ].filter(Boolean).join(' · ');
 
   await sendWhatsAppButtons(phone, t.document.confirmBody(description), t.vin.confirmButtons);
+}
+
+/**
+ * Handles the customer's reply to the "Try again" / "Manual entry" choice shown
+ * by sendRetryOrManualPrompt after a document-processing failure. "Try again"
+ * just re-prompts for a fresh photo — the next image is picked up by the
+ * existing state-aware image routing, no extra state needed. Only fires when
+ * that choice was just shown (wasDocumentRetryChoiceShown gate in the
+ * pipeline), so it doesn't misfire on unrelated free text.
+ */
+export async function processDocumentRetryChoice(phone: string, reply: string): Promise<boolean> {
+  const r = reply.toLowerCase();
+
+  if (r.includes('manual') || r === '2' || r.includes('btn_1')) {
+    await clearDocumentRetryChoice(phone);
+    await startManualCollection(phone, 'awaiting_make');
+    await sendWhatsAppMessage(phone, t.manual.askMakePrompt());
+    return true;
+  }
+
+  if (r.includes('tentar') || r.includes('try again') || r.includes('novamente') || r === '1' || r.includes('btn_0')) {
+    await clearDocumentRetryChoice(phone);
+    await sendWhatsAppMessage(phone, t.document.askPhotoPrompt());
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -452,6 +551,11 @@ export async function processVehicleConfirmation(phone: string, reply: string, c
     // reply, even if they already have other confirmed vehicles on file.
     const v = await getMostRecentVehicle(phone);
     if (!v) return false;
+
+    // Identification concluded — clear so a later unrelated message (e.g. a part
+    // search) doesn't get misrouted into manual collection by the stage-10
+    // fallback in whatsapp.controller.ts while this flag's TTL hasn't lapsed yet.
+    await clearVehicleIdChoiceShown(phone);
 
     const summary = `🚗 *${v.make} ${v.model} ${v.year}*`;
     const completedOnboarding = await completeOnboardingIfNeeded(phone, customer, summary);
@@ -471,6 +575,10 @@ export async function processVehicleConfirmation(phone: string, reply: string, c
     // vehicles, since they may already have others confirmed.
     const rejected = await getMostRecentVehicle(phone);
     if (rejected) await clearVehicleSession(rejected.id);
+
+    // Handing off to manual collection now — its own DB-backed status drives stage 7
+    // from here, this flag is no longer needed (and shouldn't linger to interfere later).
+    await clearVehicleIdChoiceShown(phone);
 
     // Same step-by-step wizard regardless of whether this is the customer's first
     // vehicle or a returning customer re-identifying — nothing downstream parses a

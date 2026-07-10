@@ -1,10 +1,11 @@
 import { db } from '../config/db.js';
-import { config } from '../config/config.js';
 import { logger } from '../config/logger.js';
-import { sendWhatsAppMessage, sendWhatsAppButtons } from './whatsapp.service.js';
+import { sendWhatsAppMessage, sendWhatsAppButtons, downloadWhatsAppMedia } from './whatsapp.service.js';
 import { generatePrimaveraInvoice, sendFinalInvoiceWhatsApp } from './pdf.service.js';
+import { extractPaymentProofData } from './ai.service.js';
 import { getOrderByNumber, getLatestOrderByStatus } from '../models/order.model.js';
 import { getSupplierPhoneById } from '../models/supplier.model.js';
+import { createAlert } from '../models/alert.model.js';
 import { formatPrice } from '../utils/helpers.js';
 import { t } from '../i18n/messages.js';
 
@@ -89,7 +90,7 @@ export async function getPendingPaymentOrder(phone: string) {
  */
 export async function processMethodChoice(phone: string, customerReply: string): Promise<boolean> {
   const { rows } = await db.query(
-    `SELECT number, unit_price FROM orders
+    `SELECT number, unit_price, service_price FROM orders
      WHERE customer_phone = $1
        AND status = 'awaiting_payment_method'
      ORDER BY created_at DESC LIMIT 1`,
@@ -97,7 +98,8 @@ export async function processMethodChoice(phone: string, customerReply: string):
   );
   if (!rows.length) return false;
 
-  const { number, unit_price } = rows[0];
+  const { number, unit_price, service_price } = rows[0];
+  const amount = Number(unit_price) + Number(service_price || 0);
   const reply = customerReply.toLowerCase();
 
   if (reply.includes('transfer') || reply.includes('deposit') || reply.includes('banco') || reply === '1') {
@@ -108,7 +110,7 @@ export async function processMethodChoice(phone: string, customerReply: string):
     );
     return true;
   } else if (reply.includes('multicaixa') || reply.includes('express') || reply === '2') {
-    await confirmMethodAndSendInstructions(phone, number, unit_price, PAYMENT_METHODS.MULTICAIXA_EXPRESS);
+    await confirmMethodAndSendInstructions(phone, number, amount, PAYMENT_METHODS.MULTICAIXA_EXPRESS);
     return true;
   } else if (reply.includes('tpa') || reply.includes('terminal') || reply.includes('dinheiro') || reply === '3') {
     await sendWhatsAppButtons(phone, t.payment.askInPersonSubtypeBody(), t.payment.askInPersonSubtypeButtons);
@@ -118,7 +120,7 @@ export async function processMethodChoice(phone: string, customerReply: string):
     );
     return true;
   } else {
-    await askPaymentMethod(phone, number, unit_price);
+    await askPaymentMethod(phone, number, amount);
     return true;
   }
 }
@@ -128,7 +130,7 @@ export async function processMethodChoice(phone: string, customerReply: string):
  */
 export async function processMethodSubtype(phone: string, reply: string): Promise<boolean> {
   const { rows } = await db.query(
-    `SELECT number, unit_price, status FROM orders
+    `SELECT number, unit_price, service_price, status FROM orders
      WHERE customer_phone = $1
        AND status IN ('awaiting_bank_subtype', 'awaiting_in_person_subtype')
      ORDER BY created_at DESC LIMIT 1`,
@@ -136,7 +138,8 @@ export async function processMethodSubtype(phone: string, reply: string): Promis
   );
   if (!rows.length) return false;
 
-  const { number, unit_price, status } = rows[0];
+  const { number, unit_price, service_price, status } = rows[0];
+  const amount = Number(unit_price) + Number(service_price || 0);
   const r = reply.toLowerCase();
 
   let method: any;
@@ -148,7 +151,7 @@ export async function processMethodSubtype(phone: string, reply: string): Promis
       : PAYMENT_METHODS.MOBILE_POS;
   }
 
-  await confirmMethodAndSendInstructions(phone, number, unit_price, method);
+  await confirmMethodAndSendInstructions(phone, number, amount, method);
   return true;
 }
 
@@ -185,7 +188,7 @@ export async function confirmMethodAndSendInstructions(
  */
 export async function processPaymentProof(phone: string, mediaId: string, mediaType: string | null): Promise<boolean> {
   const { rows } = await db.query(
-    `SELECT number, unit_price, payment_method FROM orders
+    `SELECT number, unit_price, service_price, payment_method FROM orders
      WHERE customer_phone = $1
        AND status = 'awaiting_payment_proof'
      ORDER BY created_at DESC LIMIT 1`,
@@ -193,7 +196,30 @@ export async function processPaymentProof(phone: string, mediaId: string, mediaT
   );
   if (!rows.length) return false;
 
-  const { number, unit_price, payment_method } = rows[0];
+  const { number, unit_price, service_price, payment_method } = rows[0];
+  const amount = Number(unit_price) + Number(service_price || 0);
+
+  // Vision can only inspect images, not PDFs — a 'document' proof skips
+  // straight to acceptance below, same as before this check existed.
+  if (mediaType === 'image') {
+    const imageBase64 = await downloadWhatsAppMedia(mediaId);
+    if (imageBase64) {
+      const extracted = await extractPaymentProofData(imageBase64);
+      if (extracted && extracted.valid === false) {
+        logger.info(`[PAYMENT] Rejected proof for order ${number} from ${phone}: ${extracted.reason}`);
+        await sendWhatsAppMessage(
+          phone,
+          t.payment.proofInvalid(extracted.reason || t.payment.proofInvalidDefaultReason)
+        );
+        return true;
+      }
+      if (extracted) {
+        logger.info(
+          `[PAYMENT] Proof extracted for order ${number}: amount=${extracted.amount} date=${extracted.date} reference=${extracted.reference}`
+        );
+      }
+    }
+  }
 
   await db.query(
     `UPDATE orders
@@ -210,13 +236,11 @@ export async function processPaymentProof(phone: string, mediaId: string, mediaT
 
   await sendWhatsAppMessage(phone, t.payment.proofReceivedCustomer(methodName, number));
 
-  const staffPhone = config.admin.staffPhone;
-  if (staffPhone) {
-    await sendWhatsAppMessage(
-      staffPhone,
-      t.payment.proofReceivedStaff(number, methodName, formatPrice(unit_price), phone, `${config.appUrl}/admin/orders`)
-    );
-  }
+  await createAlert(
+    'payment_proof',
+    number,
+    `Comprovativo de pagamento recebido para o pedido ${number} (${methodName}, ${formatPrice(amount)}) — cliente ${phone}.`
+  );
 
   return true;
 }
@@ -268,7 +292,9 @@ export async function confirmInPersonPayment(orderNumber: string, employeeId: nu
 }
 
 /**
- * Notifies the internal team member about a physical payment request.
+ * Alerts the admin panel about a physical payment request (mobile POS or cash
+ * on delivery) so staff can arrange it — no WhatsApp push to the admin's own
+ * phone, this lands in the admin alerts feed instead.
  */
 async function notifyAgentInPersonPayment(
   orderNumber: string,
@@ -276,20 +302,10 @@ async function notifyAgentInPersonPayment(
   amount: number,
   method: any
 ): Promise<void> {
-  const staffPhone = config.admin.staffPhone;
-  if (!staffPhone) return;
-
-  await sendWhatsAppMessage(
-    staffPhone,
-    t.payment.inPersonPaymentStaff(
-      orderNumber,
-      method.name,
-      method.emoji,
-      formatPrice(amount),
-      customerPhone,
-      method.id === 'mobile_pos',
-      `${config.appUrl}/admin/orders`
-    )
+  await createAlert(
+    'in_person_payment',
+    orderNumber,
+    `Pagamento presencial solicitado para o pedido ${orderNumber} (${method.name}, ${formatPrice(amount)}) — cliente ${customerPhone}.`
   );
 }
 

@@ -12,7 +12,8 @@
     "db:migrate": "node db/migrate.js",
     "db:seed": "node db/migrate.js --seed",
     "db:clear": "node db/clear.js",
-    "docs:flow": "node scripts/generate-flow-doc.js"
+    "docs:flow": "node scripts/generate-flow-doc.js",
+    "admin:cli": "node scripts/admin-cli.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",

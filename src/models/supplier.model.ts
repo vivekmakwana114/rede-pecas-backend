@@ -17,6 +17,13 @@ export interface ImportItem {
   supplierName?: string;
   supplierNif?: string;
   supplierProvince?: string;
+  // Optional attached service (e.g. installation) offered as a WhatsApp
+  // follow-up when a customer picks this product. serviceOffered is only
+  // ever true when serviceName/servicePrice both parsed successfully — see
+  // normalizeRow in product.service.ts.
+  serviceOffered?: boolean;
+  serviceName?: string;
+  servicePrice?: number;
 }
 
 /**
@@ -80,23 +87,34 @@ export async function importProductsBatch(
         // restock transition atomically, without a separate SELECT round trip.
         const result = await client.query(
           `WITH prev AS (
-             SELECT quantity, waitlist_phones FROM products WHERE supplier_id = $1 AND reference = $2
+             SELECT quantity FROM products WHERE supplier_id = $1 AND reference = $2
            )
-           INSERT INTO products (supplier_id, reference, name, price, quantity, active, updated_at)
-           VALUES ($1, $2, $3, $4, $5, true, NOW())
+           INSERT INTO products (supplier_id, reference, name, price, quantity, service_offered, service_name, service_price, active, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NOW())
            ON CONFLICT (supplier_id, reference)
            DO UPDATE SET
              name = EXCLUDED.name,
              price = EXCLUDED.price,
              quantity = EXCLUDED.quantity,
+             service_offered = EXCLUDED.service_offered,
+             service_name = EXCLUDED.service_name,
+             service_price = EXCLUDED.service_price,
              active = true,
              updated_at = NOW()
            RETURNING
              id,
              (xmax = 0) AS was_inserted,
-             (SELECT quantity FROM prev) AS previous_quantity,
-             (SELECT waitlist_phones FROM prev) AS previous_waitlist_phones`,
-          [supplierId, item.reference, item.name, item.price, item.quantity]
+             (SELECT quantity FROM prev) AS previous_quantity`,
+          [
+            supplierId,
+            item.reference,
+            item.name,
+            item.price,
+            item.quantity,
+            item.serviceOffered ?? false,
+            item.serviceName ?? null,
+            item.servicePrice ?? null,
+          ]
         );
 
         const row = result.rows[0];
@@ -106,10 +124,19 @@ export async function importProductsBatch(
           groupUpdated++;
 
           if (row.previous_quantity === 0 && item.quantity > 0) {
-            const phones: string[] = row.previous_waitlist_phones || [];
+            // Marks every still-unnotified waitlist_requests row for this product as
+            // notified in the same statement that reads the phones to message —
+            // a re-run of this import can't double-notify the same request.
+            const waitlisted = await client.query(
+              `UPDATE waitlist_requests
+               SET notified_at = NOW()
+               WHERE product_id = $1 AND notified_at IS NULL
+               RETURNING customer_phone`,
+              [row.id]
+            );
+            const phones: string[] = waitlisted.rows.map((r) => r.customer_phone);
             if (phones.length) {
               restockNotifications.push({ productId: row.id, productName: item.name, phones });
-              await client.query(`UPDATE products SET waitlist_phones = '{}' WHERE id = $1`, [row.id]);
             }
           }
         }

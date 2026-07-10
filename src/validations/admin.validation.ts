@@ -7,6 +7,12 @@ export const orderParams: ValidationSchema = {
   }),
 };
 
+export const alertParams: ValidationSchema = {
+  params: Joi.object().keys({
+    id: Joi.number().integer().required(),
+  }),
+};
+
 export const importProductsBatch: ValidationSchema = {
   body: Joi.object().keys({
     // Fallback supplier for any item that doesn't specify its own — optional
@@ -23,6 +29,9 @@ export const importProductsBatch: ValidationSchema = {
           supplierName: Joi.string(),
           supplierNif: Joi.string().allow(''),
           supplierProvince: Joi.string().allow(''),
+          serviceOffered: Joi.boolean(),
+          serviceName: Joi.string().allow(''),
+          servicePrice: Joi.number(),
         })
       )
       .required(),
