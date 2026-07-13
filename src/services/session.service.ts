@@ -8,7 +8,17 @@ let useMemoryFallback = false;
 const memoryCache = new Map<string, any[]>();
 
 const SESSION_TTL = 60 * 60 * 4; // 4 hours in seconds
-const VEHICLE_ID_CHOICE_TTL = 60 * 30; // 30 minutes — matches the manual-collection wizard's own window
+// Was 30 minutes ("matches the manual-collection wizard's own window") — but that
+// reasoning conflated two different things: the wizard's own 30-min abandonment
+// window (getActiveManualCollection in vehicle.model.ts, unaffected by this constant)
+// only starts once a customer is actively mid-wizard, answering make/model/year in
+// quick succession. This constant instead governs "how long do we remember that a
+// choice/retry prompt was shown at all" — e.g. a customer who taps "Try again" 48
+// minutes after receiving the prompt (entirely plausible — they had to go find their
+// document and take a clearer photo) was falling through with no handler and landing
+// on an unrelated stale order's fallback. Every other pending-choice/offer flag in
+// this file already uses the full SESSION_TTL; these three should too.
+const VEHICLE_ID_CHOICE_TTL = SESSION_TTL;
 
 if (config.redis.url) {
   try {
@@ -648,5 +658,60 @@ export async function clearDocumentRetryChoice(phone: string): Promise<void> {
     await redisClient.del(key);
   } catch (err) {
     logger.error('Error clearing document-retry choice in Redis', err);
+  }
+}
+
+// Tracks "the customer was just shown the payment-proof unclear/invalid retry
+// prompt" (processPaymentProof's Vision-rejection path) — same shape/lifecycle
+// as documentRetryChoiceSessions above. A subsequent photo/PDF upload is caught
+// unconditionally by the media-routing stage regardless of this flag; it only
+// exists so a text reply (e.g. the "Try again" button tap itself, which arrives
+// as text, not media) doesn't fall through to an unrelated pipeline stage.
+const paymentProofRetrySessions = new Map<string, number>();
+
+export async function markPaymentProofRetryShown(phone: string): Promise<void> {
+  const key = `paymentProofRetry:${phone}`;
+  paymentProofRetrySessions.set(key, Date.now() + VEHICLE_ID_CHOICE_TTL * 1000);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, VEHICLE_ID_CHOICE_TTL, '1');
+  } catch (err) {
+    logger.error('Error marking payment-proof retry shown in Redis', err);
+  }
+}
+
+export async function wasPaymentProofRetryShown(phone: string): Promise<boolean> {
+  const key = `paymentProofRetry:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    const expiresAt = paymentProofRetrySessions.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
+  }
+
+  try {
+    const exists = await redisClient.exists(key);
+    return exists === 1;
+  } catch (err) {
+    logger.error('Error checking payment-proof retry state in Redis', err);
+    const expiresAt = paymentProofRetrySessions.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
+  }
+}
+
+export async function clearPaymentProofRetry(phone: string): Promise<void> {
+  const key = `paymentProofRetry:${phone}`;
+  paymentProofRetrySessions.delete(key);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.del(key);
+  } catch (err) {
+    logger.error('Error clearing payment-proof retry state in Redis', err);
   }
 }

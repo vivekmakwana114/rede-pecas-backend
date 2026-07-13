@@ -12,7 +12,7 @@
 -- the password immediately in any environment this seed reaches beyond local dev).
 -- npm run db:seed
 INSERT INTO admin_users (name, email, phone, password_hash) VALUES
-  ('Admin', 'admin@redepecas.ao', '244900000001', '$2a$10$UVANI9fapZOKB5T8opdS4.FtEkSYk42ISUp0NQhSAeNvxQIrGZLt6')
+  ('Admin', 'admin@redepecas.ao', '15556016219', '$2a$10$UVANI9fapZOKB5T8opdS4.FtEkSYk42ISUp0NQhSAeNvxQIrGZLt6')
 ON CONFLICT (email) DO NOTHING;
 
 -- suppliers.name has no unique constraint (a real supplier name isn't

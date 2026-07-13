@@ -55,7 +55,7 @@ export async function extractDataWithClaudeVision(imageBase64: string): Promise<
 - A label, sticker, or engraving showing the chassis number (VIN)
 - Any other photo where the chassis number (VIN), license plate, or vehicle data is legible
 
-It does not need to be a formal paper document — even a photo showing only the VIN plate counts.
+It does not need to be a formal paper document — even a photo showing only the VIN number counts.
 
 If the image has NO vehicle identification information visible at all (no VIN, no license plate, no
 make/model), respond exactly: {"document": false}
@@ -82,10 +82,16 @@ with valid JSON:
 IMPORTANT RULES:
 - A photo that clearly shows a 17-character chassis number (VIN) is always valid (valid: true), even if
   no other field is visible — make/model/year can be null, the VIN alone is enough
-- Never invent data — if a field isn't visible or legible, set it to null
+- If you are NOT fully confident in your reading (e.g. handwriting, rotated text, poor lighting), still
+  set chassis_number to your single best-effort guess at the 17 characters rather than null, and set
+  valid: false with an explanation in reason. Your best guess will be independently cross-checked
+  against a vehicle database — a wrong guess simply fails that check safely, so guessing is always
+  more useful than leaving it null. Never guess for any other field though — leave those null if unsure
+- Never invent data for fields other than chassis_number — if a field isn't visible or legible, set it
+  to null
 - The "owner" field must ALWAYS be null (privacy)
-- If the image is too blurry or unreadable to confidently read anything, set valid: false and explain
-  in reason
+- If the image has no chassis number at all and is too blurry or unreadable to confidently read
+  anything else either, set valid: false and explain in reason
 - Respond ONLY with the JSON, no additional text`
           }
         ]
@@ -117,13 +123,17 @@ export interface PaymentProofData {
 }
 
 /**
- * Sends a base64 encoded payment-proof image to Claude Vision to validate it
- * actually looks like a payment receipt (bank transfer, deposit, Multicaixa
- * Express, mobile payment confirmation) and extract what it can for the audit
- * trail. Gates processPaymentProof in payment.service.ts — an invalid result
- * asks the customer to re-upload instead of advancing the order status.
+ * Sends a base64 encoded payment proof (photo or PDF) to Claude Vision to
+ * validate it actually looks like a payment receipt (bank transfer, deposit,
+ * Multicaixa Express, mobile payment confirmation) and extract what it can for
+ * the audit trail. Gates processPaymentProof in payment.service.ts — an
+ * invalid result asks the customer to re-upload instead of advancing the order
+ * status. Both media types are examined here; neither bypasses this check.
  */
-export async function extractPaymentProofData(imageBase64: string): Promise<PaymentProofData | null> {
+export async function extractPaymentProofData(
+  fileBase64: string,
+  mediaType: 'image' | 'document'
+): Promise<PaymentProofData | null> {
   try {
     const response = await anthropic.messages.create({
       model: VISION_MODEL,
@@ -131,17 +141,26 @@ export async function extractPaymentProofData(imageBase64: string): Promise<Paym
       messages: [{
         role: "user",
         content: [
-          {
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: "image/jpeg",
-              data: imageBase64,
-            },
-          },
+          mediaType === 'document'
+            ? {
+                type: "document",
+                source: {
+                  type: "base64",
+                  media_type: "application/pdf",
+                  data: fileBase64,
+                },
+              }
+            : {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: "image/jpeg",
+                  data: fileBase64,
+                },
+              },
           {
             type: "text",
-            text: `Analyze this image. It should be a payment proof (bank transfer receipt, deposit slip,
+            text: `Analyze this file. It should be a payment proof (bank transfer receipt, deposit slip,
 Multicaixa Express, or mobile payment confirmation in Angola).
 
 Respond ONLY with valid JSON in this format:
@@ -154,7 +173,7 @@ Respond ONLY with valid JSON in this format:
 }
 
 IMPORTANT RULES:
-- "valid" must be false if the image doesn't look like a real payment proof, is unreadable, or is
+- "valid" must be false if the file doesn't look like a real payment proof, is unreadable/blank, or is
   clearly something else (e.g. a selfie, a car part, an identity document)
 - Never invent data — if a field isn't visible or legible, set it to null
 - Respond ONLY with the JSON, no additional text`

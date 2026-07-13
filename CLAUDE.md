@@ -83,9 +83,9 @@ There is no conversational AI agent anywhere in the WhatsApp flow. Product searc
 
 The **only** AI calls anywhere in this codebase are two Claude Vision extraction calls, both in `src/services/ai.service.ts`, both on the `claude-haiku-4-5-20251001` model:
 - `extractDataWithClaudeVision` — vehicle document/VIN photo extraction, wired in via `processVehicleDocument`.
-- `extractPaymentProofData` — payment-proof image extraction, wired in via `processPaymentProof` in `payment.service.ts`. Only runs when the proof is an image (Vision can't inspect a PDF proof); an image proof that comes back `valid: false` (e.g. not actually a receipt, illegible) asks the customer to re-upload instead of advancing `orders.status`.
+- `extractPaymentProofData` — payment-proof extraction, wired in via `processPaymentProof` in `payment.service.ts`. Runs on **both** photo and PDF proofs (as of 2026-07-13) — the call sends an `image` or `document` content block to Claude depending on `mediaType`, so neither media type bypasses validation. A proof that comes back `valid: false` (e.g. not actually a receipt, illegible, blank) sends a generic "couldn't confirm this is valid, please resend" message with a "Try again" button (`t.payment.proofInvalid`/`proofRetryButtons`) — same reason-not-leaked-to-customer pattern as `document.invalid()` below, Claude's actual `reason` is logged server-side only — and does **not** advance `orders.status` or create an admin alert; only a validated proof does both.
 
-Neither call ever sees customer chat text — both take an image only. There is no system prompt, no JSON action dispatch, and no Redis-held conversation history anymore (the old rolling 20-message `session:<phone>` key and `getHistory`/`saveHistory` were removed as dead weight along with the agent that used them).
+Neither call ever sees customer chat text — both take image/document input only, never text. There is no system prompt, no JSON action dispatch, and no Redis-held conversation history anymore (the old rolling 20-message `session:<phone>` key and `getHistory`/`saveHistory` were removed as dead weight along with the agent that used them).
 
 ### Intended end-to-end workflow (agreed with Vivek, 2026-07-02; registration/vehicle split reversed 2026-07-07)
 

@@ -153,6 +153,20 @@ async function processMessageFlow(
     return;
   }
 
+  // 3.6 PRIORITY: pending "try again" / "manual entry" reply after a document processing
+  // failure. Must run before stage 4 below — vehicleIdChoiceShown (set once, when the
+  // original VIN/photo/manual choice was first shown) is never cleared while this more
+  // specific retry prompt is active, so without this ordering a reply like "Manual entry"
+  // would get wrongly intercepted by stage 4's generic 3-button handler instead of this
+  // dedicated one — same outcome for "manual", but silently wrong for "try again"
+  // (stage 4 doesn't recognize it and falls through, eventually landing in stage 10's
+  // catch-all, which also starts manual collection instead of re-prompting for a photo).
+  const documentRetryChoiceShown = await sessionService.wasDocumentRetryChoiceShown(phone);
+  if (documentRetryChoiceShown && customerText) {
+    const handled = await vehicleService.processDocumentRetryChoice(phone, customerText);
+    if (handled) return;
+  }
+
   // 4. PRIORITY: vehicle-ID option button tap (VIN / photo / manual), shown right after
   // profile registration completes, a returning customer's vehicle session expired, or
   // an "add another vehicle" request just above. Must run before manual collection
@@ -179,7 +193,8 @@ async function processMessageFlow(
   // 6. PRIORITY: Customer sent payment proof media (image/document)
   if (mediaType === 'image' || mediaType === 'document') {
     if (mediaId) {
-      const handled = await paymentService.processPaymentProof(phone, mediaId, mediaType);
+      const proofFirstName = customer.name?.split(' ')[0] || 'Cliente';
+      const handled = await paymentService.processPaymentProof(phone, mediaId, mediaType, proofFirstName);
       if (handled) return;
     }
   }
@@ -196,16 +211,6 @@ async function processMessageFlow(
   if (vehicleService.isVIN(customerText)) {
     await vehicleService.processVIN(phone, customerText);
     return;
-  }
-
-  // 8.2 PRIORITY: pending "try again" / "manual entry" reply after a document
-  // processing failure. Must run before stage 10's generic "start manual collection
-  // for any unmatched text" catch-all, which would otherwise misroute a "try again"
-  // reply straight into manual collection instead of re-prompting for a fresh photo.
-  const documentRetryChoiceShown = await sessionService.wasDocumentRetryChoiceShown(phone);
-  if (documentRetryChoiceShown) {
-    const handled = await vehicleService.processDocumentRetryChoice(phone, customerText);
-    if (handled) return;
   }
 
   // 8.3 PRIORITY: pending "which vehicle is this for?" reply (customers with 2+
@@ -260,6 +265,17 @@ async function processMessageFlow(
   const pendingRestockOrderOffer = await sessionService.getPendingRestockOrderOffer(phone);
   if (pendingRestockOrderOffer) {
     const handled = await productService.processRestockOrderChoice(phone, customerText, pendingRestockOrderOffer);
+    if (handled) return;
+  }
+
+  // 8.9 PRIORITY: pending "payment proof unclear, try again" reply. The order stays in
+  // awaiting_payment_proof so a new photo/PDF is already caught unconditionally by stage
+  // 6 above regardless of this flag — this only exists to stop the "Try again" button tap
+  // itself (which arrives as text, not media) from falling through to an unrelated stage
+  // (e.g. product search) instead of just re-showing the same upload prompt.
+  const pendingPaymentProofRetry = await sessionService.wasPaymentProofRetryShown(phone);
+  if (pendingPaymentProofRetry) {
+    const handled = await paymentService.processPaymentProofRetryChoice(phone);
     if (handled) return;
   }
 

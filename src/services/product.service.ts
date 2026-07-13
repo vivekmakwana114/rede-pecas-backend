@@ -181,10 +181,12 @@ export async function confirmStockAndFinalizeOrder(orderNumber: string): Promise
     : null;
   const total = product.price + (service?.price ?? 0);
 
-  await sendWhatsAppMessage(phone, t.agent.stockConfirmedIntro(product.name));
+  const customer = await getCustomerByPhone(phone);
+  const firstName = customer?.name?.split(' ')[0] || 'Cliente';
+  await sendWhatsAppMessage(phone, t.agent.stockConfirmedIntro(product.name, firstName));
 
   const proformaPath = await generateProformaPDF(orderNumber, phone, product, service);
-  await sendProformaWhatsApp(phone, proformaPath, orderNumber, product, total);
+  await sendProformaWhatsApp(phone, proformaPath, orderNumber);
   await askPaymentMethod(phone, orderNumber, total);
 
   // Clean temp PDF asynchronously

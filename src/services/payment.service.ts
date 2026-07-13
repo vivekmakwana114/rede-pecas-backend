@@ -8,6 +8,7 @@ import { getSupplierPhoneById } from '../models/supplier.model.js';
 import { createAlert } from '../models/alert.model.js';
 import { formatPrice } from '../utils/helpers.js';
 import { t } from '../i18n/messages.js';
+import { markPaymentProofRetryShown, clearPaymentProofRetry } from './session.service.js';
 
 // Display names and instruction texts come from src/i18n/messages.ts (customer-facing);
 // ids are English because they are persisted in orders.payment_method.
@@ -102,7 +103,7 @@ export async function processMethodChoice(phone: string, customerReply: string):
   const amount = Number(unit_price) + Number(service_price || 0);
   const reply = customerReply.toLowerCase();
 
-  if (reply.includes('transfer') || reply.includes('deposit') || reply.includes('banco') || reply === '1') {
+  if (reply.includes('transfer') || reply.includes('deposit') || reply.includes('depósito') || reply.includes('banco') || reply.includes('bank') || reply === '1') {
     await sendWhatsAppButtons(phone, t.payment.askBankSubtypeBody(), t.payment.askBankSubtypeButtons);
     await db.query(
       `UPDATE orders SET status = 'awaiting_bank_subtype' WHERE number = $1`,
@@ -144,7 +145,7 @@ export async function processMethodSubtype(phone: string, reply: string): Promis
 
   let method: any;
   if (status === 'awaiting_bank_subtype') {
-    method = r.includes('deposit') ? PAYMENT_METHODS.BANK_DEPOSIT : PAYMENT_METHODS.BANK_TRANSFER;
+    method = (r.includes('deposit') || r.includes('depósito')) ? PAYMENT_METHODS.BANK_DEPOSIT : PAYMENT_METHODS.BANK_TRANSFER;
   } else {
     method = r.includes('dinheiro') || r.includes('entrega')
       ? PAYMENT_METHODS.CASH
@@ -184,9 +185,18 @@ export async function confirmMethodAndSendInstructions(
 }
 
 /**
- * Saves uploaded customer receipts and flags system admins.
+ * Saves uploaded customer receipts and flags system admins. Both photos and
+ * PDFs are examined by Claude Vision (extractPaymentProofData) before a proof
+ * ever reaches the admin queue — neither media type bypasses validation. An
+ * invalid result asks the customer to re-upload instead of advancing the
+ * order status or creating an admin alert.
  */
-export async function processPaymentProof(phone: string, mediaId: string, mediaType: string | null): Promise<boolean> {
+export async function processPaymentProof(
+  phone: string,
+  mediaId: string,
+  mediaType: string | null,
+  customerName: string
+): Promise<boolean> {
   const { rows } = await db.query(
     `SELECT number, unit_price, service_price, payment_method FROM orders
      WHERE customer_phone = $1
@@ -195,31 +205,27 @@ export async function processPaymentProof(phone: string, mediaId: string, mediaT
     [phone]
   );
   if (!rows.length) return false;
+  if (mediaType !== 'image' && mediaType !== 'document') return false;
 
   const { number, unit_price, service_price, payment_method } = rows[0];
   const amount = Number(unit_price) + Number(service_price || 0);
 
-  // Vision can only inspect images, not PDFs — a 'document' proof skips
-  // straight to acceptance below, same as before this check existed.
-  if (mediaType === 'image') {
-    const imageBase64 = await downloadWhatsAppMedia(mediaId);
-    if (imageBase64) {
-      const extracted = await extractPaymentProofData(imageBase64);
-      if (extracted && extracted.valid === false) {
-        logger.info(`[PAYMENT] Rejected proof for order ${number} from ${phone}: ${extracted.reason}`);
-        await sendWhatsAppMessage(
-          phone,
-          t.payment.proofInvalid(extracted.reason || t.payment.proofInvalidDefaultReason)
-        );
-        return true;
-      }
-      if (extracted) {
-        logger.info(
-          `[PAYMENT] Proof extracted for order ${number}: amount=${extracted.amount} date=${extracted.date} reference=${extracted.reference}`
-        );
-      }
-    }
+  const fileBase64 = await downloadWhatsAppMedia(mediaId);
+  const extracted = fileBase64 ? await extractPaymentProofData(fileBase64, mediaType) : null;
+
+  if (!extracted || extracted.valid === false) {
+    logger.info(
+      `[PAYMENT] Rejected proof for order ${number} from ${phone}: ${extracted?.reason || 'could not download/read file'}`
+    );
+    await sendWhatsAppButtons(phone, t.payment.proofInvalid(), t.payment.proofRetryButtons);
+    await markPaymentProofRetryShown(phone);
+    return true;
   }
+
+  logger.info(
+    `[PAYMENT] Proof extracted for order ${number}: amount=${extracted.amount} date=${extracted.date} reference=${extracted.reference}`
+  );
+  await clearPaymentProofRetry(phone);
 
   await db.query(
     `UPDATE orders
@@ -234,7 +240,7 @@ export async function processPaymentProof(phone: string, mediaId: string, mediaT
   const methodName = Object.values(PAYMENT_METHODS)
     .find(m => m.id === payment_method)?.name || payment_method;
 
-  await sendWhatsAppMessage(phone, t.payment.proofReceivedCustomer(methodName, number));
+  await sendWhatsAppMessage(phone, t.payment.proofReceivedCustomer(customerName));
 
   await createAlert(
     'payment_proof',
@@ -242,6 +248,20 @@ export async function processPaymentProof(phone: string, mediaId: string, mediaT
     `Comprovativo de pagamento recebido para o pedido ${number} (${methodName}, ${formatPrice(amount)}) — cliente ${phone}.`
   );
 
+  return true;
+}
+
+/**
+ * Handles a text/button-tap reply while the payment-proof retry prompt is
+ * active (e.g. the customer taps "Try again" instead of attaching a new file
+ * directly). The only real next step is uploading a new photo/PDF, which the
+ * media-routing stage in whatsapp.controller.ts already catches
+ * unconditionally regardless of this flag — this just re-shows the same
+ * prompt as a nudge instead of letting the tap fall through to an unrelated
+ * pipeline stage (e.g. product search).
+ */
+export async function processPaymentProofRetryChoice(phone: string): Promise<boolean> {
+  await sendWhatsAppButtons(phone, t.payment.proofInvalid(), t.payment.proofRetryButtons);
   return true;
 }
 
