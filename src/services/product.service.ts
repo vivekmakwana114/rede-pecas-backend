@@ -114,7 +114,7 @@ function buildProductListRows(options: Product[]): { id: string; title: string; 
     id: `option_${i + 1}`,
     title: truncate(item.name, 24),
     description: truncate(
-      `Ref: ${item.reference} • ${formatPrice(item.price)} • ${t.agent.stockCountLabel(item.quantity)} • ${item.delivery_time}${item.supplier ? ` • ${item.supplier}` : ''}`,
+      `Ref: ${item.reference} • ${formatPrice(item.price)} • ${item.delivery_time}${item.supplier ? ` • ${item.supplier}` : ''}`,
       72
     ),
   }));

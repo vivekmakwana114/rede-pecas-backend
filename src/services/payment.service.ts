@@ -5,6 +5,7 @@ import { generatePrimaveraInvoice, sendFinalInvoiceWhatsApp } from './pdf.servic
 import { extractPaymentProofData } from './ai.service.js';
 import { getOrderByNumber, getLatestOrderByStatus } from '../models/order.model.js';
 import { getSupplierPhoneById } from '../models/supplier.model.js';
+import { getCustomerByPhone } from '../models/customer.model.js';
 import { createAlert } from '../models/alert.model.js';
 import { formatPrice } from '../utils/helpers.js';
 import { t } from '../i18n/messages.js';
@@ -288,7 +289,9 @@ export async function approveOrder(orderNumber: string, employeeId: number): Pro
   const invoicePDF = await generatePrimaveraInvoice(fullOrder);
 
   // Send the final PDF invoice to the customer
-  await sendFinalInvoiceWhatsApp(order.customer_phone, invoicePDF, orderNumber);
+  const customer = await getCustomerByPhone(order.customer_phone);
+  const firstName = customer?.name?.split(' ')[0] || 'Cliente';
+  await sendFinalInvoiceWhatsApp(order.customer_phone, invoicePDF, orderNumber, firstName);
 
   // Notify the supplier to prepare delivery
   await notifySupplierDelivery(fullOrder);

@@ -282,7 +282,8 @@ export async function generatePrimaveraInvoice(order: any): Promise<string> {
 export async function sendFinalInvoiceWhatsApp(
   phone: string,
   pdfPath: string,
-  orderNumber: string
+  orderNumber: string,
+  customerName: string
 ): Promise<void> {
   const API_URL = `https://graph.facebook.com/v19.0/${config.whatsapp.phoneNumberId}`;
   const token = config.whatsapp.token;
@@ -318,7 +319,7 @@ export async function sendFinalInvoiceWhatsApp(
         to: phone,
         type: 'text',
         text: {
-          body: t.pdf.finalInvoice.notification(),
+          body: t.pdf.finalInvoice.notification(customerName),
         },
       }),
     });

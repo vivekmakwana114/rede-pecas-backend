@@ -83,7 +83,6 @@ interface Messages {
     searchListBody: (count: number, part: string, name: string) => string;
     searchListBodyForVehicle: (count: number, part: string, make: string, model: string, year: string, name: string) => string;
     searchListButton: () => string;
-    stockCountLabel: (quantity: number) => string;
     productSelected: (productName: string, price: string) => string;
     serviceOfferBody: (serviceName: string, price: string) => string;
     serviceOfferButtons: [string, string];
@@ -149,7 +148,7 @@ interface Messages {
       documentCaption: (orderNumber: string) => string;
     };
     finalInvoice: {
-      notification: () => string;
+      notification: (customerName: string) => string;
       documentCaption: (orderNumber: string) => string;
     };
     mockInvoice: {
@@ -360,13 +359,12 @@ const pt: Messages = {
     searchListBodyForVehicle: (count, part, make, model, year, name) =>
       `Boas notícias, ${name}! 🙌 Encontrei ${count} opção(ões) de *${part}* para o teu *${make} ${model} ${year}*. Escolhe uma abaixo 👇`,
     searchListButton: () => 'Ver opções',
-    stockCountLabel: (quantity) => `${quantity} un.`,
   },
   order: {
     rejected: (orderNumber) =>
-      `❌ O teu pedido *${orderNumber}* foi rejeitado.\n\n` +
-      `Motivo: comprovativo de pagamento não confirmado ou inválido.\n\n` +
-      `Se achas que é um erro, responde aqui e um atendente irá ajudar-te. 🙏`,
+      `Infelizmente não conseguimos confirmar o teu pagamento para o pedido ${orderNumber}. 😔\n\n` +
+      `Isto pode acontecer se o comprovativo estava pouco nítido ou a referência de pagamento estava em falta.\n\n` +
+      `Se achas que isto é um erro, responde aqui e um dos nossos colaboradores vai ajudar-te a resolver isso já. 👇`,
   },
   payment: {
     methods: {
@@ -486,10 +484,11 @@ const pt: Messages = {
       documentCaption: (orderNumber) => `Factura Proforma Nº ${orderNumber} — Rede Peças`,
     },
     finalInvoice: {
-      notification: () =>
-        `🧾 *Factura Oficial AGT Emitida!*\n\n` +
-        `O teu pagamento foi validado e a factura oficial já está disponível em anexo.\n` +
-        `Obrigado por comprares na Rede Peças! 🚗`,
+      notification: (customerName) =>
+        `O teu pagamento foi confirmado, ${customerName}! ✅\n\n` +
+        `A tua factura oficial segue em anexo — guarda-a para os teus registos.\n\n` +
+        `Obrigado por escolheres a Rede Peças.\n` +
+        `Esperamos ver-te em breve! 🙏 🚗`,
       documentCaption: (orderNumber) => `Factura Comercial Nº ${orderNumber} — Rede Peças`,
     },
     mockInvoice: {
@@ -706,13 +705,12 @@ const en: Messages = {
     searchListBodyForVehicle: (count, part, make, model, year, name) =>
       `Good news, ${name}! 🙌 I found ${count} option(s) for *${part}* for your *${make} ${model} ${year}*. Which one works best for you? 👇`,
     searchListButton: () => 'View options',
-    stockCountLabel: (quantity) => `${quantity} in stock`,
   },
   order: {
     rejected: (orderNumber) =>
-      `❌ Your order *${orderNumber}* was rejected.\n\n` +
-      `Reason: payment proof not confirmed or invalid.\n\n` +
-      `If you think this is a mistake, reply here and a staff member will help you. 🙏`,
+      `Unfortunately we weren't able to confirm your payment for order ${orderNumber}. 😔\n\n` +
+      `This can happen if the proof was unclear or the payment reference was missing.\n\n` +
+      `If you think this is a mistake, just reply here and one of our team members will help you sort it out right away. 👇`,
   },
   payment: {
     methods: {
@@ -832,10 +830,11 @@ const en: Messages = {
       documentCaption: (orderNumber) => `Proforma Invoice No. ${orderNumber} — Rede Peças`,
     },
     finalInvoice: {
-      notification: () =>
-        `🧾 *Official AGT Invoice Issued!*\n\n` +
-        `Your payment has been validated and the official invoice is now attached.\n` +
-        `Thanks for shopping with Rede Peças! 🚗`,
+      notification: (customerName) =>
+        `Your payment has been confirmed, ${customerName}! ✅\n\n` +
+        `Your official invoice is attached — keep it for your records.\n\n` +
+        `Thank you for choosing Rede Peças.\n` +
+        `We hope to see you again soon! 🙏 🚗`,
       documentCaption: (orderNumber) => `Commercial Invoice No. ${orderNumber} — Rede Peças`,
     },
     mockInvoice: {
