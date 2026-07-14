@@ -19,6 +19,12 @@ export const orderStockConfirmation: ValidationSchema = {
   }),
 };
 
+export const orderNumberParams: ValidationSchema = {
+  params: Joi.object().keys({
+    number: Joi.string().required(),
+  }),
+};
+
 export const alertParams: ValidationSchema = {
   params: Joi.object().keys({
     id: Joi.number().integer().required(),

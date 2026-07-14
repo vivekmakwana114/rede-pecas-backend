@@ -11,6 +11,7 @@ export interface OrderInfo {
   created_at: Date;
   time: string;
   has_proof: boolean;
+  payment_proof_media_type?: string | null;
   payment_method?: string;
   requires_proof?: boolean;
   service_name?: string;
@@ -126,6 +127,7 @@ export async function getOrdersPendingApproval(): Promise<OrderInfo[]> {
       o.payment_method,
       to_char(o.created_at, 'HH24:MI') AS time,
       (o.payment_proof_media_id IS NOT NULL) AS has_proof,
+      o.payment_proof_media_type,
       (o.payment_method = 'bank_transfer' OR o.payment_method = 'bank_deposit' OR o.payment_method = 'multicaixa_express') AS requires_proof
     FROM orders o
     JOIN products p ON p.id = o.product_id
@@ -221,7 +223,9 @@ export async function getOrdersApprovedToday(): Promise<any[]> {
       o.number, o.customer_phone AS customer,
       o.unit_price AS price,
       p.name AS part,
-      to_char(o.approved_at, 'HH24:MI') AS time
+      to_char(o.approved_at, 'HH24:MI') AS time,
+      (o.payment_proof_media_id IS NOT NULL) AS has_proof,
+      o.payment_proof_media_type
     FROM orders o
     JOIN products p ON p.id = o.product_id
     WHERE o.status = 'approved'
@@ -243,7 +247,9 @@ export async function getOrdersRejectedToday(): Promise<any[]> {
       o.number, o.customer_phone AS customer,
       o.unit_price AS price,
       p.name AS part,
-      to_char(o.updated_at, 'HH24:MI') AS time
+      to_char(o.updated_at, 'HH24:MI') AS time,
+      (o.payment_proof_media_id IS NOT NULL) AS has_proof,
+      o.payment_proof_media_type
     FROM orders o
     JOIN products p ON p.id = o.product_id
     WHERE o.status = 'rejected'
