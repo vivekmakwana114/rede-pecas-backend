@@ -18,16 +18,18 @@ export interface Product {
 
 /**
  * Builds an OR-of-terms tsquery from raw customer text: to_tsvector on the input
- * applies the same 'portuguese' tokenizing/stemming/stopword-removal as the
- * search_vector column, then the resulting lexemes are joined with '|' instead of
- * AND-ing them (plainto_tsquery's default). AND-ing was the bug — a customer message
- * always carries filler words ("I need...", "para o meu...") that aren't in the
- * Portuguese stopword list (it doesn't know English, and doesn't catch every PT
- * filler either), so plainto_tsquery required the product to literally contain
- * "need"/"para" etc. and matched nothing. OR-ing means any one real keyword overlap
- * (e.g. "oil"/"filter") is enough — customers can phrase the request however they want.
+ * applies the same tokenizing/stemming/stopword-removal as the search_vector
+ * column (config must match search_vector's — 'english' as of 2026-07-14, see
+ * schema.sql; was 'portuguese' before catalog data switched to English), then
+ * the resulting lexemes are joined with '|' instead of AND-ing them
+ * (plainto_tsquery's default). AND-ing was the bug — a customer message always
+ * carries filler words ("I need...", "para o meu...") that aren't in the
+ * stopword list for whichever config is active, so plainto_tsquery required
+ * the product to literally contain "need"/"para" etc. and matched nothing.
+ * OR-ing means any one real keyword overlap (e.g. "oil"/"filter") is enough —
+ * customers can phrase the request however they want.
  */
-const OR_TSQUERY = `to_tsquery('portuguese', array_to_string(tsvector_to_array(to_tsvector('portuguese', unaccent($1))), ' | '))`;
+const OR_TSQUERY = `to_tsquery('english', array_to_string(tsvector_to_array(to_tsvector('english', unaccent($1))), ' | '))`;
 
 /**
  * Searches the inventory for products matching the customer's request by

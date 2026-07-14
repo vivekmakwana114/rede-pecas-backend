@@ -22,10 +22,13 @@ import {
   updateOrderStatus,
   getOrderByNumber,
   getOrdersAwaitingCourtesyMessage,
-  markCourtesyMessageSent
+  markCourtesyMessageSent,
+  getOrdersAwaitingAdminReminder,
+  markAdminReminderSent
 } from '../models/order.model.js';
 import { getCustomerVehicles } from '../models/vehicle.model.js';
 import { getCustomerByPhone } from '../models/customer.model.js';
+import { getAllAdmins } from '../models/adminUser.model.js';
 import { sendWhatsAppMessage, sendWhatsAppList, sendWhatsAppButtons } from './whatsapp.service.js';
 import { generateProformaPDF, sendProformaWhatsApp } from './pdf.service.js';
 import { askPaymentMethod } from './payment.service.js';
@@ -151,6 +154,52 @@ async function requestStockConfirmation(
 ): Promise<void> {
   await updateOrderStatus(orderNumber, 'awaiting_stock_confirmation');
   await sendWhatsAppMessage(phone, t.agent.confirmingAvailability());
+  await notifyAdminsStockConfirmationNeeded(orderNumber);
+}
+
+/**
+ * Pushes the order details to every admin (admin_users, not just one hardcoded
+ * number) with two buttons whose reply ids encode the order number directly
+ * (admin_confirm_${orderNumber} / admin_unavailable_${orderNumber}) — see
+ * processAdminStockReply below for why: it lets a tap resolve unambiguously
+ * to the right order without any session-state "pending order" tracking, even
+ * if the admin has several of these outstanding at once.
+ */
+async function notifyAdminsStockConfirmationNeeded(orderNumber: string): Promise<void> {
+  const order = await getOrderByNumber(orderNumber);
+  if (!order) {
+    logger.error(`[ADMIN STOCK] notifyAdminsStockConfirmationNeeded: order ${orderNumber} not found`);
+    return;
+  }
+
+  const customer = await getCustomerByPhone(order.customer_phone);
+  const customerName = customer?.name?.split(' ')[0] || 'Cliente';
+  const total = Number(order.unit_price) + Number(order.service_price || 0);
+
+  const admins = await getAllAdmins();
+  logger.debug(`[ADMIN STOCK] Notifying ${admins.length} admin(s) about order ${orderNumber} (${order.product_name})`);
+
+  for (const admin of admins) {
+    try {
+      await sendWhatsAppButtons(
+        admin.phone,
+        t.admin.stockConfirmationNeeded(
+          orderNumber,
+          order.product_name,
+          order.reference,
+          order.supplier_name,
+          formatPrice(total),
+          customerName,
+          order.customer_phone
+        ),
+        [t.admin.confirmButtonLabel(), t.admin.unavailableButtonLabel()],
+        [`admin_confirm_${orderNumber}`, `admin_unavailable_${orderNumber}`]
+      );
+      logger.info(`[ADMIN STOCK] Sent stock-confirmation request for order ${orderNumber} to admin ${admin.phone}`);
+    } catch (error: any) {
+      logger.error(`[ADMIN STOCK] Error notifying admin ${admin.phone} about stock confirmation for order ${orderNumber}`, error);
+    }
+  }
 }
 
 /**
@@ -265,6 +314,48 @@ export async function processStockUnavailableChoice(
 }
 
 /**
+ * Handles a reply from a number in admin_users (whatsapp.controller.ts's
+ * admin short-circuit routes here before any customer-pipeline logic runs).
+ * MVP is button-only — the order number is decoded straight from the button's
+ * reply id (admin_confirm_${orderNumber} / admin_unavailable_${orderNumber},
+ * see notifyAdminsStockConfirmationNeeded above), never from free text, since
+ * this drives a real approve/decline on a customer's order. Re-checks the
+ * order's current status before acting so a double-tap (or two admins both
+ * replying to the same order) is a safe no-op on the second attempt, not a
+ * duplicate proforma/decline.
+ */
+export async function processAdminStockReply(adminPhone: string, buttonReplyId: string | null): Promise<void> {
+  logger.debug(`[ADMIN STOCK] Reply from admin ${adminPhone}: buttonReplyId=${buttonReplyId}`);
+
+  const match = buttonReplyId?.match(/^admin_(confirm|unavailable)_(.+)$/);
+  if (!match) {
+    logger.debug(`[ADMIN STOCK] Reply from ${adminPhone} did not match a stock-confirmation button (buttonReplyId=${buttonReplyId}) — sending nudge`);
+    await sendWhatsAppMessage(adminPhone, t.admin.useButtonsPrompt());
+    return;
+  }
+
+  const [, action, orderNumber] = match;
+  logger.info(`[ADMIN STOCK] Admin ${adminPhone} tapped "${action}" for order ${orderNumber}`);
+
+  const order = await getOrderByNumber(orderNumber);
+  if (!order || order.status !== 'awaiting_stock_confirmation') {
+    logger.debug(`[ADMIN STOCK] Order ${orderNumber} already handled (status=${order?.status ?? 'not found'}) — telling ${adminPhone}`);
+    await sendWhatsAppMessage(adminPhone, t.admin.alreadyHandled(orderNumber));
+    return;
+  }
+
+  if (action === 'confirm') {
+    await confirmStockAndFinalizeOrder(orderNumber);
+    await sendWhatsAppMessage(adminPhone, t.admin.confirmedAck(orderNumber));
+    logger.info(`[ADMIN STOCK] Order ${orderNumber} confirmed by ${adminPhone} — proforma sent to customer`);
+  } else {
+    await markStockUnavailableAndOfferAlternative(orderNumber);
+    await sendWhatsAppMessage(adminPhone, t.admin.unavailableAck(orderNumber));
+    logger.info(`[ADMIN STOCK] Order ${orderNumber} marked unavailable by ${adminPhone} — customer notified`);
+  }
+}
+
+/**
  * Sweep for the 20-minute "still confirming with the supplier" courtesy
  * message — polled on an interval from index.ts since this repo has no job
  * queue. Idempotent per order via stock_confirmation_courtesy_sent, so a
@@ -278,6 +369,35 @@ export async function sendStockConfirmationCourtesyMessages(): Promise<void> {
       await markCourtesyMessageSent(order.number);
     } catch (error: any) {
       logger.error(`Error sending stock-confirmation courtesy message for order ${order.number}`, error);
+    }
+  }
+}
+
+/**
+ * Sweep for the 15-minute admin SLA reminder — same shape/idempotency pattern
+ * as sendStockConfirmationCourtesyMessages above (stock_confirmation_admin_reminder_sent
+ * instead of the customer's own courtesy flag), fanned out to every admin.
+ */
+export async function sendStockConfirmationAdminReminders(): Promise<void> {
+  const overdue = await getOrdersAwaitingAdminReminder(15);
+  if (overdue.length) {
+    logger.debug(`[ADMIN STOCK] Admin reminder sweep: ${overdue.length} order(s) overdue past 15 minutes`);
+  }
+  for (const order of overdue) {
+    try {
+      const admins = await getAllAdmins();
+      for (const admin of admins) {
+        await sendWhatsAppButtons(
+          admin.phone,
+          t.admin.reminderBody(order.customer_first_name, order.product_name, order.number),
+          [t.admin.confirmButtonLabel(), t.admin.unavailableButtonLabel()],
+          [`admin_confirm_${order.number}`, `admin_unavailable_${order.number}`]
+        );
+      }
+      await markAdminReminderSent(order.number);
+      logger.info(`[ADMIN STOCK] Sent 15-min reminder for order ${order.number} to ${admins.length} admin(s)`);
+    } catch (error: any) {
+      logger.error(`[ADMIN STOCK] Error sending stock-confirmation admin reminder for order ${order.number}`, error);
     }
   }
 }

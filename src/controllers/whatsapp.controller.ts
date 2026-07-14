@@ -6,6 +6,7 @@ import * as productService from '../services/product.service.js';
 import * as paymentService from '../services/payment.service.js';
 import * as sessionService from '../services/session.service.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons } from '../services/whatsapp.service.js';
+import { getAdminByPhone } from '../models/adminUser.model.js';
 import { config } from '../config/config.js';
 import { t } from '../i18n/messages.js';
 
@@ -57,12 +58,17 @@ export async function receiveWebhookMessage(req: Request, res: Response): Promis
     // The list row's stable id (e.g. "option_2") — used instead of its (possibly
     // truncated) title to resolve a product-list tap unambiguously.
     const listReplyId: string | null = msg.type === 'interactive' ? (msg.interactive?.list_reply?.id || null) : null;
+    // A button reply's stable id (e.g. "admin_confirm_RP-2026-00482") — unlike
+    // every other button flow in this app (title-matched), the admin's stock
+    // confirm/decline buttons encode the order number directly in the id so the
+    // reply can be resolved unambiguously regardless of how many are pending.
+    const buttonReplyId: string | null = msg.type === 'interactive' ? (msg.interactive?.button_reply?.id || null) : null;
     const mediaType = msg.type; // "image" | "document" | "text" | "interactive" | "button" etc.
     const mediaId = msg.image?.id || msg.document?.id || null;
 
     logger.debug(`[${phone}] Webhook type: ${mediaType}, text: ${customerText}`);
 
-    await processMessageFlow(phone, customerText, mediaType, mediaId, listReplyId);
+    await processMessageFlow(phone, customerText, mediaType, mediaId, listReplyId, buttonReplyId);
   } catch (error: any) {
     logger.error('Error in WhatsApp webhook processing', error);
   }
@@ -76,8 +82,21 @@ async function processMessageFlow(
   customerText: string | null,
   mediaType: string,
   mediaId: string | null,
-  listReplyId: string | null = null
+  listReplyId: string | null = null,
+  buttonReplyId: string | null = null
 ): Promise<void> {
+  // 0. Admin short-circuit: a message from a number in admin_users is never a
+  // customer, so this must run before getOrCreateCustomer below — otherwise
+  // the admin's own number would get a customers row created and run through
+  // the entire customer pipeline like anyone else. Handles the admin's
+  // stock-confirmation button taps only for now (see processAdminStockReply).
+  const admin = await getAdminByPhone(phone);
+  if (admin) {
+    logger.debug(`[ADMIN STOCK] Inbound message from admin ${phone} (${admin.name}) routed to admin handler, buttonReplyId=${buttonReplyId}`);
+    await productService.processAdminStockReply(phone, buttonReplyId);
+    return;
+  }
+
   // 1. Get-or-create customer (handles pre-registration + welcome on first contact)
   const customer = await customerService.getOrCreateCustomer(phone);
   if (!customer) return;
@@ -268,17 +287,6 @@ async function processMessageFlow(
     if (handled) return;
   }
 
-  // 8.9 PRIORITY: pending "payment proof unclear, try again" reply. The order stays in
-  // awaiting_payment_proof so a new photo/PDF is already caught unconditionally by stage
-  // 6 above regardless of this flag — this only exists to stop the "Try again" button tap
-  // itself (which arrives as text, not media) from falling through to an unrelated stage
-  // (e.g. product search) instead of just re-showing the same upload prompt.
-  const pendingPaymentProofRetry = await sessionService.wasPaymentProofRetryShown(phone);
-  if (pendingPaymentProofRetry) {
-    const handled = await paymentService.processPaymentProofRetryChoice(phone);
-    if (handled) return;
-  }
-
   // 9. PRIORITY: Customer is confirming/rejecting decoded VIN car
   const confirmedVehicle = await vehicleService.processVehicleConfirmation(phone, customerText, customer);
   if (confirmedVehicle) return;
@@ -342,7 +350,8 @@ async function processMessageFlow(
   }
 
   // 15. Deterministic product search — full-text match against the inventory DB (already
-  // handles PT synonyms/typos via the 'portuguese' tsquery config). No AI involved.
+  // handles synonyms/typos via the 'english' tsquery config, for now — see CLAUDE.md
+  // "Language split"). No AI involved.
   const searchFirstName = customer.name?.split(' ')[0] || 'Cliente';
   await productService.searchAndRespond(phone, customerText, searchFirstName);
 }

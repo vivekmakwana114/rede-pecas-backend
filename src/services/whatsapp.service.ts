@@ -69,12 +69,18 @@ export async function downloadWhatsAppMedia(mediaId: string): Promise<string | n
 }
 
 /**
- * Sends an interactive message containing up to 3 quick-reply buttons.
+ * Sends an interactive message containing up to 3 quick-reply buttons. Button
+ * reply ids default to the positional btn_0/btn_1/btn_2 scheme every existing
+ * caller relies on (title-matched, not id-matched); pass `ids` to give each
+ * button a stable, semantic id instead (e.g. encoding an order number) when
+ * the reply needs to be resolved reliably rather than by fuzzy title text —
+ * see processAdminStockReply in product.service.ts.
  */
 export async function sendWhatsAppButtons(
   phone: string,
   body: string,
-  buttons: string[]
+  buttons: string[],
+  ids?: string[]
 ): Promise<any> {
   const payload = {
     messaging_product: "whatsapp",
@@ -86,7 +92,7 @@ export async function sendWhatsAppButtons(
       action: {
         buttons: buttons.slice(0, 3).map((b, i) => ({
           type: "reply",
-          reply: { id: `btn_${i}`, title: b },
+          reply: { id: ids?.[i] ?? `btn_${i}`, title: b },
         })),
       },
     },

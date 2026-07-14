@@ -18,6 +18,16 @@ export async function getAdminByEmail(email: string): Promise<AdminUser | null> 
 }
 
 /**
+ * Every admin_users row — used to fan out WhatsApp notifications (stock
+ * confirmation needed, SLA reminders) to all admins, not just one hardcoded
+ * number.
+ */
+export async function getAllAdmins(): Promise<AdminUser[]> {
+  const { rows } = await db.query('SELECT * FROM admin_users');
+  return rows;
+}
+
+/**
  * Looks up an admin by phone, ignoring formatting (admin phone numbers are
  * entered by hand and may include spaces/parens/dashes — compares digits only
  * on both sides so the caller doesn't need to normalize before querying).

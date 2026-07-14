@@ -42,9 +42,10 @@ export { getActiveManualCollection, startManualCollection };
  *
  * `greeting` is set when this fires in response to a bare "Hi"/"Hey" mid-conversation
  * (whatsapp.controller.ts stage 12) rather than right after confirming a vehicle —
- * the doc gives that case its own warmer, name-personalized wording (greetingAskPart)
- * instead of confirmedAskPart's "Perfect! Now tell me..." tone, which reads oddly as
- * a response to a stray greeting since nothing was actually just confirmed.
+ * the doc gives that case its own warmer, name-personalized wording (confirmedAskPart's
+ * optional greetingName param) instead of its default "Perfect! Now tell me..." tone,
+ * which reads oddly as a response to a stray greeting since nothing was actually just
+ * confirmed.
  */
 export async function sendAskPartPrompt(phone: string, greeting?: { name: string }): Promise<boolean> {
   const vehicles = await getCustomerVehicles(phone);
@@ -52,16 +53,15 @@ export async function sendAskPartPrompt(phone: string, greeting?: { name: string
 
   if (vehicles.length === 1) {
     const v = vehicles[0];
-    const body = greeting
-      ? t.vehicleConfirm.greetingAskPart(greeting.name, v.make, v.model, v.year)
-      : t.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year);
+    const body = t.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year, greeting?.name);
     await sendWhatsAppButtons(phone, body, [t.vehicleConfirm.addVehicleButton()]);
     await markPartPromptSent(phone);
     return true;
   }
 
   await savePendingVehicleChoice(phone, vehicles.map(v => ({ id: v.id, make: v.make, model: v.model, year: v.year })));
-  await sendWhatsAppMessage(phone, t.vehicleConfirm.chooseVehiclePrompt(vehicles));
+  const chooseBody = t.vehicleConfirm.chooseVehiclePrompt(vehicles, greeting?.name);
+  await sendWhatsAppMessage(phone, chooseBody);
   return true;
 }
 

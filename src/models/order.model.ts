@@ -184,6 +184,35 @@ export async function markCourtesyMessageSent(orderNumber: string): Promise<void
 }
 
 /**
+ * Orders that have been sitting in awaiting_stock_confirmation past
+ * `minMinutes` and haven't had the admin SLA-reminder WhatsApp nudge sent yet —
+ * polled by the sweep in product.service.ts. Same shape as
+ * getOrdersAwaitingCourtesyMessage above, joined for the product name and
+ * customer's first name needed in the reminder text.
+ */
+export async function getOrdersAwaitingAdminReminder(minMinutes: number): Promise<{ number: string; product_name: string; customer_first_name: string }[]> {
+  const { rows } = await db.query(
+    `SELECT o.number, p.name AS product_name,
+            COALESCE(split_part(c.name, ' ', 1), 'Cliente') AS customer_first_name
+     FROM orders o
+     JOIN products p ON p.id = o.product_id
+     LEFT JOIN customers c ON c.phone = o.customer_phone
+     WHERE o.status = 'awaiting_stock_confirmation'
+       AND o.stock_confirmation_admin_reminder_sent = false
+       AND o.created_at < NOW() - ($1 || ' minutes')::interval`,
+    [minMinutes]
+  );
+  return rows;
+}
+
+export async function markAdminReminderSent(orderNumber: string): Promise<void> {
+  await db.query(
+    `UPDATE orders SET stock_confirmation_admin_reminder_sent = true WHERE number = $1`,
+    [orderNumber]
+  );
+}
+
+/**
  * Retrieves orders approved on the current date.
  */
 export async function getOrdersApprovedToday(): Promise<any[]> {

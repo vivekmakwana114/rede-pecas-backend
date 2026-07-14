@@ -9,7 +9,6 @@ import { getCustomerByPhone } from '../models/customer.model.js';
 import { createAlert } from '../models/alert.model.js';
 import { formatPrice } from '../utils/helpers.js';
 import { t } from '../i18n/messages.js';
-import { markPaymentProofRetryShown, clearPaymentProofRetry } from './session.service.js';
 
 // Display names and instruction texts come from src/i18n/messages.ts (customer-facing);
 // ids are English because they are persisted in orders.payment_method.
@@ -218,15 +217,13 @@ export async function processPaymentProof(
     logger.info(
       `[PAYMENT] Rejected proof for order ${number} from ${phone}: ${extracted?.reason || 'could not download/read file'}`
     );
-    await sendWhatsAppButtons(phone, t.payment.proofInvalid(), t.payment.proofRetryButtons);
-    await markPaymentProofRetryShown(phone);
+    await sendWhatsAppMessage(phone, t.payment.proofInvalid());
     return true;
   }
 
   logger.info(
     `[PAYMENT] Proof extracted for order ${number}: amount=${extracted.amount} date=${extracted.date} reference=${extracted.reference}`
   );
-  await clearPaymentProofRetry(phone);
 
   await db.query(
     `UPDATE orders
@@ -249,20 +246,6 @@ export async function processPaymentProof(
     `Comprovativo de pagamento recebido para o pedido ${number} (${methodName}, ${formatPrice(amount)}) — cliente ${phone}.`
   );
 
-  return true;
-}
-
-/**
- * Handles a text/button-tap reply while the payment-proof retry prompt is
- * active (e.g. the customer taps "Try again" instead of attaching a new file
- * directly). The only real next step is uploading a new photo/PDF, which the
- * media-routing stage in whatsapp.controller.ts already catches
- * unconditionally regardless of this flag — this just re-shows the same
- * prompt as a nudge instead of letting the tap fall through to an unrelated
- * pipeline stage (e.g. product search).
- */
-export async function processPaymentProofRetryChoice(phone: string): Promise<boolean> {
-  await sendWhatsAppButtons(phone, t.payment.proofInvalid(), t.payment.proofRetryButtons);
   return true;
 }
 
