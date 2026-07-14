@@ -1,9 +1,21 @@
 import Joi from 'joi';
 import { ValidationSchema } from '../middlewares/validate.js';
 
-export const orderParams: ValidationSchema = {
+export const orderReview: ValidationSchema = {
   params: Joi.object().keys({
     number: Joi.string().required(),
+  }),
+  body: Joi.object().keys({
+    approved: Joi.boolean().required(),
+  }),
+};
+
+export const orderStockConfirmation: ValidationSchema = {
+  params: Joi.object().keys({
+    number: Joi.string().required(),
+  }),
+  body: Joi.object().keys({
+    available: Joi.boolean().required(),
   }),
 };
 

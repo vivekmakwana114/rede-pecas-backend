@@ -232,6 +232,28 @@ export async function getOrdersApprovedToday(): Promise<any[]> {
 }
 
 /**
+ * Retrieves orders rejected on the current date. There's no dedicated
+ * rejected_at column (rejection just sets status via updateOrderStatus),
+ * so updated_at is used as the rejection timestamp — same idiom as
+ * approved_at above for the approved queue.
+ */
+export async function getOrdersRejectedToday(): Promise<any[]> {
+  const { rows } = await db.query(`
+    SELECT
+      o.number, o.customer_phone AS customer,
+      o.unit_price AS price,
+      p.name AS part,
+      to_char(o.updated_at, 'HH24:MI') AS time
+    FROM orders o
+    JOIN products p ON p.id = o.product_id
+    WHERE o.status = 'rejected'
+      AND o.updated_at::date = CURRENT_DATE
+    ORDER BY o.updated_at DESC
+  `);
+  return rows;
+}
+
+/**
  * Details of a single order.
  */
 export async function getOrderByNumber(number: string): Promise<any | null> {
