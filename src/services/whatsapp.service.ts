@@ -1,7 +1,7 @@
 import { config } from '../config/config.js';
 import { logger } from '../config/logger.js';
 
-const WHATSAPP_API_URL = `https://graph.facebook.com/v19.0/${config.whatsapp.phoneNumberId}/messages`;
+const WHATSAPP_API_URL = `${config.whatsapp.graphApiUrl}/${config.whatsapp.phoneNumberId}/messages`;
 
 /**
  * Sends a standard text message via Meta WhatsApp Business API.
@@ -42,7 +42,7 @@ export async function sendWhatsAppMessage(phone: string, text: string): Promise<
  */
 export async function downloadWhatsAppMedia(mediaId: string): Promise<string | null> {
   try {
-    const metaRes = await fetch(`https://graph.facebook.com/v19.0/${mediaId}`, {
+    const metaRes = await fetch(`${config.whatsapp.graphApiUrl}/${mediaId}`, {
       headers: { Authorization: `Bearer ${config.whatsapp.token}` },
     });
     if (!metaRes.ok) {

@@ -560,15 +560,14 @@ const pt: Messages = {
       `Valor: ${amount}\n` +
       `Cliente: ${customerName} · ${customerPhone}\n\n` +
       `⚠️ Por favor confirma com o fornecedor que este artigo está fisicamente disponível antes do cliente pagar.\n\n` +
-      `🔗 ${config.appUrl}/admin/orders`,
+      `📲 Consulta a plataforma admin da Rede Peças.`,
     confirmButtonLabel: () => '✅ Confirmado',
     unavailableButtonLabel: () => '⚠️ Indisponível',
     reminderBody: (customerName, productName, orderNumber) =>
       `⏰ *LEMBRETE — Cliente à espera*\n\n` +
       `${customerName} está à espera há 15 minutos pela confirmação de stock de:\n\n` +
       `${productName} · ${orderNumber}\n\n` +
-      `Por favor confirma ou recusa o mais rápido possível:\n` +
-      `🔗 ${config.appUrl}/admin/orders`,
+      `Por favor confirma ou recusa o mais rápido possível na plataforma admin da Rede Peças.`,
     confirmedAck: (orderNumber) => `✅ Confirmado! Factura proforma enviada ao cliente do pedido *${orderNumber}*.`,
     unavailableAck: (orderNumber) => `⚠️ Pedido *${orderNumber}* marcado como indisponível. Cliente foi notificado.`,
     alreadyHandled: (orderNumber) => `O pedido *${orderNumber}* já foi tratado — nada a fazer.`,
@@ -585,8 +584,7 @@ const pt: Messages = {
       `Cliente: ${customerName} · ${customerPhone}\n` +
       `Endereço: ${address}\n\n` +
       `Leva o terminal até ao cliente,\n` +
-      `Confirma o pagamento no painel assim que terminares:\n\n` +
-      `🔗 ${config.appUrl}/admin/orders`,
+      `Confirma o pagamento na plataforma admin da Rede Peças assim que terminares.`,
     paymentProofReceived: (orderNumber, methodName, amount, customerName, customerPhone) =>
       `🧾 *COMPROVATIVO DE PAGAMENTO RECEBIDO*\n\n` +
       `Pedido: *${orderNumber}*\n` +
@@ -952,15 +950,14 @@ const en: Messages = {
       `Amount: ${amount}\n` +
       `Customer: ${customerName} · ${customerPhone}\n\n` +
       `⚠️ Please confirm with the supplier that this item is physically available before the customer pays.\n\n` +
-      `🔗 ${config.appUrl}/admin/orders`,
+      `📲 Check the Rede Peças admin platform.`,
     confirmButtonLabel: () => '✅ Confirmed',
     unavailableButtonLabel: () => '⚠️ Unavailable',
     reminderBody: (customerName, productName, orderNumber) =>
       `⏰ *REMINDER — Customer is waiting*\n\n` +
       `${customerName} has been waiting 15 minutes for stock confirmation on:\n\n` +
       `${productName} · ${orderNumber}\n\n` +
-      `Please confirm or decline ASAP:\n` +
-      `🔗 ${config.appUrl}/admin/orders`,
+      `Please confirm or decline ASAP on the Rede Peças admin platform.`,
     confirmedAck: (orderNumber) => `✅ Confirmed! Proforma sent to the customer for order *${orderNumber}*.`,
     unavailableAck: (orderNumber) => `⚠️ Order *${orderNumber}* marked unavailable. Customer has been notified.`,
     alreadyHandled: (orderNumber) => `Order *${orderNumber}* was already handled — nothing to do.`,
@@ -977,8 +974,7 @@ const en: Messages = {
       `Customer: ${customerName} · ${customerPhone}\n` +
       `Address: ${address}\n\n` +
       `Take the terminal to the customer,\n` +
-      `Confirm payment in the panel when done:\n\n` +
-      `🔗 ${config.appUrl}/admin/orders`,
+      `Confirm payment on the Rede Peças admin platform when done.`,
     paymentProofReceived: (orderNumber, methodName, amount, customerName, customerPhone) =>
       `🧾 *PAYMENT PROOF RECEIVED*\n\n` +
       `Order: *${orderNumber}*\n` +

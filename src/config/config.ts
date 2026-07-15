@@ -44,15 +44,16 @@ export const config = {
   whatsapp: {
     token: process.env.WHATSAPP_TOKEN,
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
-    verifyToken: process.env.WHATSAPP_VERIFY_TOKEN
+    verifyToken: process.env.WHATSAPP_VERIFY_TOKEN,
+    // Meta Graph API base URL, version included — bumping the API version
+    // (Meta deprecates old ones periodically) is then a config change, not a
+    // code change across every call site.
+    graphApiUrl: process.env.WHATSAPP_GRAPH_API_URL || 'https://graph.facebook.com/v19.0'
   },
   jwt: {
     secret: process.env.JWT_SECRET,
     accessExpirationMinutes: parseInt(process.env.JWT_ACCESS_EXPIRATION_MINUTES || '60', 10),
     refreshExpirationDays: parseInt(process.env.JWT_REFRESH_EXPIRATION_DAYS || '30', 10)
-  },
-  admin: {
-    staffPhone: process.env.STAFF_PHONE_NUMBER || ''
   },
   primavera: {
     apiUrl: process.env.PRIMAVERA_API_URL || 'https://api.primavera-angola.ao',
