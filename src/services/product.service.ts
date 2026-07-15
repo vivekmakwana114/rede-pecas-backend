@@ -11,7 +11,6 @@ import {
 } from '../models/product.model.js';
 import {
   importProductsBatch,
-  getOrCreateSupplierByName,
   ImportItem,
   RestockNotification
 } from '../models/supplier.model.js';
@@ -631,17 +630,40 @@ const HEADER_ALIASES: Record<string, string[]> = {
 // Values a CSV/XLSX author would plausibly type in the "service: yes/no" column.
 const YES_VALUES = new Set(['yes', 'sim', 'true', '1']);
 
+// Column presence is checked against the header row before any row is read —
+// every one of these must have at least one alias in the file, or the whole
+// upload is rejected up front (see getMissingRequiredColumns).
+const REQUIRED_COLUMNS: { field: 'reference' | 'name' | 'price' | 'quantity' | 'supplierName'; label: string }[] = [
+  { field: 'reference', label: 'Reference' },
+  { field: 'name', label: 'Name' },
+  { field: 'price', label: 'Price' },
+  { field: 'quantity', label: 'Quantity' },
+  { field: 'supplierName', label: 'Supplier' },
+];
+
 /**
- * Maps one spreadsheet row to an import item. Supplier columns are optional —
- * a row without them falls back to the request-level default supplier
- * (importInventoryBatch/importProductsBatch handle that fallback), so a
- * single-supplier file doesn't need to repeat the supplier on every row.
- *
- * The service columns fail soft: a row with `service = yes` but a missing/invalid
- * service_name or service_price still imports the product — just without the
- * service attached — rather than discarding the whole row over a bad sub-field.
+ * Checks the file's header row (not the data rows — a required column that's
+ * present but blank on every row is a row-level problem, handled separately
+ * by validateRow) against REQUIRED_COLUMNS, returning the human-readable
+ * labels of whichever are entirely missing so the caller can reject the file
+ * with one clear message instead of a per-row guessing game.
  */
-function normalizeRow(row: Record<string, any>): ImportItem | null {
+function getMissingRequiredColumns(headerRow: unknown[]): string[] {
+  const headerSet = new Set(headerRow.map((h) => String(h ?? '').trim().toLowerCase()));
+  return REQUIRED_COLUMNS.filter(({ field }) => !HEADER_ALIASES[field].some((alias) => headerSet.has(alias))).map(
+    ({ label }) => label
+  );
+}
+
+/**
+ * Validates one spreadsheet row and either returns the item ready to import
+ * or the list of problems found. Reference, Name, Price, Quantity and
+ * Supplier are always required; Service Name/Price are only required when
+ * Service is "yes" — a row that sets Service = yes but leaves the price out
+ * is an error, not a silently-dropped service (see importInventoryFromFile:
+ * any row error rejects the whole file, nothing is written until it's clean).
+ */
+function validateRow(row: Record<string, any>, rowNumber: number): { item: ImportItem } | { errors: string[] } {
   const lowerRow = Object.fromEntries(Object.entries(row).map(([k, v]) => [k.trim().toLowerCase(), v]));
   const pick = (field: string) => {
     for (const alias of HEADER_ALIASES[field]) {
@@ -649,71 +671,103 @@ function normalizeRow(row: Record<string, any>): ImportItem | null {
     }
     return undefined;
   };
+
+  const errors: string[] = [];
+
   const reference = pick('reference');
+  if (!reference) errors.push(`Row ${rowNumber}: Reference is required.`);
+
   const name = pick('name');
-  const price = Number(pick('price'));
-  const quantity = Number(pick('quantity'));
-  if (!reference || !name || Number.isNaN(price) || Number.isNaN(quantity)) return null;
+  if (!name) errors.push(`Row ${rowNumber}: Name is required.`);
+
+  const priceRaw = pick('price');
+  const price = Number(priceRaw);
+  if (priceRaw === undefined || Number.isNaN(price) || price < 0) {
+    errors.push(`Row ${rowNumber}: Price is required and must be a non-negative number.`);
+  }
+
+  const quantityRaw = pick('quantity');
+  const quantity = Number(quantityRaw);
+  if (quantityRaw === undefined || !Number.isInteger(quantity) || quantity < 0) {
+    errors.push(`Row ${rowNumber}: Quantity is required and must be a non-negative whole number.`);
+  }
 
   const supplierName = pick('supplierName');
+  if (!supplierName) errors.push(`Row ${rowNumber}: Supplier is required.`);
 
   const wantsService = YES_VALUES.has(String(pick('service') ?? '').trim().toLowerCase());
   const serviceName = pick('serviceName');
-  const servicePrice = Number(pick('servicePrice'));
-  const serviceValid = wantsService && !!serviceName && !Number.isNaN(servicePrice);
-  if (wantsService && !serviceValid) {
-    logger.warn(
-      `[INVENTORY IMPORT] Row for reference="${reference}" has service=yes but an invalid/missing service_name or service_price — importing the product without the service.`
-    );
+  const servicePriceRaw = pick('servicePrice');
+  const servicePrice = Number(servicePriceRaw);
+  if (wantsService && !serviceName) {
+    errors.push(`Row ${rowNumber}: Service Name is required when Service is "yes".`);
+  }
+  if (wantsService && (servicePriceRaw === undefined || Number.isNaN(servicePrice) || servicePrice < 0)) {
+    errors.push(`Row ${rowNumber}: Service Price is required and must be a non-negative number when Service is "yes".`);
   }
 
+  if (errors.length) return { errors };
+
   return {
-    reference: String(reference),
-    name: String(name),
-    price,
-    quantity,
-    supplierName: supplierName ? String(supplierName) : undefined,
-    supplierNif: pick('supplierNif') ? String(pick('supplierNif')) : undefined,
-    supplierProvince: pick('supplierProvince') ? String(pick('supplierProvince')) : undefined,
-    serviceOffered: serviceValid,
-    serviceName: serviceValid ? String(serviceName) : undefined,
-    servicePrice: serviceValid ? servicePrice : undefined,
+    item: {
+      reference: String(reference),
+      name: String(name),
+      price,
+      quantity,
+      supplierName: String(supplierName),
+      supplierNif: pick('supplierNif') ? String(pick('supplierNif')) : undefined,
+      supplierProvince: pick('supplierProvince') ? String(pick('supplierProvince')) : undefined,
+      serviceOffered: wantsService,
+      serviceName: wantsService ? String(serviceName) : undefined,
+      servicePrice: wantsService ? servicePrice : undefined,
+    },
   };
 }
 
-/**
- * Parses an uploaded CSV/XLSX file buffer, resolves the request-level fallback
- * supplier if given (existing id, or name/nif/province to create one on the
- * fly), imports every row (each optionally naming its own supplier), and
- * notifies waitlisted customers. Column headers map via HEADER_ALIASES so
- * PT/EN header variants both work.
- */
-export async function importInventoryFromFile(
-  fileBuffer: Buffer,
-  supplierFallback: { supplierId?: string | number; supplierName?: string; supplierNif?: string; supplierProvince?: string }
-): Promise<InventoryImportResult> {
-  let defaultSupplierId: number | null = null;
-  if (supplierFallback.supplierId) {
-    defaultSupplierId = Number(supplierFallback.supplierId);
-  } else if (supplierFallback.supplierName) {
-    defaultSupplierId = await getOrCreateSupplierByName(
-      supplierFallback.supplierName,
-      supplierFallback.supplierNif,
-      supplierFallback.supplierProvince
-    );
-  }
+// Caps how many row errors get spelled out in the 400 response — a
+// 500-row file with a header typo would otherwise repeat the same five
+// errors 500 times over.
+const MAX_ROW_ERRORS_SHOWN = 20;
 
+/**
+ * Parses a single uploaded CSV/XLSX file and imports every row, each row
+ * naming its own supplier (created on the fly by name if it doesn't exist
+ * yet). Column headers map via HEADER_ALIASES so PT/EN header variants both
+ * work. Validates in two passes before writing anything: first the header
+ * row against REQUIRED_COLUMNS (missing columns reject the file immediately,
+ * naming them), then every data row (bad/missing price, quantity, supplier,
+ * or an incomplete service) — any row problem rejects the whole file with
+ * every problem listed, so nothing partially imports.
+ */
+export async function importInventoryFromFile(fileBuffer: Buffer): Promise<InventoryImportResult> {
   const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const rawRows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet);
 
-  const items = rawRows
-    .map(normalizeRow)
-    .filter((r): r is NonNullable<typeof r> => r !== null);
-
-  if (!items.length) {
-    throw new ApiError(400, 'No valid rows found in the file (check column headers).');
+  const headerRow = (XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 })[0] as unknown[] | undefined) ?? [];
+  const missingColumns = getMissingRequiredColumns(headerRow);
+  if (missingColumns.length) {
+    throw new ApiError(400, `Missing required column(s): ${missingColumns.join(', ')}.`);
   }
 
-  return importInventoryBatch(items, defaultSupplierId);
+  const rawRows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet);
+  if (!rawRows.length) {
+    throw new ApiError(400, 'The file has no data rows.');
+  }
+
+  const items: ImportItem[] = [];
+  const rowErrors: string[] = [];
+  rawRows.forEach((row, i) => {
+    // +2: the header is row 1 in the spreadsheet, so the first data row is row 2.
+    const result = validateRow(row, i + 2);
+    if ('errors' in result) rowErrors.push(...result.errors);
+    else items.push(result.item);
+  });
+
+  if (rowErrors.length) {
+    const shown = rowErrors.slice(0, MAX_ROW_ERRORS_SHOWN).join(' ');
+    const suffix = rowErrors.length > MAX_ROW_ERRORS_SHOWN ? ` (+${rowErrors.length - MAX_ROW_ERRORS_SHOWN} more)` : '';
+    throw new ApiError(400, `${shown}${suffix}`);
+  }
+
+  return importInventoryBatch(items, null);
 }

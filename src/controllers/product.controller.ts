@@ -27,25 +27,23 @@ export const importProductsBatchHandler = catchAsync(async (req: Request, res: R
 });
 
 /**
- * Bulk imports products from an uploaded CSV/XLSX file, parsed server-side.
- * The supplier can be given once for the whole file (existing supplierId, or
- * supplierName/nif/province to create one on the fly) and/or per row via
- * supplier/supplier_nif/supplier_province columns — rows without their own
- * supplier columns fall back to the request-level one. A file can therefore
- * mix products from several different suppliers in one upload.
+ * Bulk imports products from a single uploaded CSV/XLSX file, parsed
+ * server-side. Reference, Name, Price, Quantity and Supplier are required
+ * columns (per row a supplier name — no request-level fallback), and a row
+ * with Service = yes must also carry a valid Service Price. Validation runs
+ * in full before anything is written: a missing column rejects the file with
+ * the list of missing column names, and any row-level problem (bad/missing
+ * price, quantity, supplier, or service price) rejects the whole file with
+ * every problem listed — nothing is imported until the file is entirely
+ * clean, so the admin fixes it once and re-uploads rather than getting a
+ * silent partial import.
  */
 export const importProductsFileHandler = catchAsync(async (req: Request, res: Response) => {
   if (!req.file) {
     throw new ApiError(400, 'File is required (field name: file).');
   }
 
-  const { supplierId, supplierName, supplierNif, supplierProvince } = req.body;
-  const result = await productService.importInventoryFromFile(req.file.buffer, {
-    supplierId,
-    supplierName,
-    supplierNif,
-    supplierProvince,
-  });
+  const result = await productService.importInventoryFromFile(req.file.buffer);
 
   res.status(200).json({
     success: true,

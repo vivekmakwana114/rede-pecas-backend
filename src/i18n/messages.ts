@@ -189,6 +189,25 @@ interface Messages {
     unavailableAck: (orderNumber: string) => string;
     alreadyHandled: (orderNumber: string) => string;
     useButtonsPrompt: () => string;
+    approvePaymentButtonLabel: () => string;
+    rejectPaymentButtonLabel: () => string;
+    paymentApprovedAck: (orderNumber: string) => string;
+    paymentRejectedAck: (orderNumber: string) => string;
+    inPersonPaymentRequested: (
+      orderNumber: string,
+      methodName: string,
+      amount: string,
+      customerName: string,
+      customerPhone: string,
+      address: string
+    ) => string;
+    paymentProofReceived: (
+      orderNumber: string,
+      methodName: string,
+      amount: string,
+      customerName: string,
+      customerPhone: string
+    ) => string;
   };
 }
 
@@ -554,6 +573,29 @@ const pt: Messages = {
     unavailableAck: (orderNumber) => `⚠️ Pedido *${orderNumber}* marcado como indisponível. Cliente foi notificado.`,
     alreadyHandled: (orderNumber) => `O pedido *${orderNumber}* já foi tratado — nada a fazer.`,
     useButtonsPrompt: () => `Por favor usa os botões na mensagem de confirmação de stock. 👆`,
+    approvePaymentButtonLabel: () => '✅ Aprovar',
+    rejectPaymentButtonLabel: () => '❌ Rejeitar',
+    paymentApprovedAck: (orderNumber) => `✅ Aprovado! Fatura enviada ao cliente do pedido *${orderNumber}*.`,
+    paymentRejectedAck: (orderNumber) => `❌ Pedido *${orderNumber}* rejeitado. Cliente foi notificado.`,
+    inPersonPaymentRequested: (orderNumber, methodName, amount, customerName, customerPhone, address) =>
+      `💳 *PAGAMENTO PRESENCIAL SOLICITADO*\n\n` +
+      `Pedido: *${orderNumber}*\n` +
+      `Método: ${methodName}\n` +
+      `Valor: ${amount}\n` +
+      `Cliente: ${customerName} · ${customerPhone}\n` +
+      `Endereço: ${address}\n\n` +
+      `Leva o terminal até ao cliente,\n` +
+      `Confirma o pagamento no painel assim que terminares:\n\n` +
+      `🔗 ${config.appUrl}/admin/orders`,
+    paymentProofReceived: (orderNumber, methodName, amount, customerName, customerPhone) =>
+      `🧾 *COMPROVATIVO DE PAGAMENTO RECEBIDO*\n\n` +
+      `Pedido: *${orderNumber}*\n` +
+      `Método: ${methodName}\n` +
+      `Valor: ${amount}\n` +
+      `Cliente: ${customerName} · ${customerPhone}\n\n` +
+      `Revê o comprovativo em anexo e depois:\n` +
+      `✅ Aprovar e Emitir Fatura\n` +
+      `❌ Rejeitar — Pagamento Inválido`,
   },
 };
 
@@ -923,6 +965,29 @@ const en: Messages = {
     unavailableAck: (orderNumber) => `⚠️ Order *${orderNumber}* marked unavailable. Customer has been notified.`,
     alreadyHandled: (orderNumber) => `Order *${orderNumber}* was already handled — nothing to do.`,
     useButtonsPrompt: () => `Please use the buttons on the stock-confirmation message. 👆`,
+    approvePaymentButtonLabel: () => '✅ Approve',
+    rejectPaymentButtonLabel: () => '❌ Reject',
+    paymentApprovedAck: (orderNumber) => `✅ Approved! Invoice sent to the customer for order *${orderNumber}*.`,
+    paymentRejectedAck: (orderNumber) => `❌ Order *${orderNumber}* rejected. Customer has been notified.`,
+    inPersonPaymentRequested: (orderNumber, methodName, amount, customerName, customerPhone, address) =>
+      `💳 *IN-PERSON PAYMENT REQUESTED*\n\n` +
+      `Order: *${orderNumber}*\n` +
+      `Method: ${methodName}\n` +
+      `Amount: ${amount}\n` +
+      `Customer: ${customerName} · ${customerPhone}\n` +
+      `Address: ${address}\n\n` +
+      `Take the terminal to the customer,\n` +
+      `Confirm payment in the panel when done:\n\n` +
+      `🔗 ${config.appUrl}/admin/orders`,
+    paymentProofReceived: (orderNumber, methodName, amount, customerName, customerPhone) =>
+      `🧾 *PAYMENT PROOF RECEIVED*\n\n` +
+      `Order: *${orderNumber}*\n` +
+      `Method: ${methodName}\n` +
+      `Amount: ${amount}\n` +
+      `Customer: ${customerName} · ${customerPhone}\n\n` +
+      `Review the attached proof, then:\n` +
+      `✅ Approve & Issue Invoice\n` +
+      `❌ Reject — Invalid Payment`,
   },
 };
 

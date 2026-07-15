@@ -9,12 +9,6 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 router.post('/inventory/upload', authMiddleware, validate(adminValidation.importProductsBatch), importProductsBatchHandler);
-router.post(
-  '/inventory/import',
-  authMiddleware,
-  upload.single('file'),
-  validate(adminValidation.importProductsFile),
-  importProductsFileHandler
-);
+router.post('/inventory/import', authMiddleware, upload.single('file'), importProductsFileHandler);
 
 export default router;

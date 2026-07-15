@@ -69,25 +69,44 @@ export async function downloadWhatsAppMedia(mediaId: string): Promise<string | n
 }
 
 /**
- * Sends an interactive message containing up to 3 quick-reply buttons. Button
- * reply ids default to the positional btn_0/btn_1/btn_2 scheme every existing
- * caller relies on (title-matched, not id-matched); pass `ids` to give each
- * button a stable, semantic id instead (e.g. encoding an order number) when
- * the reply needs to be resolved reliably rather than by fuzzy title text —
- * see processAdminStockReply in product.service.ts.
+ * Sends an interactive message containing up to 3 quick-reply buttons, and
+ * optionally an image/document header — used to relay a customer's
+ * payment-proof photo/PDF straight to an admin's WhatsApp with Approve/Reject
+ * buttons attached directly to it (see notifyAdminsPaymentProofReceived in
+ * payment.service.ts), reusing the media id Meta already issued for the
+ * incoming proof rather than re-uploading it (media ids stay valid for
+ * outbound sends within the same WhatsApp Business Account that received
+ * them — contrast with pdf.service.ts's sendProformaWhatsApp, which uploads a
+ * server-generated file it doesn't have a media id for yet). Button reply ids
+ * default to the positional btn_0/btn_1/btn_2 scheme every existing
+ * button-only caller relies on (title-matched, not id-matched); pass `ids` to
+ * give each button a stable, semantic id instead (e.g. encoding an order
+ * number) when the reply needs to be resolved reliably rather than by fuzzy
+ * title text — see processAdminStockReply in product.service.ts.
+ *
+ * Meta caps quick-reply button titles at 20 characters — callers must keep
+ * `buttons` within that, spelling out anything longer in `body` instead.
  */
 export async function sendWhatsAppButtons(
   phone: string,
   body: string,
   buttons: string[],
-  ids?: string[]
+  ids?: string[],
+  media?: { type: 'image' | 'document'; id: string }
 ): Promise<any> {
+  const header = media
+    ? media.type === 'document'
+      ? { type: 'document', document: { id: media.id, filename: 'payment-proof.pdf' } }
+      : { type: 'image', image: { id: media.id } }
+    : undefined;
+
   const payload = {
     messaging_product: "whatsapp",
     to: phone,
     type: "interactive",
     interactive: {
       type: "button",
+      ...(header ? { header } : {}),
       body: { text: body },
       action: {
         buttons: buttons.slice(0, 3).map((b, i) => ({
