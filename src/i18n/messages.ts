@@ -53,8 +53,7 @@ interface Messages {
     downloadFailed: () => string;
     processingError: () => string;
     notRecognized: () => string;
-    invalid: (reason: string) => string;
-    defaultInvalidReason: string;
+    invalid: () => string;
     missingEssentialData: () => string;
     confirmBody: (description: string) => string;
     licensePlateLabel: (plate: string) => string;
@@ -62,11 +61,10 @@ interface Messages {
     retryButtons: [string, string];
   };
   vehicleConfirm: {
-    confirmedAskPart: (make: string, model: string, year: string) => string;
-    greetingAskPart: (name: string, make: string, model: string, year: string) => string;
+    confirmedAskPart: (make: string, model: string, year: string, greetingName?: string) => string;
     addVehicleButton: () => string;
     addVehicleBody: () => string;
-    chooseVehiclePrompt: (vehicles: { make: string; model: string; year: string }[]) => string;
+    chooseVehiclePrompt: (vehicles: { make: string; model: string; year: string }[], greetingName?: string) => string;
     vehicleChoiceNotFound: () => string;
   };
   agent: {
@@ -84,14 +82,13 @@ interface Messages {
     searchListBody: (count: number, part: string, name: string) => string;
     searchListBodyForVehicle: (count: number, part: string, make: string, model: string, year: string, name: string) => string;
     searchListButton: () => string;
-    stockCountLabel: (quantity: number) => string;
     productSelected: (productName: string, price: string) => string;
     serviceOfferBody: (serviceName: string, price: string) => string;
     serviceOfferButtons: [string, string];
     serviceAdded: (serviceName: string, newTotal: string) => string;
     serviceDeclined: () => string;
     confirmingAvailability: () => string;
-    stockConfirmedIntro: (productName: string) => string;
+    stockConfirmedIntro: (productName: string, customerName: string) => string;
     stockConfirmationCourtesy: () => string;
     stockUnavailable: (productName: string, reference: string) => string;
     stockUnavailableButtons: [string, string];
@@ -113,9 +110,8 @@ interface Messages {
     askBankSubtypeButtons: [string, string];
     askInPersonSubtypeBody: () => string;
     askInPersonSubtypeButtons: [string, string];
-    proofReceivedCustomer: (methodName: string, orderNumber: string) => string;
-    proofInvalid: (reason: string) => string;
-    proofInvalidDefaultReason: string;
+    proofReceivedCustomer: (customerName: string) => string;
+    proofInvalid: () => string;
     supplierDeliveryNotice: (productName: string, reference: string, quantity: number, orderNumber: string) => string;
   };
   pdf: {
@@ -147,11 +143,10 @@ interface Messages {
       footer: string;
     };
     sendMessage: {
-      orderConfirmed: (itemName: string, orderNumber: string, total: string) => string;
       documentCaption: (orderNumber: string) => string;
     };
     finalInvoice: {
-      notification: () => string;
+      notification: (customerName: string) => string;
       documentCaption: (orderNumber: string) => string;
     };
     mockInvoice: {
@@ -176,6 +171,24 @@ interface Messages {
   };
   adminAuth: {
     resetCode: (code: string) => string;
+  };
+  admin: {
+    stockConfirmationNeeded: (
+      orderNumber: string,
+      productName: string,
+      reference: string,
+      supplier: string,
+      amount: string,
+      customerName: string,
+      customerPhone: string
+    ) => string;
+    confirmButtonLabel: () => string;
+    unavailableButtonLabel: () => string;
+    reminderBody: (customerName: string, productName: string, orderNumber: string) => string;
+    confirmedAck: (orderNumber: string) => string;
+    unavailableAck: (orderNumber: string) => string;
+    alreadyHandled: (orderNumber: string) => string;
+    useButtonsPrompt: () => string;
   };
 }
 
@@ -254,7 +267,7 @@ const pt: Messages = {
     alreadyRegistered: (description) =>
       `Parece que esta viatura já está no teu perfil! 😊\n\n🚗 *${description}*\n\n` +
       `Queres procurar uma peça para este carro, ou adicionar uma viatura diferente?`,
-    alreadyRegisteredButtons: ['🔍 Procurar peça', '➕ Viatura diferente'],
+    alreadyRegisteredButtons: ['🔍 Procurar peça', '➕ Carro diferente'],
   },
   document: {
     askPhotoPrompt: () =>
@@ -271,14 +284,13 @@ const pt: Messages = {
       `Essa imagem não parece ser um documento de viatura (livrete/Título do Veículo).\n\n` +
       `Podes enviar o número de chassi (VIN) por texto, tentar outra foto, ` +
       `ou responder *"não tenho"* para preencheres os dados manualmente.`,
-    invalid: (reason) =>
-      `⚠️ ${reason}\n\n` +
-      `Por favor tenta novamente com uma foto mais nítida, garantindo que:\n\n` +
-      `• 📸 A imagem está bem iluminada e focada\n` +
-      `• 📄 O documento está completamente visível\n` +
-      `• 🔍 O texto está legível sem reflexos ou sombras\n\n` +
-      `Ou responde *"não tenho"* para preencheres os dados manualmente. 👇`,
-    defaultInvalidReason: 'Não consegui ler os dados do documento.',
+    invalid: () =>
+      `Tive dificuldade em ler essa imagem. Acontece! 📸\n\n` +
+      `Algumas dicas:\n` +
+      `• Garante que o documento está bem iluminado\n` +
+      `• Segura a câmara firme e perto\n` +
+      `• Evita reflexos ou sombras no texto\n\n` +
+      `Tenta novamente, ou toca abaixo para inserires os dados manualmente.`,
     missingEssentialData: () =>
       `⚠️ Consegui ler o documento mas faltam dados essenciais (marca/modelo).\n\n` +
       `Por favor tenta outra foto, ou responde *"não tenho"* para preencheres os dados manualmente.`,
@@ -289,20 +301,22 @@ const pt: Messages = {
     retryButtons: ['🔄 Tentar novamente', '✍️ Manual'],
   },
   vehicleConfirm: {
-    confirmedAskPart: (make, model, year) =>
-      `Perfeito! 🙌\n\n` +
-      `Agora diz-me que peça precisas para o teu *${make} ${model} ${year}*.\n\n` +
-      `Exemplo: _"filtro de óleo"_, _"pastilhas de travão"_, _"correia de distribuição"_...`,
-    greetingAskPart: (name, make, model, year) =>
-      `Olá de novo, ${name}! 👋 Bom ter-te de volta.\n\n` +
-      `Que peça precisas para o teu *${make} ${model} ${year}* hoje?`,
+    confirmedAskPart: (make, model, year, greetingName) =>
+      greetingName
+        ? `Olá de novo, ${greetingName}! 👋 Bom ter-te de volta.\n\n` +
+          `Que peça precisas para o teu *${make} ${model} ${year}* hoje?`
+        : `Perfeito! 🙌\n\n` +
+          `Agora diz-me que peça precisas para o teu *${make} ${model} ${year}*.\n\n` +
+          `Exemplo: _"filtro de óleo"_, _"pastilhas de travão"_, _"correia de distribuição"_...`,
     addVehicleButton: () => '➕ Outro carro',
     addVehicleBody: () =>
       `Claro! Vamos adicionar outro veículo ao teu perfil. 🚗\n\n` +
       `Como preferes identificá-lo?`,
-    chooseVehiclePrompt: (vehicles) =>
+    chooseVehiclePrompt: (vehicles, greetingName) =>
+      (greetingName ? `Olá de novo, ${greetingName}! 👋 Bom ter-te de volta.\n\n` : '') +
       `Para qual dos teus veículos é isto? 👇\n\n` +
-      vehicles.map((v, i) => `${i + 1}️⃣ ${v.make} ${v.model} ${v.year}`).join('\n'),
+      vehicles.map((v, i) => `${i + 1}️⃣ ${v.make} ${v.model} ${v.year}`).join('\n') +
+      `\n\nResponde com o número. 👇`,
     vehicleChoiceNotFound: () =>
       `Não percebi. Responde só com o número do veículo. 👆`,
   },
@@ -339,8 +353,8 @@ const pt: Messages = {
       `Óptima escolha! 👍\n\n` +
       `Deixa-me só confirmar a disponibilidade com o fornecedor antes de avançarmos.\n\n` +
       `Isto costuma demorar alguns minutos — já volto! ⏳`,
-    stockConfirmedIntro: (productName) =>
-      `Boas notícias! ✅\n\n` +
+    stockConfirmedIntro: (productName, customerName) =>
+      `Boas notícias, ${customerName}! ✅\n\n` +
       `O fornecedor confirmou que *${productName}* está disponível e pronto para ti.\n\n` +
       `A tua factura proforma segue abaixo. 👇`,
     stockConfirmationCourtesy: () =>
@@ -353,7 +367,7 @@ const pt: Messages = {
       `O fornecedor acabou de confirmar que *${productName}* (Ref: ${reference}) já não está disponível.\n\n` +
       `Não foi cobrado nenhum pagamento — não há nada com que te preocupares. 👍\n\n` +
       `Queres que eu procure uma alternativa?`,
-    stockUnavailableButtons: ['✅ Sim, procurar alternativa', '❌ Não, colocar-me na lista de espera'],
+    stockUnavailableButtons: ['✅ Alternativas', '❌ Lista de espera'],
     proformaSentChoosePayment: () =>
       `Proforma enviada! Por favor escolhe um dos métodos de pagamento abaixo. 👇`,
     transferToHuman: () =>
@@ -363,13 +377,12 @@ const pt: Messages = {
     searchListBodyForVehicle: (count, part, make, model, year, name) =>
       `Boas notícias, ${name}! 🙌 Encontrei ${count} opção(ões) de *${part}* para o teu *${make} ${model} ${year}*. Escolhe uma abaixo 👇`,
     searchListButton: () => 'Ver opções',
-    stockCountLabel: (quantity) => `${quantity} un.`,
   },
   order: {
     rejected: (orderNumber) =>
-      `❌ O teu pedido *${orderNumber}* foi rejeitado.\n\n` +
-      `Motivo: comprovativo de pagamento não confirmado ou inválido.\n\n` +
-      `Se achas que é um erro, responde aqui e um atendente irá ajudar-te. 🙏`,
+      `Infelizmente não conseguimos confirmar o teu pagamento para o pedido ${orderNumber}. 😔\n\n` +
+      `Isto pode acontecer se o comprovativo estava pouco nítido ou a referência de pagamento estava em falta.\n\n` +
+      `Se achas que isto é um erro, responde aqui e um dos nossos colaboradores vai ajudar-te a resolver isso já. 👇`,
   },
   payment: {
     methods: {
@@ -429,22 +442,20 @@ const pt: Messages = {
       `Valor: *${amount}*\n\n` +
       `Escolhe uma opção:\n\n` +
       `_Se escolheres Transferência/Depósito ou Multicaixa Express, usa o Número do Pedido como referência._`,
-    askMethodButtons: ['🏦 Transferência / Depósito', '📱 Multicaixa Express', '💳 Mobile POS (TPA)'],
+    askMethodButtons: ['🏦 Banco', '📱 Multicaixa', '💳 Mobile POS (TPA)'],
     askBankSubtypeBody: () => 'Preferes transferência ou depósito bancário?',
-    askBankSubtypeButtons: ['🏦 Transferência Bancária', '🏧 Depósito Bancário'],
+    askBankSubtypeButtons: ['🏦 Transferência', '🏧 Depósito'],
     askInPersonSubtypeBody: () => 'Preferes pagar com cartão no terminal ou em dinheiro na entrega?',
-    askInPersonSubtypeButtons: ['💳 TPA (cartão)', '💵 Dinheiro na entrega'],
-    proofReceivedCustomer: (methodName, orderNumber) =>
-      `✅ *Comprovativo recebido!*\n\n` +
-      `Método: ${methodName}\n` +
-      `Pedido: *${orderNumber}*\n\n` +
-      `A nossa equipa irá verificar o pagamento e emitir a factura em breve.\n` +
-      `Normalmente demora menos de 30 minutos em horário de expediente. 🙏`,
-    proofInvalid: (reason) =>
-      `⚠️ ${reason}\n\n` +
-      `Por favor envia novamente o comprovativo, garantindo que a imagem está nítida e mostra ` +
-      `claramente o valor, a data e a referência do pagamento. 📸`,
-    proofInvalidDefaultReason: 'Não consegui confirmar que esta imagem é um comprovativo de pagamento válido.',
+    askInPersonSubtypeButtons: ['💳 TPA (cartão)', '💵 Dinheiro'],
+    proofReceivedCustomer: (customerName) =>
+      `Recebido, obrigado ${customerName}! 🙏\n\n` +
+      `Vamos verificar o teu pagamento e emitir a factura oficial em breve.\n\n` +
+      `Isto costuma demorar menos de 30 minutos em horário de expediente (Seg–Sáb, 8h–18h).\n` +
+      `Avisamos assim que estiver pronto! ⏳`,
+    proofInvalid: () =>
+      `⚠️ Não conseguimos confirmar este comprovativo de pagamento.\n\n` +
+      `Por favor faz upload de um comprovativo de pagamento válido novamente — foto ou PDF, ` +
+      `garantindo que mostra claramente o valor, a data e a referência do pagamento. 📸`,
     supplierDeliveryNotice: (productName, reference, quantity, orderNumber) =>
       `📦 *NOVO PEDIDO CONFIRMADO — REDE PEÇAS*\n\n` +
       `Por favor prepare o seguinte artigo para entrega:\n\n` +
@@ -486,21 +497,14 @@ const pt: Messages = {
       footer: 'Rede Peças — Marketplace Automotivo de Angola  |  NIF: 5XXXXXXXXX  |  info@redepecas.ao',
     },
     sendMessage: {
-      orderConfirmed: (itemName, orderNumber, total) =>
-        `✅ *Pedido confirmado!*\n\n` +
-        `Segue em anexo a tua factura proforma para:\n` +
-        `*${itemName}*\n\n` +
-        `📋 Referência: *${orderNumber}*\n` +
-        `💰 Total: *${total}*\n` +
-        `⏳ Validade: 48 horas\n\n` +
-        `Após pagamento, envia o comprovativo aqui nesta conversa. 🙏`,
       documentCaption: (orderNumber) => `Factura Proforma Nº ${orderNumber} — Rede Peças`,
     },
     finalInvoice: {
-      notification: () =>
-        `🧾 *Factura Oficial AGT Emitida!*\n\n` +
-        `O teu pagamento foi validado e a factura oficial já está disponível em anexo.\n` +
-        `Obrigado por comprares na Rede Peças! 🚗`,
+      notification: (customerName) =>
+        `O teu pagamento foi confirmado, ${customerName}! ✅\n\n` +
+        `A tua factura oficial segue em anexo — guarda-a para os teus registos.\n\n` +
+        `Obrigado por escolheres a Rede Peças.\n` +
+        `Esperamos ver-te em breve! 🙏 🚗`,
       documentCaption: (orderNumber) => `Factura Comercial Nº ${orderNumber} — Rede Peças`,
     },
     mockInvoice: {
@@ -527,6 +531,29 @@ const pt: Messages = {
     resetCode: (code) =>
       `🔐 Código de recuperação de senha do painel Rede Peças: *${code}*\n\n` +
       `Válido por 10 minutos. Se não pediste isto, ignora esta mensagem.`,
+  },
+  admin: {
+    stockConfirmationNeeded: (orderNumber, productName, reference, supplier, amount, customerName, customerPhone) =>
+      `🔔 *CONFIRMAÇÃO DE STOCK NECESSÁRIA*\n\n` +
+      `Pedido: *${orderNumber}* (AINDA NÃO PAGO)\n` +
+      `Peça: ${productName} · Ref: ${reference}\n` +
+      `Fornecedor: ${supplier}\n` +
+      `Valor: ${amount}\n` +
+      `Cliente: ${customerName} · ${customerPhone}\n\n` +
+      `⚠️ Por favor confirma com o fornecedor que este artigo está fisicamente disponível antes do cliente pagar.\n\n` +
+      `🔗 ${config.appUrl}/admin/orders`,
+    confirmButtonLabel: () => '✅ Confirmado',
+    unavailableButtonLabel: () => '⚠️ Indisponível',
+    reminderBody: (customerName, productName, orderNumber) =>
+      `⏰ *LEMBRETE — Cliente à espera*\n\n` +
+      `${customerName} está à espera há 15 minutos pela confirmação de stock de:\n\n` +
+      `${productName} · ${orderNumber}\n\n` +
+      `Por favor confirma ou recusa o mais rápido possível:\n` +
+      `🔗 ${config.appUrl}/admin/orders`,
+    confirmedAck: (orderNumber) => `✅ Confirmado! Factura proforma enviada ao cliente do pedido *${orderNumber}*.`,
+    unavailableAck: (orderNumber) => `⚠️ Pedido *${orderNumber}* marcado como indisponível. Cliente foi notificado.`,
+    alreadyHandled: (orderNumber) => `O pedido *${orderNumber}* já foi tratado — nada a fazer.`,
+    useButtonsPrompt: () => `Por favor usa os botões na mensagem de confirmação de stock. 👆`,
   },
 };
 
@@ -563,9 +590,10 @@ const en: Messages = {
       `👋 Welcome back, *${name}*!\n\n` +
       `I still need to identify your vehicle. Pick an option.`,
     onboardingComplete: (name, vehicleSummary) =>
-      `You're officially on Rede Peças, 🎉 ${name}! 🎉\n\n` +
+      `You're officially on Rede Peças, ${name}! 🎉\n\n` +
       `${vehicleSummary}\n\n` +
-      `What part do you need today? Just tell me naturally — I'll handle the rest. 👇`,
+      `What part do you need today?\n\n` +
+      `Just tell me naturally — I'll handle the rest. 👇`,
   },
   manual: {
     askModel: (make) =>
@@ -608,7 +636,7 @@ const en: Messages = {
     alreadyRegistered: (description) =>
       `It looks like this vehicle is already in your profile! 😊\n\n🚗 *${description}*\n\n` +
       `Would you like to search for a part for this car, or add a different vehicle?`,
-    alreadyRegisteredButtons: ['🔍 Search for a part', '➕ Add different vehicle'],
+    alreadyRegisteredButtons: ['🔍 Find a part', '➕ Different car'],
   },
   document: {
     askPhotoPrompt: () =>
@@ -625,15 +653,13 @@ const en: Messages = {
       `That image doesn't look like a vehicle document (registration/title).\n\n` +
       `You can send the chassis number (VIN) as text, try another photo, ` +
       `or reply *"I don't have it"* to fill in the details manually.`,
-    invalid: (reason) =>
-      `⚠️ ${reason}\n\n` +
+    invalid: () =>
       `I had trouble reading that image. It happens! 📸\n\n` +
       `A few tips:\n` +
       `• Make sure the document is well lit\n` +
       `• Hold the camera steady and close\n` +
       `• Avoid reflections or shadows on the text\n\n` +
       `Try again, or tap below to enter details manually.`,
-    defaultInvalidReason: "I couldn't read the document's data.",
     missingEssentialData: () =>
       `⚠️ I read the document but essential data is missing (make/model).\n\n` +
       `Please try another photo, or reply *"I don't have it"* to fill in the details manually.`,
@@ -644,20 +670,22 @@ const en: Messages = {
     retryButtons: ['🔄 Try again', '✍️ Manual entry'],
   },
   vehicleConfirm: {
-    confirmedAskPart: (make, model, year) =>
-      `Perfect! 🙌\n\n` +
-      `Now tell me which part you need for your *${make} ${model} ${year}*.\n\n` +
-      `Example: _"oil filter"_, _"brake pads"_, _"timing belt"_...`,
-    greetingAskPart: (name, make, model, year) =>
-      `Hey ${name}! 👋 Good to have you back.\n\n` +
-      `What part do you need for your *${make} ${model} ${year}* today?`,
+    confirmedAskPart: (make, model, year, greetingName) =>
+      greetingName
+        ? `Hey ${greetingName}! 👋 Good to have you back.\n\n` +
+          `What part do you need for your *${make} ${model} ${year}* today?`
+        : `Perfect! 🙌\n\n` +
+          `Now tell me which part you need for your *${make} ${model} ${year}*.\n\n` +
+          `Example: _"oil filter"_, _"brake pads"_, _"timing belt"_...`,
     addVehicleButton: () => '➕ Add vehicle',
     addVehicleBody: () =>
       `Sure! Let's add another vehicle to your profile. 🚗\n\n` +
       `How would you like to identify it?`,
-    chooseVehiclePrompt: (vehicles) =>
+    chooseVehiclePrompt: (vehicles, greetingName) =>
+      (greetingName ? `Hey ${greetingName}! 👋 Good to have you back.\n\n` : '') +
       `Which of your vehicles is this for? 👇\n\n` +
-      vehicles.map((v, i) => `${i + 1}️⃣ ${v.make} ${v.model} ${v.year}`).join('\n'),
+      vehicles.map((v, i) => `${i + 1}️⃣ ${v.make} ${v.model} ${v.year}`).join('\n') +
+      `\n\nReply with the number. 👇`,
     vehicleChoiceNotFound: () =>
       `I didn't get that. Reply with just the vehicle's number. 👆`,
   },
@@ -694,8 +722,8 @@ const en: Messages = {
       `Great choice! 👍\n\n` +
       `Let me just confirm availability with the supplier before we proceed.\n\n` +
       `This usually takes a few minutes — I'll be right back! ⏳`,
-    stockConfirmedIntro: (productName) =>
-      `Great news! ✅\n\n` +
+    stockConfirmedIntro: (productName, customerName) =>
+      `Great news, ${customerName}! ✅\n\n` +
       `The supplier has confirmed *${productName}* is available and ready for you.\n\n` +
       `Your proforma invoice is attached below. 👇`,
     stockConfirmationCourtesy: () =>
@@ -708,7 +736,7 @@ const en: Messages = {
       `The supplier just confirmed that *${productName}* (Ref: ${reference}) is no longer available.\n\n` +
       `No payment was taken — so there's nothing to worry about. 👍\n\n` +
       `Would you like me to search for an alternative?`,
-    stockUnavailableButtons: ['✅ Yes, find alternatives', '❌ No, add me to the waitlist'],
+    stockUnavailableButtons: ['✅ Alternatives', '❌ Join waitlist'],
     proformaSentChoosePayment: () =>
       `Proforma sent! Please choose one of the payment methods below. 👇`,
     transferToHuman: () =>
@@ -718,13 +746,12 @@ const en: Messages = {
     searchListBodyForVehicle: (count, part, make, model, year, name) =>
       `Good news, ${name}! 🙌 I found ${count} option(s) for *${part}* for your *${make} ${model} ${year}*. Which one works best for you? 👇`,
     searchListButton: () => 'View options',
-    stockCountLabel: (quantity) => `${quantity} in stock`,
   },
   order: {
     rejected: (orderNumber) =>
-      `❌ Your order *${orderNumber}* was rejected.\n\n` +
-      `Reason: payment proof not confirmed or invalid.\n\n` +
-      `If you think this is a mistake, reply here and a staff member will help you. 🙏`,
+      `Unfortunately we weren't able to confirm your payment for order ${orderNumber}. 😔\n\n` +
+      `This can happen if the proof was unclear or the payment reference was missing.\n\n` +
+      `If you think this is a mistake, just reply here and one of our team members will help you sort it out right away. 👇`,
   },
   payment: {
     methods: {
@@ -784,22 +811,20 @@ const en: Messages = {
       `Amount: *${amount}*\n\n` +
       `Choose an option:\n\n` +
       `_If you choose Transfer/Deposit or Multicaixa Express, please use the Order Number as reference._`,
-    askMethodButtons: ['🏦 Transfer / Deposit', '📱 Multicaixa Express', '💳 Mobile POS (TPA)'],
+    askMethodButtons: ['🏦 Bank', '📱 Multicaixa', '💳 Mobile POS (TPA)'],
     askBankSubtypeBody: () => 'Would you prefer a bank transfer or a bank deposit?',
     askBankSubtypeButtons: ['🏦 Bank Transfer', '🏧 Bank Deposit'],
     askInPersonSubtypeBody: () => 'Would you prefer to pay by card on the terminal or cash on delivery?',
     askInPersonSubtypeButtons: ['💳 POS (card)', '💵 Cash on delivery'],
-    proofReceivedCustomer: (methodName, orderNumber) =>
-      `✅ *Proof received!*\n\n` +
-      `Method: ${methodName}\n` +
-      `Order: *${orderNumber}*\n\n` +
-      `Our team will verify the payment and issue the invoice shortly.\n` +
-      `Usually takes under 30 minutes during business hours. 🙏`,
-    proofInvalid: (reason) =>
-      `⚠️ ${reason}\n\n` +
-      `Please resend the payment proof, making sure the image is clear and shows the ` +
-      `amount, date, and payment reference. 📸`,
-    proofInvalidDefaultReason: "I couldn't confirm this image is a valid payment proof.",
+    proofReceivedCustomer: (customerName) =>
+      `Got it, thank you ${customerName}! 🙏\n\n` +
+      `We'll verify your payment and issue the official invoice shortly.\n\n` +
+      `This usually takes under 30 minutes during business hours (Mon–Sat, 8h–18h).\n` +
+      `We'll message you as soon as it's done! ⏳`,
+    proofInvalid: () =>
+      `⚠️ We weren't able to confirm this payment proof.\n\n` +
+      `Please upload a valid payment proof again — photo or PDF, making sure it clearly shows ` +
+      `the amount, date, and payment reference. 📸`,
     supplierDeliveryNotice: (productName, reference, quantity, orderNumber) =>
       `📦 *NEW ORDER CONFIRMED — REDE PEÇAS*\n\n` +
       `Please prepare the following item for delivery:\n\n` +
@@ -841,21 +866,14 @@ const en: Messages = {
       footer: "Rede Peças — Angola's Auto Parts Marketplace  |  NIF: 5XXXXXXXXX  |  info@redepecas.ao",
     },
     sendMessage: {
-      orderConfirmed: (itemName, orderNumber, total) =>
-        `✅ *Order confirmed!*\n\n` +
-        `Attached is your proforma invoice for:\n` +
-        `*${itemName}*\n\n` +
-        `📋 Reference: *${orderNumber}*\n` +
-        `💰 Total: *${total}*\n` +
-        `⏳ Valid for: 48 hours\n\n` +
-        `After payment, send the proof here in this conversation. 🙏`,
       documentCaption: (orderNumber) => `Proforma Invoice No. ${orderNumber} — Rede Peças`,
     },
     finalInvoice: {
-      notification: () =>
-        `🧾 *Official AGT Invoice Issued!*\n\n` +
-        `Your payment has been validated and the official invoice is now attached.\n` +
-        `Thanks for shopping with Rede Peças! 🚗`,
+      notification: (customerName) =>
+        `Your payment has been confirmed, ${customerName}! ✅\n\n` +
+        `Your official invoice is attached — keep it for your records.\n\n` +
+        `Thank you for choosing Rede Peças.\n` +
+        `We hope to see you again soon! 🙏 🚗`,
       documentCaption: (orderNumber) => `Commercial Invoice No. ${orderNumber} — Rede Peças`,
     },
     mockInvoice: {
@@ -882,6 +900,29 @@ const en: Messages = {
     resetCode: (code) =>
       `🔐 Rede Peças admin panel password reset code: *${code}*\n\n` +
       `Valid for 10 minutes. If you didn't request this, ignore this message.`,
+  },
+  admin: {
+    stockConfirmationNeeded: (orderNumber, productName, reference, supplier, amount, customerName, customerPhone) =>
+      `🔔 *STOCK CONFIRMATION NEEDED*\n\n` +
+      `Order: *${orderNumber}* (NOT YET PAID)\n` +
+      `Part: ${productName} · Ref: ${reference}\n` +
+      `Supplier: ${supplier}\n` +
+      `Amount: ${amount}\n` +
+      `Customer: ${customerName} · ${customerPhone}\n\n` +
+      `⚠️ Please confirm with the supplier that this item is physically available before the customer pays.\n\n` +
+      `🔗 ${config.appUrl}/admin/orders`,
+    confirmButtonLabel: () => '✅ Confirmed',
+    unavailableButtonLabel: () => '⚠️ Unavailable',
+    reminderBody: (customerName, productName, orderNumber) =>
+      `⏰ *REMINDER — Customer is waiting*\n\n` +
+      `${customerName} has been waiting 15 minutes for stock confirmation on:\n\n` +
+      `${productName} · ${orderNumber}\n\n` +
+      `Please confirm or decline ASAP:\n` +
+      `🔗 ${config.appUrl}/admin/orders`,
+    confirmedAck: (orderNumber) => `✅ Confirmed! Proforma sent to the customer for order *${orderNumber}*.`,
+    unavailableAck: (orderNumber) => `⚠️ Order *${orderNumber}* marked unavailable. Customer has been notified.`,
+    alreadyHandled: (orderNumber) => `Order *${orderNumber}* was already handled — nothing to do.`,
+    useButtonsPrompt: () => `Please use the buttons on the stock-confirmation message. 👆`,
   },
 };
 

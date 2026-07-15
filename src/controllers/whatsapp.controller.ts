@@ -6,6 +6,7 @@ import * as productService from '../services/product.service.js';
 import * as paymentService from '../services/payment.service.js';
 import * as sessionService from '../services/session.service.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons } from '../services/whatsapp.service.js';
+import { getAdminByPhone } from '../models/adminUser.model.js';
 import { config } from '../config/config.js';
 import { t } from '../i18n/messages.js';
 
@@ -57,12 +58,17 @@ export async function receiveWebhookMessage(req: Request, res: Response): Promis
     // The list row's stable id (e.g. "option_2") — used instead of its (possibly
     // truncated) title to resolve a product-list tap unambiguously.
     const listReplyId: string | null = msg.type === 'interactive' ? (msg.interactive?.list_reply?.id || null) : null;
+    // A button reply's stable id (e.g. "admin_confirm_RP-2026-00482") — unlike
+    // every other button flow in this app (title-matched), the admin's stock
+    // confirm/decline buttons encode the order number directly in the id so the
+    // reply can be resolved unambiguously regardless of how many are pending.
+    const buttonReplyId: string | null = msg.type === 'interactive' ? (msg.interactive?.button_reply?.id || null) : null;
     const mediaType = msg.type; // "image" | "document" | "text" | "interactive" | "button" etc.
     const mediaId = msg.image?.id || msg.document?.id || null;
 
     logger.debug(`[${phone}] Webhook type: ${mediaType}, text: ${customerText}`);
 
-    await processMessageFlow(phone, customerText, mediaType, mediaId, listReplyId);
+    await processMessageFlow(phone, customerText, mediaType, mediaId, listReplyId, buttonReplyId);
   } catch (error: any) {
     logger.error('Error in WhatsApp webhook processing', error);
   }
@@ -76,8 +82,21 @@ async function processMessageFlow(
   customerText: string | null,
   mediaType: string,
   mediaId: string | null,
-  listReplyId: string | null = null
+  listReplyId: string | null = null,
+  buttonReplyId: string | null = null
 ): Promise<void> {
+  // 0. Admin short-circuit: a message from a number in admin_users is never a
+  // customer, so this must run before getOrCreateCustomer below — otherwise
+  // the admin's own number would get a customers row created and run through
+  // the entire customer pipeline like anyone else. Handles the admin's
+  // stock-confirmation button taps only for now (see processAdminStockReply).
+  const admin = await getAdminByPhone(phone);
+  if (admin) {
+    logger.debug(`[ADMIN STOCK] Inbound message from admin ${phone} (${admin.name}) routed to admin handler, buttonReplyId=${buttonReplyId}`);
+    await productService.processAdminStockReply(phone, buttonReplyId);
+    return;
+  }
+
   // 1. Get-or-create customer (handles pre-registration + welcome on first contact)
   const customer = await customerService.getOrCreateCustomer(phone);
   if (!customer) return;
@@ -153,6 +172,20 @@ async function processMessageFlow(
     return;
   }
 
+  // 3.6 PRIORITY: pending "try again" / "manual entry" reply after a document processing
+  // failure. Must run before stage 4 below — vehicleIdChoiceShown (set once, when the
+  // original VIN/photo/manual choice was first shown) is never cleared while this more
+  // specific retry prompt is active, so without this ordering a reply like "Manual entry"
+  // would get wrongly intercepted by stage 4's generic 3-button handler instead of this
+  // dedicated one — same outcome for "manual", but silently wrong for "try again"
+  // (stage 4 doesn't recognize it and falls through, eventually landing in stage 10's
+  // catch-all, which also starts manual collection instead of re-prompting for a photo).
+  const documentRetryChoiceShown = await sessionService.wasDocumentRetryChoiceShown(phone);
+  if (documentRetryChoiceShown && customerText) {
+    const handled = await vehicleService.processDocumentRetryChoice(phone, customerText);
+    if (handled) return;
+  }
+
   // 4. PRIORITY: vehicle-ID option button tap (VIN / photo / manual), shown right after
   // profile registration completes, a returning customer's vehicle session expired, or
   // an "add another vehicle" request just above. Must run before manual collection
@@ -179,7 +212,8 @@ async function processMessageFlow(
   // 6. PRIORITY: Customer sent payment proof media (image/document)
   if (mediaType === 'image' || mediaType === 'document') {
     if (mediaId) {
-      const handled = await paymentService.processPaymentProof(phone, mediaId, mediaType);
+      const proofFirstName = customer.name?.split(' ')[0] || 'Cliente';
+      const handled = await paymentService.processPaymentProof(phone, mediaId, mediaType, proofFirstName);
       if (handled) return;
     }
   }
@@ -196,16 +230,6 @@ async function processMessageFlow(
   if (vehicleService.isVIN(customerText)) {
     await vehicleService.processVIN(phone, customerText);
     return;
-  }
-
-  // 8.2 PRIORITY: pending "try again" / "manual entry" reply after a document
-  // processing failure. Must run before stage 10's generic "start manual collection
-  // for any unmatched text" catch-all, which would otherwise misroute a "try again"
-  // reply straight into manual collection instead of re-prompting for a fresh photo.
-  const documentRetryChoiceShown = await sessionService.wasDocumentRetryChoiceShown(phone);
-  if (documentRetryChoiceShown) {
-    const handled = await vehicleService.processDocumentRetryChoice(phone, customerText);
-    if (handled) return;
   }
 
   // 8.3 PRIORITY: pending "which vehicle is this for?" reply (customers with 2+
@@ -326,7 +350,8 @@ async function processMessageFlow(
   }
 
   // 15. Deterministic product search — full-text match against the inventory DB (already
-  // handles PT synonyms/typos via the 'portuguese' tsquery config). No AI involved.
+  // handles synonyms/typos via the 'english' tsquery config, for now — see CLAUDE.md
+  // "Language split"). No AI involved.
   const searchFirstName = customer.name?.split(' ')[0] || 'Cliente';
   await productService.searchAndRespond(phone, customerText, searchFirstName);
 }

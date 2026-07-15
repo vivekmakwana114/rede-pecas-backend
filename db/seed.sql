@@ -12,7 +12,7 @@
 -- the password immediately in any environment this seed reaches beyond local dev).
 -- npm run db:seed
 INSERT INTO admin_users (name, email, phone, password_hash) VALUES
-  ('Admin', 'admin@redepecas.ao', '244900000001', '$2a$10$UVANI9fapZOKB5T8opdS4.FtEkSYk42ISUp0NQhSAeNvxQIrGZLt6')
+  ('Admin', 'admin@redepecas.ao', '917987760774', '$2a$10$UVANI9fapZOKB5T8opdS4.FtEkSYk42ISUp0NQhSAeNvxQIrGZLt6')
 ON CONFLICT (email) DO NOTHING;
 
 -- suppliers.name has no unique constraint (a real supplier name isn't
@@ -50,7 +50,7 @@ ON CONFLICT (supplier_id, reference) DO UPDATE SET
 -- service-offer follow-up (see CLAUDE.md message pipeline / product.service.ts).
 INSERT INTO products (supplier_id, name, brand, reference, price, quantity, delivery_time, synonyms, category_keywords, service_offered, service_name, service_price)
 VALUES
-  ((SELECT id FROM suppliers WHERE name = 'Luanda Auto Parts'), 'Mann Oil Filter W712/75 Kit', 'Mann', 'W712/75-KIT', 2500, 6, 'Tomorrow', 'oil filter lubricant filter', 'oil filter engine', true, 'Instalação e troca de óleo', 4500)
+  ((SELECT id FROM suppliers WHERE name = 'Luanda Auto Parts'), 'Mann Oil Filter W712/75 Kit', 'Mann', 'W712/75-KIT', 2500, 6, 'Tomorrow', 'oil filter lubricant filter', 'oil filter engine', true, 'Oil filter installation and oil change', 4500)
 ON CONFLICT (supplier_id, reference) DO UPDATE SET
   name = EXCLUDED.name, price = EXCLUDED.price, quantity = EXCLUDED.quantity,
   service_offered = EXCLUDED.service_offered, service_name = EXCLUDED.service_name, service_price = EXCLUDED.service_price,
@@ -64,7 +64,7 @@ ON CONFLICT (supplier_id, reference) DO UPDATE SET
 -- ============================================================
 INSERT INTO products (supplier_id, name, brand, reference, price, quantity, delivery_time, synonyms, category_keywords, service_offered, service_name, service_price)
 VALUES
-  ((SELECT id FROM suppliers WHERE name = 'Angola Moto Parts'), 'Correia Dentada Continental CT1028', 'Continental', 'CT1028', 9800, 0, '3 days', 'correia dentada timing belt distribuição', 'timing belt correia', true, 'Instalação da correia', 6000)
+  ((SELECT id FROM suppliers WHERE name = 'Angola Moto Parts'), 'Continental Timing Belt CT1028', 'Continental', 'CT1028', 9800, 0, '3 days', 'timing belt distribution belt', 'timing belt engine', true, 'Timing belt installation', 6000)
 ON CONFLICT (supplier_id, reference) DO UPDATE SET
   name = EXCLUDED.name, price = EXCLUDED.price, quantity = EXCLUDED.quantity,
   service_offered = EXCLUDED.service_offered, service_name = EXCLUDED.service_name, service_price = EXCLUDED.service_price,
@@ -72,6 +72,6 @@ ON CONFLICT (supplier_id, reference) DO UPDATE SET
 
 INSERT INTO products (supplier_id, name, brand, reference, price, quantity, delivery_time, synonyms, category_keywords)
 VALUES
-  ((SELECT id FROM suppliers WHERE name = 'Import Car Parts'), 'Filtro de Ar Fram CA1234', 'Fram', 'CA1234', 4200, 0, '4 days', 'filtro de ar air filter', 'filtro ar motor')
+  ((SELECT id FROM suppliers WHERE name = 'Import Car Parts'), 'Fram Air Filter CA1234', 'Fram', 'CA1234', 4200, 0, '4 days', 'air filter engine filter', 'air filter engine')
 ON CONFLICT (supplier_id, reference) DO UPDATE SET
   name = EXCLUDED.name, price = EXCLUDED.price, quantity = EXCLUDED.quantity, active = true;

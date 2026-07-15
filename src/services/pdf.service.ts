@@ -140,16 +140,11 @@ export async function generateProformaPDF(
 
 /**
  * Sends the generated proforma PDF to the customer via Meta WhatsApp Business API.
- * `totalAmount` is the order's combined total (product + accepted service, if
- * any) — passed explicitly rather than read off `item.price` alone, so the
- * confirmation text always matches what generateProformaPDF's total box shows.
  */
 export async function sendProformaWhatsApp(
   phone: string,
   pdfPath: string,
-  orderNumber: string,
-  item: any,
-  totalAmount: number
+  orderNumber: string
 ): Promise<void> {
   const API_URL = `https://graph.facebook.com/v19.0/${config.whatsapp.phoneNumberId}`;
   const token = config.whatsapp.token;
@@ -177,24 +172,9 @@ export async function sendProformaWhatsApp(
 
     const { id: mediaId } = await uploadRes.json() as any;
 
-    // 2. Send the textual confirmation message
-    await fetch(`${API_URL}/messages`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: phone,
-        type: 'text',
-        text: {
-          body: t.pdf.sendMessage.orderConfirmed(item.name, orderNumber, formatPrice(totalAmount)),
-        },
-      }),
-    });
-
-    // 3. Send the actual PDF document
+    // 2. Send the actual PDF document (stockConfirmedIntro, sent just before this
+    // call in product.service.ts, already covers the "confirmed, invoice attached"
+    // text — a separate confirmation message here would just repeat it)
     await fetch(`${API_URL}/messages`, {
       method: 'POST',
       headers: {
@@ -302,7 +282,8 @@ export async function generatePrimaveraInvoice(order: any): Promise<string> {
 export async function sendFinalInvoiceWhatsApp(
   phone: string,
   pdfPath: string,
-  orderNumber: string
+  orderNumber: string,
+  customerName: string
 ): Promise<void> {
   const API_URL = `https://graph.facebook.com/v19.0/${config.whatsapp.phoneNumberId}`;
   const token = config.whatsapp.token;
@@ -338,7 +319,7 @@ export async function sendFinalInvoiceWhatsApp(
         to: phone,
         type: 'text',
         text: {
-          body: t.pdf.finalInvoice.notification(),
+          body: t.pdf.finalInvoice.notification(customerName),
         },
       }),
     });

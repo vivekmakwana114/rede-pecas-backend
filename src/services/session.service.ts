@@ -8,7 +8,17 @@ let useMemoryFallback = false;
 const memoryCache = new Map<string, any[]>();
 
 const SESSION_TTL = 60 * 60 * 4; // 4 hours in seconds
-const VEHICLE_ID_CHOICE_TTL = 60 * 30; // 30 minutes — matches the manual-collection wizard's own window
+// Was 30 minutes ("matches the manual-collection wizard's own window") — but that
+// reasoning conflated two different things: the wizard's own 30-min abandonment
+// window (getActiveManualCollection in vehicle.model.ts, unaffected by this constant)
+// only starts once a customer is actively mid-wizard, answering make/model/year in
+// quick succession. This constant instead governs "how long do we remember that a
+// choice/retry prompt was shown at all" — e.g. a customer who taps "Try again" 48
+// minutes after receiving the prompt (entirely plausible — they had to go find their
+// document and take a clearer photo) was falling through with no handler and landing
+// on an unrelated stale order's fallback. Every other pending-choice/offer flag in
+// this file already uses the full SESSION_TTL; these three should too.
+const VEHICLE_ID_CHOICE_TTL = SESSION_TTL;
 
 if (config.redis.url) {
   try {
@@ -650,3 +660,4 @@ export async function clearDocumentRetryChoice(phone: string): Promise<void> {
     logger.error('Error clearing document-retry choice in Redis', err);
   }
 }
+

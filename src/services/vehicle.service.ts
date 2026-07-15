@@ -42,9 +42,10 @@ export { getActiveManualCollection, startManualCollection };
  *
  * `greeting` is set when this fires in response to a bare "Hi"/"Hey" mid-conversation
  * (whatsapp.controller.ts stage 12) rather than right after confirming a vehicle —
- * the doc gives that case its own warmer, name-personalized wording (greetingAskPart)
- * instead of confirmedAskPart's "Perfect! Now tell me..." tone, which reads oddly as
- * a response to a stray greeting since nothing was actually just confirmed.
+ * the doc gives that case its own warmer, name-personalized wording (confirmedAskPart's
+ * optional greetingName param) instead of its default "Perfect! Now tell me..." tone,
+ * which reads oddly as a response to a stray greeting since nothing was actually just
+ * confirmed.
  */
 export async function sendAskPartPrompt(phone: string, greeting?: { name: string }): Promise<boolean> {
   const vehicles = await getCustomerVehicles(phone);
@@ -52,16 +53,15 @@ export async function sendAskPartPrompt(phone: string, greeting?: { name: string
 
   if (vehicles.length === 1) {
     const v = vehicles[0];
-    const body = greeting
-      ? t.vehicleConfirm.greetingAskPart(greeting.name, v.make, v.model, v.year)
-      : t.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year);
+    const body = t.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year, greeting?.name);
     await sendWhatsAppButtons(phone, body, [t.vehicleConfirm.addVehicleButton()]);
     await markPartPromptSent(phone);
     return true;
   }
 
   await savePendingVehicleChoice(phone, vehicles.map(v => ({ id: v.id, make: v.make, model: v.model, year: v.year })));
-  await sendWhatsAppMessage(phone, t.vehicleConfirm.chooseVehiclePrompt(vehicles));
+  const chooseBody = t.vehicleConfirm.chooseVehiclePrompt(vehicles, greeting?.name);
+  await sendWhatsAppMessage(phone, chooseBody);
   return true;
 }
 
@@ -462,17 +462,19 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
     return;
   }
 
-  if (!extracted.valid) {
-    await sendRetryOrManualPrompt(phone, t.document.invalid(extracted.reason || t.document.defaultInvalidReason));
-    return;
-  }
-
-  // Prefer the authoritative NHTSA decode over OCR when a legible VIN was read
+  // Even when Claude flags low confidence (valid: false — e.g. handwritten or
+  // rotated text), still attempt to cross-check any chassis_number it extracted
+  // against NHTSA before giving up: NHTSA is an independent, authoritative signal
+  // a plain OCR self-assessment isn't — a genuinely wrong/garbled read simply fails
+  // the NHTSA lookup (a safe failure that falls through to the retry/manual prompt
+  // below), so trusting a confirmed NHTSA match never risks saving bad data even
+  // when Claude itself wasn't fully confident in the read.
   let make = extracted.make || null;
   let model = extracted.model || null;
   let year = extracted.year || null;
   let fuelType = extracted.fuel_type || null;
   let engineSize = extracted.engine_size || null;
+  let nhtsaConfirmed = false;
 
   if (extracted.chassis_number && isVIN(extracted.chassis_number)) {
     const decoded = await decodeVIN(extracted.chassis_number.toUpperCase());
@@ -482,7 +484,18 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
       year = decoded.year;
       fuelType = decoded.fuel_type;
       engineSize = decoded.engine;
+      nhtsaConfirmed = true;
     }
+  }
+
+  if (!extracted.valid && !nhtsaConfirmed) {
+    // Claude's `reason` is logged for debugging only — it's a verbose, technical
+    // explanation (e.g. "text orientation is diagonal and legibility is compromised")
+    // never meant for the customer to see; the doc's fallback message is a clean,
+    // generic "I had trouble reading that image" with no exposed AI reasoning.
+    logger.info(`[VISION] Document extraction invalid for ${phone}: ${extracted.reason || 'no reason given'}`);
+    await sendRetryOrManualPrompt(phone, t.document.invalid());
+    return;
   }
 
   if (!make || !model) {
@@ -525,6 +538,9 @@ export async function processDocumentRetryChoice(phone: string, reply: string): 
 
   if (r.includes('manual') || r === '2' || r.includes('btn_1')) {
     await clearDocumentRetryChoice(phone);
+    // The original VIN/photo/manual choice is resolved now too — clear it so it can't
+    // linger and interfere with a later message (see whatsapp.controller.ts stage 3.6).
+    await clearVehicleIdChoiceShown(phone);
     await startManualCollection(phone, 'awaiting_make');
     await sendWhatsAppMessage(phone, t.manual.askMakePrompt());
     return true;
@@ -532,6 +548,8 @@ export async function processDocumentRetryChoice(phone: string, reply: string): 
 
   if (r.includes('tentar') || r.includes('try again') || r.includes('novamente') || r === '1' || r.includes('btn_0')) {
     await clearDocumentRetryChoice(phone);
+    // Deliberately NOT clearing vehicleIdChoiceShown here — still waiting on a photo,
+    // and needsVehicleId alone (still true) keeps stage 5's image routing open regardless.
     await sendWhatsAppMessage(phone, t.document.askPhotoPrompt());
     return true;
   }

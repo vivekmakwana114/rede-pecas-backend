@@ -11,6 +11,7 @@ export interface OrderInfo {
   created_at: Date;
   time: string;
   has_proof: boolean;
+  payment_proof_media_type?: string | null;
   payment_method?: string;
   requires_proof?: boolean;
   service_name?: string;
@@ -126,6 +127,7 @@ export async function getOrdersPendingApproval(): Promise<OrderInfo[]> {
       o.payment_method,
       to_char(o.created_at, 'HH24:MI') AS time,
       (o.payment_proof_media_id IS NOT NULL) AS has_proof,
+      o.payment_proof_media_type,
       (o.payment_method = 'bank_transfer' OR o.payment_method = 'bank_deposit' OR o.payment_method = 'multicaixa_express') AS requires_proof
     FROM orders o
     JOIN products p ON p.id = o.product_id
@@ -184,6 +186,35 @@ export async function markCourtesyMessageSent(orderNumber: string): Promise<void
 }
 
 /**
+ * Orders that have been sitting in awaiting_stock_confirmation past
+ * `minMinutes` and haven't had the admin SLA-reminder WhatsApp nudge sent yet —
+ * polled by the sweep in product.service.ts. Same shape as
+ * getOrdersAwaitingCourtesyMessage above, joined for the product name and
+ * customer's first name needed in the reminder text.
+ */
+export async function getOrdersAwaitingAdminReminder(minMinutes: number): Promise<{ number: string; product_name: string; customer_first_name: string }[]> {
+  const { rows } = await db.query(
+    `SELECT o.number, p.name AS product_name,
+            COALESCE(split_part(c.name, ' ', 1), 'Cliente') AS customer_first_name
+     FROM orders o
+     JOIN products p ON p.id = o.product_id
+     LEFT JOIN customers c ON c.phone = o.customer_phone
+     WHERE o.status = 'awaiting_stock_confirmation'
+       AND o.stock_confirmation_admin_reminder_sent = false
+       AND o.created_at < NOW() - ($1 || ' minutes')::interval`,
+    [minMinutes]
+  );
+  return rows;
+}
+
+export async function markAdminReminderSent(orderNumber: string): Promise<void> {
+  await db.query(
+    `UPDATE orders SET stock_confirmation_admin_reminder_sent = true WHERE number = $1`,
+    [orderNumber]
+  );
+}
+
+/**
  * Retrieves orders approved on the current date.
  */
 export async function getOrdersApprovedToday(): Promise<any[]> {
@@ -192,12 +223,38 @@ export async function getOrdersApprovedToday(): Promise<any[]> {
       o.number, o.customer_phone AS customer,
       o.unit_price AS price,
       p.name AS part,
-      to_char(o.approved_at, 'HH24:MI') AS time
+      to_char(o.approved_at, 'HH24:MI') AS time,
+      (o.payment_proof_media_id IS NOT NULL) AS has_proof,
+      o.payment_proof_media_type
     FROM orders o
     JOIN products p ON p.id = o.product_id
     WHERE o.status = 'approved'
       AND o.approved_at::date = CURRENT_DATE
     ORDER BY o.approved_at DESC
+  `);
+  return rows;
+}
+
+/**
+ * Retrieves orders rejected on the current date. There's no dedicated
+ * rejected_at column (rejection just sets status via updateOrderStatus),
+ * so updated_at is used as the rejection timestamp — same idiom as
+ * approved_at above for the approved queue.
+ */
+export async function getOrdersRejectedToday(): Promise<any[]> {
+  const { rows } = await db.query(`
+    SELECT
+      o.number, o.customer_phone AS customer,
+      o.unit_price AS price,
+      p.name AS part,
+      to_char(o.updated_at, 'HH24:MI') AS time,
+      (o.payment_proof_media_id IS NOT NULL) AS has_proof,
+      o.payment_proof_media_type
+    FROM orders o
+    JOIN products p ON p.id = o.product_id
+    WHERE o.status = 'rejected'
+      AND o.updated_at::date = CURRENT_DATE
+    ORDER BY o.updated_at DESC
   `);
   return rows;
 }

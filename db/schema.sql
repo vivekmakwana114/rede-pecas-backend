@@ -1,9 +1,11 @@
 -- ============================================================
 -- Rede Peças — Database Schema (PostgreSQL)
 -- Ported from the original prototype (rede-pecas-agent/schema.sql)
--- with identifiers translated to English. Data content (part
--- names, synonyms) remains Portuguese — hence the 'portuguese'
--- full-text search configuration.
+-- with identifiers translated to English. Data content (part names,
+-- synonyms) was originally Portuguese, hence the original 'portuguese'
+-- full-text search configuration — as of 2026-07-14 the project is being
+-- built/tested in English for now (see CLAUDE.md "Language split"), so
+-- search_vector below uses the 'english' config to match.
 -- ============================================================
 
 -- REQUIRED EXTENSIONS
@@ -99,10 +101,11 @@ CREATE TABLE IF NOT EXISTS products (
   -- Required by the supplier batch-import upsert
   UNIQUE (supplier_id, reference),
 
-  -- Full-text search index (auto-generated). Config stays
-  -- 'portuguese' because part data is in Portuguese.
+  -- Full-text search index (auto-generated). Config is 'english' for now
+  -- (2026-07-14) while catalog data is being entered in English — see the
+  -- file header comment and CLAUDE.md "Language split".
   search_vector    TSVECTOR GENERATED ALWAYS AS (
-    to_tsvector('portuguese',
+    to_tsvector('english',
       immutable_unaccent(name) || ' ' ||
       immutable_unaccent(COALESCE(brand, '')) || ' ' ||
       immutable_unaccent(COALESCE(reference, '')) || ' ' ||
@@ -120,6 +123,35 @@ ALTER TABLE products DROP COLUMN IF EXISTS waitlist_phones;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS service_offered BOOLEAN DEFAULT false;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS service_name TEXT;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS service_price NUMERIC(12,2);
+
+-- A generated column's expression can't be changed via ALTER COLUMN, so an
+-- existing database (created before the 'portuguese' -> 'english' switch
+-- above) needs search_vector dropped and re-added to pick up the new config.
+-- Safe to re-run: once it matches, this whole block is a same-definition
+-- drop+recreate (wasteful but harmless), not a no-op skip.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'products' AND column_name = 'search_vector'
+  ) AND (
+    SELECT pg_get_expr(adbin, adrelid) FROM pg_attrdef
+    WHERE adrelid = 'products'::regclass
+      AND adnum = (SELECT attnum FROM pg_attribute WHERE attrelid = 'products'::regclass AND attname = 'search_vector')
+  ) NOT LIKE '%english%' THEN
+    ALTER TABLE products DROP COLUMN search_vector;
+    ALTER TABLE products ADD COLUMN search_vector TSVECTOR GENERATED ALWAYS AS (
+      to_tsvector('english',
+        immutable_unaccent(name) || ' ' ||
+        immutable_unaccent(COALESCE(brand, '')) || ' ' ||
+        immutable_unaccent(COALESCE(reference, '')) || ' ' ||
+        immutable_unaccent(COALESCE(oem_reference, '')) || ' ' ||
+        immutable_unaccent(COALESCE(synonyms, '')) || ' ' ||
+        immutable_unaccent(COALESCE(category_keywords, ''))
+      )
+    ) STORED;
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_products_fts ON products USING GIN (search_vector);
 CREATE INDEX IF NOT EXISTS idx_products_supplier ON products (supplier_id);
@@ -174,6 +206,9 @@ CREATE TABLE IF NOT EXISTS orders (
   -- Set once the 20-minute "still confirming with the supplier" courtesy
   -- message has gone out, so the sweep in product.service.ts never resends it.
   stock_confirmation_courtesy_sent BOOLEAN DEFAULT false,
+  -- Set once the 15-minute admin-reminder WhatsApp nudge has gone out for this
+  -- order, so the sweep in product.service.ts never resends it.
+  stock_confirmation_admin_reminder_sent BOOLEAN DEFAULT false,
   created_at              TIMESTAMPTZ DEFAULT NOW(),
   updated_at              TIMESTAMPTZ DEFAULT NOW()
 );
@@ -183,6 +218,7 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_proof_media_type TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS service_name TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS service_price NUMERIC(12,2);
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS stock_confirmation_courtesy_sent BOOLEAN DEFAULT false;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS stock_confirmation_admin_reminder_sent BOOLEAN DEFAULT false;
 
 CREATE INDEX IF NOT EXISTS idx_orders_customer_phone ON orders (customer_phone);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
