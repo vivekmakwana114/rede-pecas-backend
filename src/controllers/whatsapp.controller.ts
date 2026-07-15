@@ -305,10 +305,27 @@ async function processMessageFlow(
   // as "no VIN available", start the deterministic manual collection instead of falling
   // through to product search with whatever text they sent (e.g. a mistyped/partial
   // VIN or a license plate, which isn't a valid 17-char VIN and isn't a part name either).
+  //
+  // A bare greeting must never be swallowed as that "no VIN available" text — vehicleIdChoiceShown
+  // stays true for up to 4h (VEHICLE_ID_CHOICE_TTL), so a customer who saw the "add another
+  // vehicle" choice buttons, didn't tap one, and just says "hi" later was silently becoming a
+  // fresh manual-collection row seeded with "Hi" as the make. Re-show whichever prompt actually
+  // applies instead: the vehicle-ID choice buttons if a vehicle is genuinely still missing, or —
+  // if the customer already has one and vehicleIdChoiceShown alone is why this fired — clear the
+  // lapsed flag and let stage 12 below treat it as an ordinary greeting.
   if (needsVehicleId || vehicleIdChoiceShown) {
-    await vehicleService.startManualCollection(phone, 'awaiting_make');
-    await sendWhatsAppMessage(phone, t.manual.askMakePrompt());
-    return;
+    if (GREETING_PATTERN.test(customerText.trim())) {
+      if (needsVehicleId) {
+        const firstName = customer.name?.split(' ')[0] || 'Cliente';
+        await sendWhatsAppButtons(phone, t.onboarding.resumeVehicleIdBody(firstName), t.onboarding.askVehicleIdButtons);
+        return;
+      }
+      await sessionService.clearVehicleIdChoiceShown(phone);
+    } else {
+      await vehicleService.startManualCollection(phone, 'awaiting_make');
+      await sendWhatsAppMessage(phone, t.manual.askMakePrompt());
+      return;
+    }
   }
 
   // 11. PRIORITY: Active payment status waiting for inputs
