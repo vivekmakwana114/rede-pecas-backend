@@ -481,7 +481,11 @@ export async function processServiceOptIn(
   if (isYes) {
     await addServiceToOrder(offer.orderNumber, offer.serviceName, offer.servicePrice);
     await clearPendingServiceOffer(phone);
-    const total = offer.product.price + offer.servicePrice;
+    // Both sides come straight from a NUMERIC DB column via pg, which returns
+    // those as strings, not numbers — "+" on two strings concatenates
+    // ("15650.00" + "5000.00" -> "15650.005000.00") instead of summing, and
+    // formatPrice's Number() coercion then fails to parse that as NaN.
+    const total = Number(offer.product.price) + Number(offer.servicePrice);
     await sendWhatsAppMessage(phone, t.agent.serviceAdded(offer.serviceName, formatPrice(total)));
     await requestStockConfirmation(phone, offer.orderNumber);
     return true;
