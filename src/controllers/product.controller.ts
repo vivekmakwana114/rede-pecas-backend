@@ -2,6 +2,25 @@ import { Request, Response } from 'express';
 import { catchAsync } from '../utils/catchAsync.js';
 import { ApiError } from '../utils/ApiError.js';
 import * as productService from '../services/product.service.js';
+import { getAllActiveProducts } from '../models/product.model.js';
+
+/**
+ * Lists every active product (joined with its supplier) for the admin
+ * panel's inventory grid — unfiltered, unpaginated, matching the current
+ * catalog size (low hundreds of rows). Revisit with pagination/filtering if
+ * the catalog grows enough to make that a problem.
+ */
+export const getProductsHandler = catchAsync(async (req: Request, res: Response) => {
+  const products = await getAllActiveProducts();
+
+  res.status(200).json({
+    success: true,
+    message: 'Products retrieved.',
+    code: 200,
+    data: products,
+    meta: { timestamp: new Date().toISOString() },
+  });
+});
 
 /**
  * Bulk imports spreadsheet rows mapped to supplier items. `supplierId` is the

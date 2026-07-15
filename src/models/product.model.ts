@@ -97,6 +97,34 @@ export async function addToProductWaitlist(productId: number, phone: string): Pr
 }
 
 /**
+ * Fetches every active product, joined with its supplier — backs the admin
+ * panel's inventory grid (GET /admin/products). Newest first, matching the
+ * other admin list endpoints' default ordering (e.g. orders).
+ */
+export async function getAllActiveProducts(): Promise<Product[]> {
+  const { rows } = await db.query(
+    `SELECT
+      p.id,
+      p.name,
+      p.reference,
+      p.price,
+      p.quantity,
+      p.delivery_time,
+      p.service_offered,
+      p.service_name,
+      p.service_price,
+      p.supplier_id,
+      s.name AS supplier,
+      s.rating AS supplier_rating
+    FROM products p
+    JOIN suppliers s ON s.id = p.supplier_id
+    WHERE p.active = true
+    ORDER BY p.updated_at DESC`
+  );
+  return rows;
+}
+
+/**
  * Fetches a single active product by id, joined with its supplier — used both
  * to build the restock-notification message (price/supplier) and to actually
  * create the order once the customer taps "Order now".
