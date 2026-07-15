@@ -56,13 +56,3 @@ export const importProductsBatch: ValidationSchema = {
   }),
 };
 
-export const importProductsFile: ValidationSchema = {
-  body: Joi.object().keys({
-    // Fallback supplier for any row in the file without its own supplier
-    // columns — optional, since a file can carry a per-row supplier instead.
-    supplierId: Joi.number().integer(),
-    supplierName: Joi.string(),
-    supplierNif: Joi.string().allow(''),
-    supplierProvince: Joi.string().allow(''),
-  }),
-};

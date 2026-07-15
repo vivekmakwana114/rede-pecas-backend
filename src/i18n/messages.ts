@@ -189,6 +189,25 @@ interface Messages {
     unavailableAck: (orderNumber: string) => string;
     alreadyHandled: (orderNumber: string) => string;
     useButtonsPrompt: () => string;
+    approvePaymentButtonLabel: () => string;
+    rejectPaymentButtonLabel: () => string;
+    paymentApprovedAck: (orderNumber: string) => string;
+    paymentRejectedAck: (orderNumber: string) => string;
+    inPersonPaymentRequested: (
+      orderNumber: string,
+      methodName: string,
+      amount: string,
+      customerName: string,
+      customerPhone: string,
+      address: string
+    ) => string;
+    paymentProofReceived: (
+      orderNumber: string,
+      methodName: string,
+      amount: string,
+      customerName: string,
+      customerPhone: string
+    ) => string;
   };
 }
 
@@ -541,19 +560,40 @@ const pt: Messages = {
       `Valor: ${amount}\n` +
       `Cliente: ${customerName} · ${customerPhone}\n\n` +
       `⚠️ Por favor confirma com o fornecedor que este artigo está fisicamente disponível antes do cliente pagar.\n\n` +
-      `🔗 ${config.appUrl}/admin/orders`,
+      `📲 Consulta a plataforma admin da Rede Peças.`,
     confirmButtonLabel: () => '✅ Confirmado',
     unavailableButtonLabel: () => '⚠️ Indisponível',
     reminderBody: (customerName, productName, orderNumber) =>
       `⏰ *LEMBRETE — Cliente à espera*\n\n` +
       `${customerName} está à espera há 15 minutos pela confirmação de stock de:\n\n` +
       `${productName} · ${orderNumber}\n\n` +
-      `Por favor confirma ou recusa o mais rápido possível:\n` +
-      `🔗 ${config.appUrl}/admin/orders`,
+      `Por favor confirma ou recusa o mais rápido possível na plataforma admin da Rede Peças.`,
     confirmedAck: (orderNumber) => `✅ Confirmado! Factura proforma enviada ao cliente do pedido *${orderNumber}*.`,
     unavailableAck: (orderNumber) => `⚠️ Pedido *${orderNumber}* marcado como indisponível. Cliente foi notificado.`,
     alreadyHandled: (orderNumber) => `O pedido *${orderNumber}* já foi tratado — nada a fazer.`,
     useButtonsPrompt: () => `Por favor usa os botões na mensagem de confirmação de stock. 👆`,
+    approvePaymentButtonLabel: () => '✅ Aprovar',
+    rejectPaymentButtonLabel: () => '❌ Rejeitar',
+    paymentApprovedAck: (orderNumber) => `✅ Aprovado! Fatura enviada ao cliente do pedido *${orderNumber}*.`,
+    paymentRejectedAck: (orderNumber) => `❌ Pedido *${orderNumber}* rejeitado. Cliente foi notificado.`,
+    inPersonPaymentRequested: (orderNumber, methodName, amount, customerName, customerPhone, address) =>
+      `💳 *PAGAMENTO PRESENCIAL SOLICITADO*\n\n` +
+      `Pedido: *${orderNumber}*\n` +
+      `Método: ${methodName}\n` +
+      `Valor: ${amount}\n` +
+      `Cliente: ${customerName} · ${customerPhone}\n` +
+      `Endereço: ${address}\n\n` +
+      `Leva o terminal até ao cliente,\n` +
+      `Confirma o pagamento na plataforma admin da Rede Peças assim que terminares.`,
+    paymentProofReceived: (orderNumber, methodName, amount, customerName, customerPhone) =>
+      `🧾 *COMPROVATIVO DE PAGAMENTO RECEBIDO*\n\n` +
+      `Pedido: *${orderNumber}*\n` +
+      `Método: ${methodName}\n` +
+      `Valor: ${amount}\n` +
+      `Cliente: ${customerName} · ${customerPhone}\n\n` +
+      `Revê o comprovativo em anexo e depois:\n` +
+      `✅ Aprovar e Emitir Fatura\n` +
+      `❌ Rejeitar — Pagamento Inválido`,
   },
 };
 
@@ -910,19 +950,40 @@ const en: Messages = {
       `Amount: ${amount}\n` +
       `Customer: ${customerName} · ${customerPhone}\n\n` +
       `⚠️ Please confirm with the supplier that this item is physically available before the customer pays.\n\n` +
-      `🔗 ${config.appUrl}/admin/orders`,
+      `📲 Check the Rede Peças admin platform.`,
     confirmButtonLabel: () => '✅ Confirmed',
     unavailableButtonLabel: () => '⚠️ Unavailable',
     reminderBody: (customerName, productName, orderNumber) =>
       `⏰ *REMINDER — Customer is waiting*\n\n` +
       `${customerName} has been waiting 15 minutes for stock confirmation on:\n\n` +
       `${productName} · ${orderNumber}\n\n` +
-      `Please confirm or decline ASAP:\n` +
-      `🔗 ${config.appUrl}/admin/orders`,
+      `Please confirm or decline ASAP on the Rede Peças admin platform.`,
     confirmedAck: (orderNumber) => `✅ Confirmed! Proforma sent to the customer for order *${orderNumber}*.`,
     unavailableAck: (orderNumber) => `⚠️ Order *${orderNumber}* marked unavailable. Customer has been notified.`,
     alreadyHandled: (orderNumber) => `Order *${orderNumber}* was already handled — nothing to do.`,
     useButtonsPrompt: () => `Please use the buttons on the stock-confirmation message. 👆`,
+    approvePaymentButtonLabel: () => '✅ Approve',
+    rejectPaymentButtonLabel: () => '❌ Reject',
+    paymentApprovedAck: (orderNumber) => `✅ Approved! Invoice sent to the customer for order *${orderNumber}*.`,
+    paymentRejectedAck: (orderNumber) => `❌ Order *${orderNumber}* rejected. Customer has been notified.`,
+    inPersonPaymentRequested: (orderNumber, methodName, amount, customerName, customerPhone, address) =>
+      `💳 *IN-PERSON PAYMENT REQUESTED*\n\n` +
+      `Order: *${orderNumber}*\n` +
+      `Method: ${methodName}\n` +
+      `Amount: ${amount}\n` +
+      `Customer: ${customerName} · ${customerPhone}\n` +
+      `Address: ${address}\n\n` +
+      `Take the terminal to the customer,\n` +
+      `Confirm payment on the Rede Peças admin platform when done.`,
+    paymentProofReceived: (orderNumber, methodName, amount, customerName, customerPhone) =>
+      `🧾 *PAYMENT PROOF RECEIVED*\n\n` +
+      `Order: *${orderNumber}*\n` +
+      `Method: ${methodName}\n` +
+      `Amount: ${amount}\n` +
+      `Customer: ${customerName} · ${customerPhone}\n\n` +
+      `Review the attached proof, then:\n` +
+      `✅ Approve & Issue Invoice\n` +
+      `❌ Reject — Invalid Payment`,
   },
 };
 

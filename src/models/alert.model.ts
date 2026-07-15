@@ -10,10 +10,12 @@ export interface AdminAlert {
 }
 
 /**
- * Records an admin-panel notification — replaces the old "push a WhatsApp
- * message to config.admin.staffPhone" pattern for payment-proof-received and
- * in-person-payment-requested events. The admin panel polls getAlerts()
- * instead of receiving a WhatsApp push.
+ * Records an admin-panel notification for payment-proof-received and
+ * in-person-payment-requested events — the admin panel polls getAlerts()
+ * for these. Replaced the old single-number "push a WhatsApp message to
+ * config.admin.staffPhone" pattern; payment.service.ts separately pushes a
+ * WhatsApp message to every row in admin_users for these same two events, so
+ * neither surface depends on the other.
  */
 export async function createAlert(type: string, orderNumber: string, message: string): Promise<void> {
   await db.query(

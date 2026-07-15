@@ -146,7 +146,7 @@ export async function sendProformaWhatsApp(
   pdfPath: string,
   orderNumber: string
 ): Promise<void> {
-  const API_URL = `https://graph.facebook.com/v19.0/${config.whatsapp.phoneNumberId}`;
+  const API_URL = `${config.whatsapp.graphApiUrl}/${config.whatsapp.phoneNumberId}`;
   const token = config.whatsapp.token;
 
   try {
@@ -285,7 +285,7 @@ export async function sendFinalInvoiceWhatsApp(
   orderNumber: string,
   customerName: string
 ): Promise<void> {
-  const API_URL = `https://graph.facebook.com/v19.0/${config.whatsapp.phoneNumberId}`;
+  const API_URL = `${config.whatsapp.graphApiUrl}/${config.whatsapp.phoneNumberId}`;
   const token = config.whatsapp.token;
 
   try {

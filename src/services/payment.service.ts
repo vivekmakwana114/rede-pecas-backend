@@ -3,9 +3,10 @@ import { logger } from '../config/logger.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons, downloadWhatsAppMedia } from './whatsapp.service.js';
 import { generatePrimaveraInvoice, sendFinalInvoiceWhatsApp } from './pdf.service.js';
 import { extractPaymentProofData } from './ai.service.js';
-import { getOrderByNumber, getLatestOrderByStatus } from '../models/order.model.js';
+import { getOrderByNumber, getLatestOrderByStatus, updateOrderStatus } from '../models/order.model.js';
 import { getSupplierPhoneById } from '../models/supplier.model.js';
 import { getCustomerByPhone } from '../models/customer.model.js';
+import { getAllAdmins, getAdminByPhone } from '../models/adminUser.model.js';
 import { createAlert } from '../models/alert.model.js';
 import { formatPrice } from '../utils/helpers.js';
 import { t } from '../i18n/messages.js';
@@ -246,7 +247,90 @@ export async function processPaymentProof(
     `Comprovativo de pagamento recebido para o pedido ${number} (${methodName}, ${formatPrice(amount)}) — cliente ${phone}.`
   );
 
+  await notifyAdminsPaymentProofReceived(number, phone, mediaId, mediaType, amount, methodName, customerName);
+
   return true;
+}
+
+/**
+ * Forwards the customer's just-validated payment-proof photo/PDF to every
+ * admin's own WhatsApp number as an interactive message — the proof as the
+ * header, order/amount/customer details as the body, and Approve/Reject
+ * buttons attached directly so an admin can act from WhatsApp itself instead
+ * of switching to the panel (see processAdminPaymentReply). In addition to
+ * the admin_alerts row created by the caller, since the panel-only alert feed
+ * means nobody gets pinged until they happen to check it. Reuses the mediaId
+ * Meta already issued for the incoming proof instead of re-uploading the
+ * downloaded bytes. Best-effort per admin — one failed send must not block
+ * the rest or fail the payment-proof flow itself.
+ */
+async function notifyAdminsPaymentProofReceived(
+  orderNumber: string,
+  customerPhone: string,
+  mediaId: string,
+  mediaType: 'image' | 'document',
+  amount: number,
+  methodName: string,
+  customerName: string
+): Promise<void> {
+  const body = t.admin.paymentProofReceived(orderNumber, methodName, formatPrice(amount), customerName, customerPhone);
+  const admins = await getAllAdmins();
+
+  for (const admin of admins) {
+    try {
+      await sendWhatsAppButtons(
+        admin.phone,
+        body,
+        [t.admin.approvePaymentButtonLabel(), t.admin.rejectPaymentButtonLabel()],
+        [`admin_approve_payment_${orderNumber}`, `admin_reject_payment_${orderNumber}`],
+        { type: mediaType, id: mediaId }
+      );
+    } catch (error: any) {
+      logger.error(`Error forwarding payment proof for order ${orderNumber} to admin ${admin.phone}: ${error.message}`);
+    }
+  }
+}
+
+/**
+ * Handles a reply from a number in admin_users to the payment-proof-received
+ * message above — the WhatsApp-native equivalent of the admin panel's
+ * POST /orders/:number/review (order.controller.ts's reviewOrderHandler),
+ * so either surface reaches the same approve/reject outcome. Button-only,
+ * same reasoning as processAdminStockReply in product.service.ts: the order
+ * number is decoded straight from the button's reply id
+ * (admin_approve_payment_${orderNumber} / admin_reject_payment_${orderNumber}),
+ * never from free text. Re-checks the order's current status before acting
+ * so a double-tap — or the admin panel and a WhatsApp tap racing each other —
+ * is a safe no-op on the second attempt, not a duplicate invoice/rejection.
+ */
+export async function processAdminPaymentReply(adminPhone: string, buttonReplyId: string | null): Promise<void> {
+  const match = buttonReplyId?.match(/^admin_(approve|reject)_payment_(.+)$/);
+  if (!match) {
+    await sendWhatsAppMessage(adminPhone, t.admin.useButtonsPrompt());
+    return;
+  }
+
+  const [, action, orderNumber] = match;
+  logger.info(`[ADMIN PAYMENT] Admin ${adminPhone} tapped "${action}" for order ${orderNumber}`);
+
+  const order = await getOrderByNumber(orderNumber);
+  if (!order || order.status !== 'payment_proof_received') {
+    logger.debug(`[ADMIN PAYMENT] Order ${orderNumber} already handled (status=${order?.status ?? 'not found'}) — telling ${adminPhone}`);
+    await sendWhatsAppMessage(adminPhone, t.admin.alreadyHandled(orderNumber));
+    return;
+  }
+
+  if (action === 'approve') {
+    const admin = await getAdminByPhone(adminPhone);
+    await approveOrder(orderNumber, admin?.id ?? 0);
+    await sendWhatsAppMessage(adminPhone, t.admin.paymentApprovedAck(orderNumber));
+    logger.info(`[ADMIN PAYMENT] Order ${orderNumber} approved by ${adminPhone} — invoice sent to customer`);
+  } else {
+    await updateOrderStatus(orderNumber, 'rejected');
+    await sendWhatsAppMessage(order.customer_phone, t.order.rejected(orderNumber));
+    await sendWhatsAppMessage(adminPhone, t.admin.paymentRejectedAck(orderNumber));
+    logger.info(`[ADMIN PAYMENT] Order ${orderNumber} rejected by ${adminPhone} — customer notified`);
+  }
 }
 
 /**
@@ -298,9 +382,12 @@ export async function confirmInPersonPayment(orderNumber: string, employeeId: nu
 }
 
 /**
- * Alerts the admin panel about a physical payment request (mobile POS or cash
- * on delivery) so staff can arrange it — no WhatsApp push to the admin's own
- * phone, this lands in the admin alerts feed instead.
+ * Alerts staff about a physical payment request (mobile POS or cash on
+ * delivery) so they can arrange it: records it in the admin alerts feed, and
+ * also pushes the details straight to every admin's own WhatsApp number —
+ * the alerts feed alone means nobody gets pinged until they happen to check
+ * the panel, and this needs a terminal taken to the customer promptly.
+ * Best-effort per admin — one failed send must not block the rest.
  */
 async function notifyAgentInPersonPayment(
   orderNumber: string,
@@ -313,6 +400,28 @@ async function notifyAgentInPersonPayment(
     orderNumber,
     `Pagamento presencial solicitado para o pedido ${orderNumber} (${method.name}, ${formatPrice(amount)}) — cliente ${customerPhone}.`
   );
+
+  const customer = await getCustomerByPhone(customerPhone);
+  const customerName = customer?.name?.split(' ')[0] || 'Cliente';
+  const address = customer?.address || 'N/D';
+
+  const body = t.admin.inPersonPaymentRequested(
+    orderNumber,
+    method.name,
+    formatPrice(amount),
+    customerName,
+    customerPhone,
+    address
+  );
+
+  const admins = await getAllAdmins();
+  for (const admin of admins) {
+    try {
+      await sendWhatsAppMessage(admin.phone, body);
+    } catch (error: any) {
+      logger.error(`Error notifying admin ${admin.phone} about in-person payment for order ${orderNumber}: ${error.message}`);
+    }
+  }
 }
 
 /**
