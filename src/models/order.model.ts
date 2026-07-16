@@ -259,6 +259,130 @@ export async function getOrdersRejectedToday(): Promise<any[]> {
   return rows;
 }
 
+export type AnalyticsPeriod = 'daily' | 'monthly' | 'yearly';
+
+export interface AnalyticsPoint {
+  label: string;
+  revenue: string;
+  pending: number;
+  approved: number;
+  rejected: number;
+  stockConfirmation: number;
+}
+
+// Range/bucket shape per period for the admin dashboard charts — daily buckets
+// by hour (today), monthly by day (this calendar month), yearly by month
+// (this calendar year). rangeStartExpr/rangeEndExpr are trusted SQL snippets
+// (not user input — period is constrained to these three keys by the Joi
+// validation before this is ever called), interpolated directly into the
+// query text since date/interval expressions can't be bound as query params.
+const ANALYTICS_PERIOD_CONFIG: Record<AnalyticsPeriod, {
+  rangeStartExpr: string;
+  rangeEndExpr: string;
+  step: string;
+  truncUnit: string;
+  labelFormat: string;
+}> = {
+  daily: {
+    rangeStartExpr: `date_trunc('day', NOW())`,
+    rangeEndExpr: `date_trunc('day', NOW()) + interval '23 hours'`,
+    step: '1 hour',
+    truncUnit: 'hour',
+    labelFormat: 'HH24:00',
+  },
+  monthly: {
+    rangeStartExpr: `date_trunc('month', NOW())`,
+    rangeEndExpr: `date_trunc('month', NOW()) + interval '1 month' - interval '1 day'`,
+    step: '1 day',
+    truncUnit: 'day',
+    labelFormat: 'DD Mon',
+  },
+  yearly: {
+    rangeStartExpr: `date_trunc('year', NOW())`,
+    rangeEndExpr: `date_trunc('year', NOW()) + interval '11 months'`,
+    step: '1 month',
+    truncUnit: 'month',
+    labelFormat: 'Mon',
+  },
+};
+
+/**
+ * Buckets orders into one point per hour/day/month (depending on `period`)
+ * for the admin dashboard's revenue/orders charts. Every bucket in the range
+ * is included even when empty (0 revenue, 0 counts) via the generate_series
+ * CTE left-joined to the actual order rows, so the X axis is always a
+ * complete, evenly-spaced today/this-month/this-year — not just the hours/
+ * days/months that happen to have orders.
+ *
+ * Bucketed by created_at (when the order was placed), not approved_at/
+ * updated_at — keeps both charts on the same X axis and revenue attributed
+ * to when the sale started, not when the admin got around to approving it.
+ *
+ * revenue sums unit_price only (not service_price), matching the existing
+ * "Revenue (Approved)" convention elsewhere (OrderInfo.price / StatsGrid).
+ * stock_unavailable and cancelled orders are excluded from every status
+ * bucket — same as the live /orders queues, which also drop them.
+ */
+export async function getOrderAnalytics(period: AnalyticsPeriod): Promise<AnalyticsPoint[]> {
+  const { rangeStartExpr, rangeEndExpr, step, truncUnit, labelFormat } = ANALYTICS_PERIOD_CONFIG[period];
+
+  const { rows } = await db.query(
+    `WITH buckets AS (
+       SELECT generate_series(${rangeStartExpr}, ${rangeEndExpr}, $1::interval) AS bucket_start
+     ),
+     order_stats AS (
+       SELECT date_trunc('${truncUnit}', created_at) AS bucket_start, status, unit_price
+       FROM orders
+       WHERE created_at >= ${rangeStartExpr}
+         AND created_at < ${rangeEndExpr} + $1::interval
+     )
+     SELECT
+       to_char(b.bucket_start, $2) AS label,
+       COALESCE(SUM(o.unit_price) FILTER (WHERE o.status = 'approved'), 0) AS revenue,
+       COUNT(*) FILTER (WHERE o.status = 'approved')::int AS approved,
+       COUNT(*) FILTER (WHERE o.status = 'rejected')::int AS rejected,
+       COUNT(*) FILTER (WHERE o.status = 'awaiting_stock_confirmation')::int AS "stockConfirmation",
+       COUNT(*) FILTER (
+         WHERE o.status NOT IN ('approved', 'rejected', 'awaiting_stock_confirmation', 'cancelled', 'stock_unavailable')
+       )::int AS pending
+     FROM buckets b
+     LEFT JOIN order_stats o ON o.bucket_start = b.bucket_start
+     GROUP BY b.bucket_start
+     ORDER BY b.bucket_start`,
+    [step, labelFormat]
+  );
+
+  return rows;
+}
+
+export interface OrderStats {
+  totalOrders: number;
+  approvedOrders: number;
+  rejectedOrders: number;
+  approvedRevenue: string;
+}
+
+/**
+ * All-time platform totals for the dashboard's stat cards — deliberately
+ * separate from getOrdersApprovedToday/getOrdersRejectedToday above, which
+ * are scoped to CURRENT_DATE on purpose for the Orders queue page's daily
+ * log. totalOrders counts every order row regardless of status (including
+ * cancelled/stock_unavailable — still a real order that was placed), while
+ * approvedRevenue sums unit_price only, matching the existing
+ * "Revenue (Approved)" convention (OrderInfo.price / getOrderAnalytics).
+ */
+export async function getOrderStats(): Promise<OrderStats> {
+  const { rows } = await db.query(`
+    SELECT
+      COUNT(*)::int AS "totalOrders",
+      COUNT(*) FILTER (WHERE status = 'approved')::int AS "approvedOrders",
+      COUNT(*) FILTER (WHERE status = 'rejected')::int AS "rejectedOrders",
+      COALESCE(SUM(unit_price) FILTER (WHERE status = 'approved'), 0) AS "approvedRevenue"
+    FROM orders
+  `);
+  return rows[0];
+}
+
 /**
  * Details of a single order.
  */

@@ -8,13 +8,8 @@ import * as sessionService from '../services/session.service.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons } from '../services/whatsapp.service.js';
 import { getAdminByPhone } from '../models/adminUser.model.js';
 import { config } from '../config/config.js';
-import { t } from '../i18n/messages.js';
-
-// Bare greetings (PT/EN) never get treated as a part search, even once the customer's
-// already been invited to state one this session — they must always get the
-// deterministic "what part do you need" prompt instead, so a stray "Hi"/"Hey" doesn't
-// get sent into a nonsensical inventory search.
-const GREETING_PATTERN = /^(oi|ol[aá]|e\s*a[ií]|bom\s*dia|boa\s*tarde|boa\s*noite|hi|hello|hey+|yo)\b/i;
+import { getMessages, DEFAULT_LOCALE } from '../i18n/messages.js';
+import { GREETING_PATTERN } from '../utils/greeting.js';
 
 // Deterministic keyword trigger for reaching a human — there's no conversational AI left
 // to infer this from tone/intent, so it's a plain keyword match (PT/EN).
@@ -105,9 +100,17 @@ async function processMessageFlow(
     return;
   }
 
-  // 1. Get-or-create customer (handles pre-registration + welcome on first contact)
-  const customer = await customerService.getOrCreateCustomer(phone);
+  // 1. Get-or-create customer (handles pre-registration + welcome on first contact —
+  // customerText is passed through so a brand-new customer's locale can be detected
+  // from their very first message, see getOrCreateCustomer)
+  const customer = await customerService.getOrCreateCustomer(phone, customerText);
   if (!customer) return;
+
+  // Every customer-facing send below resolves messages via this instead of the
+  // fixed `t` import — customer.locale is detected once at first contact and
+  // never changes afterward (sticky), see the `locale` column comment in
+  // db/schema.sql.
+  const messages = getMessages(customer.locale ?? DEFAULT_LOCALE);
 
   // 2. Session-freshness check: has this number been active in the last 4h? Touched
   // unconditionally on every message so the *next* message is treated as a live answer.
@@ -137,7 +140,7 @@ async function processMessageFlow(
     // payment-proof photo, which must still reach processPaymentProof below rather
     // than being swallowed by this short-circuit.
     const firstName = customer.name?.split(' ')[0] || 'Cliente';
-    await sendWhatsAppMessage(phone, t.onboarding.welcomeBack(firstName));
+    await sendWhatsAppMessage(phone, messages.onboarding.welcomeBack(firstName));
     if (!mediaId) {
       const askedPart = await vehicleService.sendAskPartPrompt(phone);
       if (askedPart) return;
@@ -152,7 +155,7 @@ async function processMessageFlow(
     // the customer genuinely has no vehicle on file yet — never reuse askVehicleIdBody here,
     // its "profile created" copy is only accurate right after registration completes.
     const firstName = customer.name?.split(' ')[0] || 'Cliente';
-    await sendWhatsAppButtons(phone, t.onboarding.resumeVehicleIdBody(firstName), t.onboarding.askVehicleIdButtons);
+    await sendWhatsAppButtons(phone, messages.onboarding.resumeVehicleIdBody(firstName), messages.onboarding.askVehicleIdButtons);
     return;
   }
 
@@ -317,13 +320,13 @@ async function processMessageFlow(
     if (GREETING_PATTERN.test(customerText.trim())) {
       if (needsVehicleId) {
         const firstName = customer.name?.split(' ')[0] || 'Cliente';
-        await sendWhatsAppButtons(phone, t.onboarding.resumeVehicleIdBody(firstName), t.onboarding.askVehicleIdButtons);
+        await sendWhatsAppButtons(phone, messages.onboarding.resumeVehicleIdBody(firstName), messages.onboarding.askVehicleIdButtons);
         return;
       }
       await sessionService.clearVehicleIdChoiceShown(phone);
     } else {
       await vehicleService.startManualCollection(phone, 'awaiting_make');
-      await sendWhatsAppMessage(phone, t.manual.askMakePrompt());
+      await sendWhatsAppMessage(phone, messages.manual.askMakePrompt());
       return;
     }
   }
@@ -369,7 +372,7 @@ async function processMessageFlow(
   // conversational AI left to infer this from tone/intent, so it only fires on an
   // exact keyword hit.
   if (HUMAN_HANDOFF_PATTERN.test(customerText)) {
-    await sendWhatsAppMessage(phone, t.agent.transferToHuman());
+    await sendWhatsAppMessage(phone, messages.agent.transferToHuman());
     logger.info(`[SUPPORT] Customer ${phone} requested human support.`);
     return;
   }

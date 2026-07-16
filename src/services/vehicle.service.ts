@@ -14,7 +14,7 @@ import {
 } from '../models/vehicle.model.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons, downloadWhatsAppMedia } from './whatsapp.service.js';
 import { extractDataWithClaudeVision, VisionData } from './ai.service.js';
-import { completeOnboardingIfNeeded, Customer } from './customer.service.js';
+import { completeOnboardingIfNeeded, resolveMessages, Customer } from './customer.service.js';
 import {
   markPartPromptSent,
   savePendingVehicleChoice,
@@ -28,7 +28,7 @@ import {
   markDocumentRetryChoiceShown,
   clearDocumentRetryChoice,
 } from './session.service.js';
-import { t } from '../i18n/messages.js';
+import { getMessages, DEFAULT_LOCALE } from '../i18n/messages.js';
 
 // Pure pass-through so the controller never imports vehicle.model.js directly
 export { getActiveManualCollection, startManualCollection };
@@ -48,19 +48,20 @@ export { getActiveManualCollection, startManualCollection };
  * confirmed.
  */
 export async function sendAskPartPrompt(phone: string, greeting?: { name: string }): Promise<boolean> {
+  const messages = await resolveMessages(phone);
   const vehicles = await getCustomerVehicles(phone);
   if (!vehicles.length) return false;
 
   if (vehicles.length === 1) {
     const v = vehicles[0];
-    const body = t.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year, greeting?.name);
-    await sendWhatsAppButtons(phone, body, [t.vehicleConfirm.addVehicleButton()]);
+    const body = messages.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year, greeting?.name);
+    await sendWhatsAppButtons(phone, body, [messages.vehicleConfirm.addVehicleButton()]);
     await markPartPromptSent(phone);
     return true;
   }
 
   await savePendingVehicleChoice(phone, vehicles.map(v => ({ id: v.id, make: v.make, model: v.model, year: v.year })));
-  const chooseBody = t.vehicleConfirm.chooseVehiclePrompt(vehicles, greeting?.name);
+  const chooseBody = messages.vehicleConfirm.chooseVehiclePrompt(vehicles, greeting?.name);
   await sendWhatsAppMessage(phone, chooseBody);
   return true;
 }
@@ -72,13 +73,14 @@ export async function sendAskPartPrompt(phone: string, greeting?: { name: string
  * normal "what part do you need" prompt for that specific vehicle.
  */
 export async function resolvePendingVehicleChoice(phone: string, reply: string): Promise<boolean> {
+  const messages = await resolveMessages(phone);
   const pending = await getPendingVehicleChoice(phone);
   if (!pending) return false;
 
   const idx = parseInt(reply.trim(), 10) - 1;
   const chosen = pending[idx];
   if (!chosen) {
-    await sendWhatsAppMessage(phone, t.vehicleConfirm.vehicleChoiceNotFound());
+    await sendWhatsAppMessage(phone, messages.vehicleConfirm.vehicleChoiceNotFound());
     return true;
   }
 
@@ -86,8 +88,8 @@ export async function resolvePendingVehicleChoice(phone: string, reply: string):
   await saveChosenVehicle(phone, chosen.id);
   await sendWhatsAppButtons(
     phone,
-    t.vehicleConfirm.confirmedAskPart(chosen.make, chosen.model, chosen.year),
-    [t.vehicleConfirm.addVehicleButton()]
+    messages.vehicleConfirm.confirmedAskPart(chosen.make, chosen.model, chosen.year),
+    [messages.vehicleConfirm.addVehicleButton()]
   );
   await markPartPromptSent(phone);
   return true;
@@ -122,7 +124,8 @@ export function isAddVehicleRequest(text: string): boolean {
  * in-progress row's id, so the existing vehicle(s) are untouched either way.
  */
 export async function startAddVehicleFlow(phone: string): Promise<void> {
-  await sendWhatsAppButtons(phone, t.vehicleConfirm.addVehicleBody(), t.onboarding.askVehicleIdButtons);
+  const messages = await resolveMessages(phone);
+  await sendWhatsAppButtons(phone, messages.vehicleConfirm.addVehicleBody(), messages.onboarding.askVehicleIdButtons);
   await markVehicleIdChoiceShown(phone);
 }
 
@@ -243,21 +246,22 @@ function translateFuelType(fuelType: string | null): string | null {
  * starts the step machine directly since there's nothing further to wait for.
  */
 export async function processVehicleIdOptionChoice(phone: string, reply: string): Promise<boolean> {
+  const messages = await resolveMessages(phone);
   const r = reply.toLowerCase();
 
   if (r.includes('vin')) {
-    await sendWhatsAppMessage(phone, t.vin.askVinPrompt());
+    await sendWhatsAppMessage(phone, messages.vin.askVinPrompt());
     return true;
   }
 
   if (r.includes('foto') || r.includes('photo') || r.includes('documento')) {
-    await sendWhatsAppMessage(phone, t.document.askPhotoPrompt());
+    await sendWhatsAppMessage(phone, messages.document.askPhotoPrompt());
     return true;
   }
 
   if (r.includes('manual')) {
     await startManualCollection(phone, 'awaiting_make');
-    await sendWhatsAppMessage(phone, t.manual.askMakePrompt());
+    await sendWhatsAppMessage(phone, messages.manual.askMakePrompt());
     return true;
   }
 
@@ -302,19 +306,20 @@ export async function processManualCollectionStep(
   reply: string,
   customer: Customer
 ): Promise<boolean> {
+  const messages = getMessages(customer.locale ?? DEFAULT_LOCALE);
   const r = reply.trim();
 
   if (collection.status === 'awaiting_make') {
     const make = capitalize(r);
     await updateManualCollection(collection.id, { make, status: 'awaiting_model' });
-    await sendWhatsAppMessage(phone, t.manual.askModel(make));
+    await sendWhatsAppMessage(phone, messages.manual.askModel(make));
     return true;
   }
 
   if (collection.status === 'awaiting_model') {
     const model = capitalize(r);
     await updateManualCollection(collection.id, { model, status: 'awaiting_year' });
-    await sendWhatsAppMessage(phone, t.manual.askYear(collection.make, model));
+    await sendWhatsAppMessage(phone, messages.manual.askYear(collection.make, model));
     return true;
   }
 
@@ -324,12 +329,12 @@ export async function processManualCollectionStep(
     const currentYear = new Date().getFullYear();
 
     if (!yearClean || yearClean.length !== 4 || yearInt < 1980 || yearInt > currentYear + 1) {
-      await sendWhatsAppMessage(phone, t.manual.invalidYear());
+      await sendWhatsAppMessage(phone, messages.manual.invalidYear());
       return true;
     }
 
     await updateManualCollection(collection.id, { year: yearClean, status: 'awaiting_engine_number' });
-    await sendWhatsAppMessage(phone, t.manual.askEngineNumber(collection.make, collection.model, yearClean));
+    await sendWhatsAppMessage(phone, messages.manual.askEngineNumber(collection.make, collection.model, yearClean));
     return true;
   }
 
@@ -350,7 +355,7 @@ export async function processManualCollectionStep(
 
     const summary = [
       `🚗 *${collection.make} ${collection.model} ${collection.year}*`,
-      engineNumber ? t.manual.engineLabel(engineNumber) : null,
+      engineNumber ? messages.manual.engineLabel(engineNumber) : null,
     ].filter(Boolean).join('\n');
 
     // Identification concluded via the manual wizard — same reasoning as the VIN
@@ -359,7 +364,7 @@ export async function processManualCollectionStep(
 
     const completedOnboarding = await completeOnboardingIfNeeded(phone, customer, summary);
     if (!completedOnboarding) {
-      await sendWhatsAppButtons(phone, t.manual.collectionComplete(summary), [t.vehicleConfirm.addVehicleButton()]);
+      await sendWhatsAppButtons(phone, messages.manual.collectionComplete(summary), [messages.vehicleConfirm.addVehicleButton()]);
       await markPartPromptSent(phone);
     }
     return true;
@@ -372,6 +377,7 @@ export async function processManualCollectionStep(
  * Handles incoming VIN number parsing.
  */
 export async function processVIN(phone: string, vin: string): Promise<void> {
+  const messages = await resolveMessages(phone);
   const vinClean = vin.trim().toUpperCase();
 
   // Dedup check first — a VIN already confirmed on this customer's profile skips
@@ -384,20 +390,20 @@ export async function processVIN(phone: string, vin: string): Promise<void> {
       existing.fuel_type || null,
     ].filter(Boolean).join(' · ');
 
-    await sendWhatsAppButtons(phone, t.vin.alreadyRegistered(description), t.vin.alreadyRegisteredButtons);
+    await sendWhatsAppButtons(phone, messages.vin.alreadyRegistered(description), messages.vin.alreadyRegisteredButtons);
     await saveChosenVehicle(phone, existing.id);
     await markVinDuplicateChoiceShown(phone);
     return;
   }
 
-  await sendWhatsAppMessage(phone, t.vin.identifying());
+  await sendWhatsAppMessage(phone, messages.vin.identifying());
 
   const vehicle = await decodeVIN(vinClean);
 
   if (!vehicle) {
     // If API lookup fails, fallback to step-by-step manual inputs
     await startManualCollection(phone, 'awaiting_make', vinClean);
-    await sendWhatsAppMessage(phone, t.vin.decodeFailed());
+    await sendWhatsAppMessage(phone, messages.vin.decodeFailed());
     return;
   }
 
@@ -418,7 +424,7 @@ export async function processVIN(phone: string, vin: string): Promise<void> {
     vehicle.vehicle_type ? `${vehicle.vehicle_type}` : null,
   ].filter(Boolean).join(' · ');
 
-  await sendWhatsAppButtons(phone, t.vin.confirmBody(description), t.vin.confirmButtons);
+  await sendWhatsAppButtons(phone, messages.vin.confirmBody(description), messages.vin.confirmButtons);
 }
 
 /**
@@ -429,7 +435,8 @@ export async function processVIN(phone: string, vin: string): Promise<void> {
  * manual-collection catch-all.
  */
 async function sendRetryOrManualPrompt(phone: string, body: string): Promise<void> {
-  await sendWhatsAppButtons(phone, body, t.document.retryButtons);
+  const messages = await resolveMessages(phone);
+  await sendWhatsAppButtons(phone, body, messages.document.retryButtons);
   await markDocumentRetryChoiceShown(phone);
 }
 
@@ -440,11 +447,12 @@ async function sendRetryOrManualPrompt(phone: string, body: string): Promise<voi
  * and hands off to the same Sim/Não confirmation flow processVIN uses.
  */
 export async function processVehicleDocument(phone: string, mediaId: string): Promise<void> {
-  await sendWhatsAppMessage(phone, t.document.received());
+  const messages = await resolveMessages(phone);
+  await sendWhatsAppMessage(phone, messages.document.received());
 
   const imageBase64 = await downloadWhatsAppMedia(mediaId);
   if (!imageBase64) {
-    await sendRetryOrManualPrompt(phone, t.document.downloadFailed());
+    await sendRetryOrManualPrompt(phone, messages.document.downloadFailed());
     return;
   }
 
@@ -453,12 +461,12 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
     extracted = await extractDataWithClaudeVision(imageBase64);
   } catch (error: any) {
     logger.error(`[VISION] Error processing document for ${phone}: ${error.message}`);
-    await sendRetryOrManualPrompt(phone, t.document.processingError());
+    await sendRetryOrManualPrompt(phone, messages.document.processingError());
     return;
   }
 
   if (!extracted) {
-    await sendRetryOrManualPrompt(phone, t.document.notRecognized());
+    await sendRetryOrManualPrompt(phone, messages.document.notRecognized());
     return;
   }
 
@@ -494,12 +502,12 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
     // never meant for the customer to see; the doc's fallback message is a clean,
     // generic "I had trouble reading that image" with no exposed AI reasoning.
     logger.info(`[VISION] Document extraction invalid for ${phone}: ${extracted.reason || 'no reason given'}`);
-    await sendRetryOrManualPrompt(phone, t.document.invalid());
+    await sendRetryOrManualPrompt(phone, messages.document.invalid());
     return;
   }
 
   if (!make || !model) {
-    await sendRetryOrManualPrompt(phone, t.document.missingEssentialData());
+    await sendRetryOrManualPrompt(phone, messages.document.missingEssentialData());
     return;
   }
 
@@ -518,11 +526,11 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
     `${make} ${model}${year ? ` ${year}` : ''}`,
     engineSize || null,
     fuelType || null,
-    extracted.license_plate ? t.document.licensePlateLabel(extracted.license_plate) : null,
-    extracted.chassis_number ? t.document.chassisLabel(extracted.chassis_number.toUpperCase()) : null,
+    extracted.license_plate ? messages.document.licensePlateLabel(extracted.license_plate) : null,
+    extracted.chassis_number ? messages.document.chassisLabel(extracted.chassis_number.toUpperCase()) : null,
   ].filter(Boolean).join(' · ');
 
-  await sendWhatsAppButtons(phone, t.document.confirmBody(description), t.vin.confirmButtons);
+  await sendWhatsAppButtons(phone, messages.document.confirmBody(description), messages.vin.confirmButtons);
 }
 
 /**
@@ -534,6 +542,7 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
  * pipeline), so it doesn't misfire on unrelated free text.
  */
 export async function processDocumentRetryChoice(phone: string, reply: string): Promise<boolean> {
+  const messages = await resolveMessages(phone);
   const r = reply.toLowerCase();
 
   if (r.includes('manual') || r === '2' || r.includes('btn_1')) {
@@ -542,7 +551,7 @@ export async function processDocumentRetryChoice(phone: string, reply: string): 
     // linger and interfere with a later message (see whatsapp.controller.ts stage 3.6).
     await clearVehicleIdChoiceShown(phone);
     await startManualCollection(phone, 'awaiting_make');
-    await sendWhatsAppMessage(phone, t.manual.askMakePrompt());
+    await sendWhatsAppMessage(phone, messages.manual.askMakePrompt());
     return true;
   }
 
@@ -550,7 +559,7 @@ export async function processDocumentRetryChoice(phone: string, reply: string): 
     await clearDocumentRetryChoice(phone);
     // Deliberately NOT clearing vehicleIdChoiceShown here — still waiting on a photo,
     // and needsVehicleId alone (still true) keeps stage 5's image routing open regardless.
-    await sendWhatsAppMessage(phone, t.document.askPhotoPrompt());
+    await sendWhatsAppMessage(phone, messages.document.askPhotoPrompt());
     return true;
   }
 
@@ -561,6 +570,7 @@ export async function processDocumentRetryChoice(phone: string, reply: string): 
  * Processes vehicle quick confirmation buttons.
  */
 export async function processVehicleConfirmation(phone: string, reply: string, customer: Customer): Promise<boolean> {
+  const messages = getMessages(customer.locale ?? DEFAULT_LOCALE);
   const r = reply.toLowerCase();
 
   if (r.includes('sim') || r.includes('yes') || r.includes('✅') || r === '1' || r.includes('btn_0')) {
@@ -580,8 +590,8 @@ export async function processVehicleConfirmation(phone: string, reply: string, c
     if (!completedOnboarding) {
       await sendWhatsAppButtons(
         phone,
-        t.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year),
-        [t.vehicleConfirm.addVehicleButton()]
+        messages.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year),
+        [messages.vehicleConfirm.addVehicleButton()]
       );
       await markPartPromptSent(phone);
     }
@@ -603,7 +613,7 @@ export async function processVehicleConfirmation(phone: string, reply: string, c
     // combined "make model year" free-text reply, so asking for one led to a wasted
     // round-trip.
     await startManualCollection(phone, 'awaiting_make');
-    await sendWhatsAppMessage(phone, t.manual.askMakePrompt());
+    await sendWhatsAppMessage(phone, messages.manual.askMakePrompt());
     return true;
   }
 

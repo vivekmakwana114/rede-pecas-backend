@@ -28,6 +28,7 @@ import {
 import { getCustomerVehicles } from '../models/vehicle.model.js';
 import { getCustomerByPhone } from '../models/customer.model.js';
 import { getAllAdmins } from '../models/adminUser.model.js';
+import { resolveMessages } from './customer.service.js';
 import { sendWhatsAppMessage, sendWhatsAppList, sendWhatsAppButtons } from './whatsapp.service.js';
 import { generateProformaPDF, sendProformaWhatsApp } from './pdf.service.js';
 import { askPaymentMethod } from './payment.service.js';
@@ -47,7 +48,7 @@ import {
   PendingStockUnavailableOffer
 } from './session.service.js';
 import { formatPrice } from '../utils/helpers.js';
-import { t } from '../i18n/messages.js';
+import { t, getMessages, DEFAULT_LOCALE } from '../i18n/messages.js';
 
 /**
  * A customer can have several confirmed vehicles. With one, it's unambiguous; with
@@ -71,8 +72,9 @@ async function resolveSearchVehicle(phone: string) {
  * offers to waitlist the customer against the closest out-of-stock match.
  */
 export async function searchAndRespond(phone: string, customerText: string, customerName: string): Promise<void> {
+  const messages = await resolveMessages(phone);
   logger.info(`[PRODUCT SEARCH] ${phone} searching for: "${customerText}"`);
-  await sendWhatsAppMessage(phone, t.agent.checkingStock());
+  await sendWhatsAppMessage(phone, messages.agent.checkingStock());
 
   const options = await searchProductsInInventory({ part: customerText });
 
@@ -85,10 +87,10 @@ export async function searchAndRespond(phone: string, customerText: string, cust
       // out-of-stock product to attach them to — tapping "yes" with nothing to
       // wait on would be a dead end.
       logger.info(`[PRODUCT SEARCH] ${phone} offering waitlist for out-of-stock match: ${candidate.name}`);
-      await sendWhatsAppButtons(phone, t.agent.noStockFound(), t.agent.noStockFoundButtons);
+      await sendWhatsAppButtons(phone, messages.agent.noStockFound(), messages.agent.noStockFoundButtons);
       await savePendingWaitlistOffer(phone, { productId: candidate.id, productName: candidate.name });
     } else {
-      await sendWhatsAppMessage(phone, t.agent.noStockFound());
+      await sendWhatsAppMessage(phone, messages.agent.noStockFound());
     }
     return;
   }
@@ -100,9 +102,9 @@ export async function searchAndRespond(phone: string, customerText: string, cust
 
   const vehicle = await resolveSearchVehicle(phone);
   const body = vehicle
-    ? t.agent.searchListBodyForVehicle(options.length, customerText, vehicle.make, vehicle.model, vehicle.year, customerName)
-    : t.agent.searchListBody(options.length, customerText, customerName);
-  await sendWhatsAppList(phone, body, t.agent.searchListButton(), buildProductListRows(options));
+    ? messages.agent.searchListBodyForVehicle(options.length, customerText, vehicle.make, vehicle.model, vehicle.year, customerName)
+    : messages.agent.searchListBody(options.length, customerText, customerName);
+  await sendWhatsAppList(phone, body, messages.agent.searchListButton(), buildProductListRows(options));
 }
 
 // WhatsApp caps list row title at 24 chars and description at 72 — truncate
@@ -151,8 +153,9 @@ async function requestStockConfirmation(
   phone: string,
   orderNumber: string
 ): Promise<void> {
+  const messages = await resolveMessages(phone);
   await updateOrderStatus(orderNumber, 'awaiting_stock_confirmation');
-  await sendWhatsAppMessage(phone, t.agent.confirmingAvailability());
+  await sendWhatsAppMessage(phone, messages.agent.confirmingAvailability());
   await notifyAdminsStockConfirmationNeeded(orderNumber);
 }
 
@@ -231,7 +234,8 @@ export async function confirmStockAndFinalizeOrder(orderNumber: string): Promise
 
   const customer = await getCustomerByPhone(phone);
   const firstName = customer?.name?.split(' ')[0] || 'Cliente';
-  await sendWhatsAppMessage(phone, t.agent.stockConfirmedIntro(product.name, firstName));
+  const messages = getMessages(customer?.locale ?? DEFAULT_LOCALE);
+  await sendWhatsAppMessage(phone, messages.agent.stockConfirmedIntro(product.name, firstName));
 
   const proformaPath = await generateProformaPDF(orderNumber, phone, product, service);
   await sendProformaWhatsApp(phone, proformaPath, orderNumber);
@@ -260,7 +264,8 @@ export async function markStockUnavailableAndOfferAlternative(orderNumber: strin
   await updateOrderStatus(orderNumber, 'stock_unavailable');
 
   const phone = order.customer_phone;
-  await sendWhatsAppButtons(phone, t.agent.stockUnavailable(order.product_name, order.reference), t.agent.stockUnavailableButtons);
+  const messages = await resolveMessages(phone);
+  await sendWhatsAppButtons(phone, messages.agent.stockUnavailable(order.product_name, order.reference), messages.agent.stockUnavailableButtons);
   await savePendingStockUnavailableOffer(phone, {
     orderNumber,
     productId: order.product_id,
@@ -280,6 +285,7 @@ export async function processStockUnavailableChoice(
   offer: PendingStockUnavailableOffer,
   customerName: string
 ): Promise<boolean> {
+  const messages = await resolveMessages(phone);
   const r = reply.toLowerCase();
   const isYes = r.includes('sim') || r.includes('yes') || r === '1' || r.includes('✅') || r.includes('btn_0');
   const isNo = r.includes('não') || r.includes('nao') || r === '2' || r.includes('❌') || r.includes('btn_1');
@@ -290,15 +296,15 @@ export async function processStockUnavailableChoice(
     if (!options.length) {
       // No alternatives either — offer to waitlist them for the exact product
       // that was just declined, same as the main no-stock-found path.
-      await sendWhatsAppButtons(phone, t.agent.noStockFound(), t.agent.noStockFoundButtons);
+      await sendWhatsAppButtons(phone, messages.agent.noStockFound(), messages.agent.noStockFoundButtons);
       await savePendingWaitlistOffer(phone, { productId: offer.productId, productName: offer.productName });
       return true;
     }
     await savePendingOptions(phone, options);
     await sendWhatsAppList(
       phone,
-      t.agent.searchListBody(options.length, offer.productName, customerName),
-      t.agent.searchListButton(),
+      messages.agent.searchListBody(options.length, offer.productName, customerName),
+      messages.agent.searchListButton(),
       buildProductListRows(options)
     );
     return true;
@@ -306,7 +312,7 @@ export async function processStockUnavailableChoice(
   if (isNo) {
     await clearPendingStockUnavailableOffer(phone);
     await addToProductWaitlist(offer.productId, phone);
-    await sendWhatsAppMessage(phone, t.agent.waitlistConfirmed(offer.productName));
+    await sendWhatsAppMessage(phone, messages.agent.waitlistConfirmed(offer.productName));
     return true;
   }
   return false; // leave the offer pending; let the message fall through to normal processing
@@ -364,7 +370,8 @@ export async function sendStockConfirmationCourtesyMessages(): Promise<void> {
   const overdue = await getOrdersAwaitingCourtesyMessage(20);
   for (const order of overdue) {
     try {
-      await sendWhatsAppMessage(order.customer_phone, t.agent.stockConfirmationCourtesy());
+      const messages = await resolveMessages(order.customer_phone);
+      await sendWhatsAppMessage(order.customer_phone, messages.agent.stockConfirmationCourtesy());
       await markCourtesyMessageSent(order.number);
     } catch (error: any) {
       logger.error(`Error sending stock-confirmation courtesy message for order ${order.number}`, error);
@@ -411,11 +418,12 @@ export async function sendStockConfirmationAdminReminders(): Promise<void> {
  * both know exactly which product they mean, just via different paths.
  */
 async function startOrderForProduct(phone: string, product: Product): Promise<void> {
+  const messages = await resolveMessages(phone);
   const orderNumber = await generateOrderNumber();
   await createOrder(orderNumber, phone, product);
 
   if (product.service_offered && product.service_name && product.service_price) {
-    await sendWhatsAppMessage(phone, t.agent.productSelected(product.name, formatPrice(product.price)));
+    await sendWhatsAppMessage(phone, messages.agent.productSelected(product.name, formatPrice(product.price)));
     await savePendingServiceOffer(phone, {
       orderNumber,
       product,
@@ -424,8 +432,8 @@ async function startOrderForProduct(phone: string, product: Product): Promise<vo
     });
     await sendWhatsAppButtons(
       phone,
-      t.agent.serviceOfferBody(product.service_name, formatPrice(product.service_price)),
-      t.agent.serviceOfferButtons
+      messages.agent.serviceOfferBody(product.service_name, formatPrice(product.service_price)),
+      messages.agent.serviceOfferButtons
     );
     return;
   }
@@ -451,7 +459,8 @@ export async function processProductSelection(
 
   const choice = pendingOptions[idx];
   if (!choice) {
-    await sendWhatsAppMessage(phone, t.agent.optionNotFound());
+    const messages = await resolveMessages(phone);
+    await sendWhatsAppMessage(phone, messages.agent.optionNotFound());
     return true;
   }
 
@@ -474,6 +483,7 @@ export async function processServiceOptIn(
   reply: string,
   offer: PendingServiceOffer
 ): Promise<boolean> {
+  const messages = await resolveMessages(phone);
   const r = reply.toLowerCase();
   const isYes = r.includes('sim') || r.includes('yes') || r === '1' || r.includes('✅') || r.includes('btn_0');
   const isNo = r.includes('não') || r.includes('nao') || r === '2' || r.includes('❌') || r.includes('btn_1');
@@ -486,13 +496,13 @@ export async function processServiceOptIn(
     // ("15650.00" + "5000.00" -> "15650.005000.00") instead of summing, and
     // formatPrice's Number() coercion then fails to parse that as NaN.
     const total = Number(offer.product.price) + Number(offer.servicePrice);
-    await sendWhatsAppMessage(phone, t.agent.serviceAdded(offer.serviceName, formatPrice(total)));
+    await sendWhatsAppMessage(phone, messages.agent.serviceAdded(offer.serviceName, formatPrice(total)));
     await requestStockConfirmation(phone, offer.orderNumber);
     return true;
   }
   if (isNo) {
     await clearPendingServiceOffer(phone);
-    await sendWhatsAppMessage(phone, t.agent.serviceDeclined());
+    await sendWhatsAppMessage(phone, messages.agent.serviceDeclined());
     await requestStockConfirmation(phone, offer.orderNumber);
     return true;
   }
@@ -508,6 +518,7 @@ export async function processWaitlistOptIn(
   reply: string,
   offer: { productId: number; productName: string }
 ): Promise<boolean> {
+  const messages = await resolveMessages(phone);
   const r = reply.toLowerCase();
   const isYes = r.includes('sim') || r.includes('yes') || r === '1' || r.includes('✅') || r.includes('btn_0');
   const isNo = r.includes('não') || r.includes('nao') || r === '2' || r.includes('❌') || r.includes('btn_1');
@@ -515,12 +526,12 @@ export async function processWaitlistOptIn(
   if (isYes) {
     await addToProductWaitlist(offer.productId, phone);
     await clearPendingWaitlistOffer(phone);
-    await sendWhatsAppMessage(phone, t.agent.waitlistConfirmed(offer.productName));
+    await sendWhatsAppMessage(phone, messages.agent.waitlistConfirmed(offer.productName));
     return true;
   }
   if (isNo) {
     await clearPendingWaitlistOffer(phone);
-    await sendWhatsAppMessage(phone, t.agent.waitlistDeclined());
+    await sendWhatsAppMessage(phone, messages.agent.waitlistDeclined());
     return true;
   }
   return false; // leave the offer pending; let the message fall through to normal processing
@@ -541,14 +552,15 @@ export async function notifyWaitlistedCustomers(restockNotifications: RestockNot
       try {
         const customer = await getCustomerByPhone(phone);
         const firstName = customer?.name?.split(' ')[0] || 'Cliente';
+        const messages = getMessages(customer?.locale ?? DEFAULT_LOCALE);
 
         const vehicles = await getCustomerVehicles(phone);
         const vehicleSummary = vehicles.length ? `${vehicles[0].make} ${vehicles[0].model} ${vehicles[0].year}` : null;
 
         await sendWhatsAppButtons(
           phone,
-          t.agent.restockNotification(firstName, productName, vehicleSummary, formatPrice(product.price), product.supplier || ''),
-          t.agent.restockNotificationButtons
+          messages.agent.restockNotification(firstName, productName, vehicleSummary, formatPrice(product.price), product.supplier || ''),
+          messages.agent.restockNotificationButtons
         );
         await savePendingRestockOrderOffer(phone, { productId, productName });
       } catch (error: any) {
@@ -569,6 +581,7 @@ export async function processRestockOrderChoice(
   reply: string,
   offer: { productId: number; productName: string }
 ): Promise<boolean> {
+  const messages = await resolveMessages(phone);
   const r = reply.toLowerCase();
   const isYes = r.includes('sim') || r.includes('yes') || r === '1' || r.includes('✅') || r.includes('btn_0');
   const isNo = r.includes('não') || r.includes('nao') || r === '2' || r.includes('❌') || r.includes('btn_1');
@@ -582,7 +595,7 @@ export async function processRestockOrderChoice(
       // waitlistConfirmed (not noStockFound) since this re-add already happened —
       // asking "want me to do that?" would be misleading about something already done.
       await addToProductWaitlist(offer.productId, phone);
-      await sendWhatsAppMessage(phone, t.agent.waitlistConfirmed(offer.productName));
+      await sendWhatsAppMessage(phone, messages.agent.waitlistConfirmed(offer.productName));
       return true;
     }
     await startOrderForProduct(phone, product);
@@ -590,7 +603,7 @@ export async function processRestockOrderChoice(
   }
   if (isNo) {
     await clearPendingRestockOrderOffer(phone);
-    await sendWhatsAppMessage(phone, t.agent.waitlistDeclined());
+    await sendWhatsAppMessage(phone, messages.agent.waitlistDeclined());
     return true;
   }
   return false; // leave the offer pending; let the message fall through to normal processing

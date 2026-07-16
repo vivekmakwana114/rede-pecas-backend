@@ -214,11 +214,12 @@ interface Messages {
 const pt: Messages = {
   onboarding: {
     welcome: () =>
-      `👋 Bem-vindo à *Rede Peças*!\n\n` +
-      `Somos o marketplace automotivo de Angola — ` +
-      `encontramos as peças certas para o teu veículo no menor tempo possível. 🚗\n\n` +
-      `Para te servir melhor, vou registar o teu perfil rapidamente.\n\n` +
-      `*Como te chamas?* 👇`,
+      `Olá! Bem-vindo à Rede Peças, o teu marketplace automóvel angolano!\n\n` +
+      `Eu sou o Xico Peças, o teu assistente.\n\n` +
+      `Nos nossos fornecedores vou encontrar as melhores opções para ti — rápido.\n\n` +
+      `Peças  •  Lubrificantes  •  Acessórios  •  Serviços\n\n` +
+      `Vais poupar tempo, combustível, saldo e stress.\n\n` +
+      `Vamos começar! Como te chamas?`,
     welcomeBack: (name) =>
       `👋 Olá de novo, *${name}*! Bem-vindo de volta à *Rede Peças*. 😊`,
     resumeRegistration: () =>
@@ -600,11 +601,12 @@ const pt: Messages = {
 const en: Messages = {
   onboarding: {
     welcome: () =>
-      `👋 Welcome to *Rede Peças*!\n\n` +
-      `We're Angola's automotive parts marketplace. ` +
-      `Tell us what you need and we'll find it across all our suppliers — fast. 🚗\n\n` +
-      `Before we start, let me set up your profile so I can serve you better.\n\n` +
-      `*What's your name?*`,
+      `Hi! Welcome to Rede Peças, your Angolan automotive marketplace!\n\n` +
+      `I'm Xico Peças, your assistant.\n\n` +
+      `In our suppliers I will find you the best options — fast.\n\n` +
+      `Parts  •  Lubricants  •  Accessories  •  Services\n\n` +
+      `You'll save time, fuel, money and stress.\n\n` +
+      `Let's get started! What's your name?`,
     welcomeBack: (name) =>
       `👋 Hey again, *${name}*! Welcome back to *Rede Peças*. 😊`,
     resumeRegistration: () =>
@@ -988,3 +990,30 @@ const en: Messages = {
 };
 
 export const t: Messages = config.messageLocale === 'en' ? en : pt;
+
+/**
+ * The locale to use when a customer's own locale is unknown — either their
+ * `customers.locale` row is NULL (a customer created before this column
+ * existed, or a legacy row from before per-customer detection shipped) or a
+ * brand-new customer's first message wasn't a recognizable greeting at all.
+ * Deliberately the *environment's* configured default (same source `t`
+ * already uses), not a hardcoded 'pt': hardcoding it meant a NULL-locale
+ * customer fell back to Portuguese even in this dev environment where
+ * MESSAGE_LOCALE=en, while anything still on the fixed `t` stayed English —
+ * an inconsistent mix of the two languages for the exact same customer.
+ * Using the same source for both eliminates that mismatch.
+ */
+export const DEFAULT_LOCALE: 'pt' | 'en' = config.messageLocale;
+
+/**
+ * Per-customer message resolver — used by every customer-facing send once the
+ * customer's own locale (customers.locale, detected from their first greeting —
+ * see detectGreetingLocale in whatsapp.controller.ts) is known, instead of the
+ * fixed `t` above. `t` itself is untouched and keeps backing the paths that
+ * intentionally stay on the single global MESSAGE_LOCALE: the PDF proforma and
+ * admin-panel/admin-push messages (t.admin.*, t.adminAuth.*), which aren't part
+ * of "greeting the bot".
+ */
+export function getMessages(locale: 'pt' | 'en'): Messages {
+  return locale === 'en' ? en : pt;
+}

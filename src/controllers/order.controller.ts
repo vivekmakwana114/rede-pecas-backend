@@ -8,11 +8,14 @@ import {
   getOrdersPendingStockConfirmation,
   updateOrderStatus,
   getOrderByNumber,
+  getOrderAnalytics,
+  AnalyticsPeriod,
+  getOrderStats,
 } from '../models/order.model.js';
 import { approveOrder } from '../services/payment.service.js';
 import { confirmStockAndFinalizeOrder, markStockUnavailableAndOfferAlternative } from '../services/product.service.js';
+import { resolveMessages } from '../services/customer.service.js';
 import { sendWhatsAppMessage, downloadWhatsAppMedia } from '../services/whatsapp.service.js';
-import { t } from '../i18n/messages.js';
 
 /**
  * Returns pending approvals, current-day approved/rejected logs, and orders
@@ -87,15 +90,101 @@ export const reviewOrderHandler = catchAsync(async (req: Request, res: Response)
 
   await updateOrderStatus(number, 'rejected');
 
-  // Notify customer about rejection via WhatsApp
+  // Notify customer about rejection via WhatsApp, in their own detected locale
   const order = await getOrderByNumber(number);
   if (order) {
-    await sendWhatsAppMessage(order.customer_phone, t.order.rejected(number));
+    const messages = await resolveMessages(order.customer_phone);
+    await sendWhatsAppMessage(order.customer_phone, messages.order.rejected(number));
   }
 
   res.status(200).json({
     success: true,
     message: `Order ${number} rejected.`,
+    code: 200,
+    data: null,
+    meta: { timestamp: new Date().toISOString() },
+  });
+});
+
+/**
+ * Time-bucketed revenue/order-count series for the dashboard's Revenue and
+ * Orders charts — one point per hour (daily), day (monthly), or month
+ * (yearly). See getOrderAnalytics in order.model.ts for the bucketing rules.
+ */
+export const getOrderAnalyticsHandler = catchAsync(async (req: Request, res: Response) => {
+  const period = req.query.period as AnalyticsPeriod;
+  const points = await getOrderAnalytics(period);
+
+  res.status(200).json({
+    success: true,
+    message: 'Order analytics retrieved.',
+    code: 200,
+    data: { points },
+    meta: { timestamp: new Date().toISOString() },
+  });
+});
+
+/**
+ * All-time order totals (not scoped to today) for the dashboard's stat
+ * cards — see getOrderStats in order.model.ts for why this is a separate
+ * query from the today-scoped /orders queues.
+ */
+export const getOrderStatsHandler = catchAsync(async (req: Request, res: Response) => {
+  const stats = await getOrderStats();
+
+  res.status(200).json({
+    success: true,
+    message: 'Order stats retrieved.',
+    code: 200,
+    data: stats,
+    meta: { timestamp: new Date().toISOString() },
+  });
+});
+
+/**
+ * Details of a single order, joined with product/supplier — the admin
+ * panel's individual order view.
+ */
+export const getOrderHandler = catchAsync(async (req: Request, res: Response) => {
+  const { number } = req.params;
+  const order = await getOrderByNumber(number);
+  if (!order) throw new ApiError(404, `Order ${number} not found`);
+
+  res.status(200).json({
+    success: true,
+    message: 'Order retrieved.',
+    code: 200,
+    data: order,
+    meta: { timestamp: new Date().toISOString() },
+  });
+});
+
+/**
+ * Soft-deletes an order by moving it to a 'cancelled' terminal status rather
+ * than a hard DELETE — admin_alerts.order_number has a non-cascading FK to
+ * orders.number, and an order is a financial/audit record that should stay
+ * queryable after the fact. Only allowed from a non-terminal status: an
+ * already-approved order represents a completed sale (cancelling that would
+ * need a real refund flow, which is out of scope — see CLAUDE.md), and an
+ * already-rejected/cancelled order has nothing left to cancel.
+ */
+export const deleteOrderHandler = catchAsync(async (req: Request, res: Response) => {
+  const { number } = req.params;
+  const order = await getOrderByNumber(number);
+  if (!order) throw new ApiError(404, `Order ${number} not found`);
+
+  if (order.status === 'approved') {
+    throw new ApiError(409, `Order ${number} is already approved and cannot be cancelled`);
+  }
+  if (order.status === 'rejected' || order.status === 'cancelled') {
+    throw new ApiError(409, `Order ${number} is already ${order.status}`);
+  }
+
+  await updateOrderStatus(number, 'cancelled');
+
+  res.status(200).json({
+    success: true,
+    message: `Order ${number} cancelled.`,
     code: 200,
     data: null,
     meta: { timestamp: new Date().toISOString() },

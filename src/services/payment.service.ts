@@ -9,64 +9,73 @@ import { getCustomerByPhone } from '../models/customer.model.js';
 import { getAllAdmins, getAdminByPhone } from '../models/adminUser.model.js';
 import { createAlert } from '../models/alert.model.js';
 import { formatPrice } from '../utils/helpers.js';
-import { t } from '../i18n/messages.js';
+import { t, getMessages, DEFAULT_LOCALE } from '../i18n/messages.js';
+import { resolveMessages } from './customer.service.js';
 
 // Display names and instruction texts come from src/i18n/messages.ts (customer-facing);
-// ids are English because they are persisted in orders.payment_method.
-export const PAYMENT_METHODS = {
-  BANK_TRANSFER: {
-    id: 'bank_transfer',
-    name: t.payment.methods.bankTransfer.name,
-    emoji: '🏦',
-    instructions: (orderNumber: string, amount: number) =>
-      t.payment.methods.bankTransfer.instructions(orderNumber, formatPrice(amount)),
-    requiresProof: true,
-  },
+// ids are English because they are persisted in orders.payment_method. A function
+// rather than a module-level constant so it can be built per-customer-locale — it used
+// to be built once at import time off the fixed `t`, which meant every customer saw
+// payment method names/instructions in whatever the process-wide MESSAGE_LOCALE was,
+// regardless of their own detected locale.
+export function getPaymentMethods(locale: 'pt' | 'en') {
+  const messages = getMessages(locale);
+  return {
+    BANK_TRANSFER: {
+      id: 'bank_transfer',
+      name: messages.payment.methods.bankTransfer.name,
+      emoji: '🏦',
+      instructions: (orderNumber: string, amount: number) =>
+        messages.payment.methods.bankTransfer.instructions(orderNumber, formatPrice(amount)),
+      requiresProof: true,
+    },
 
-  BANK_DEPOSIT: {
-    id: 'bank_deposit',
-    name: t.payment.methods.bankDeposit.name,
-    emoji: '🏧',
-    instructions: (orderNumber: string, amount: number) =>
-      t.payment.methods.bankDeposit.instructions(orderNumber, formatPrice(amount)),
-    requiresProof: true,
-  },
+    BANK_DEPOSIT: {
+      id: 'bank_deposit',
+      name: messages.payment.methods.bankDeposit.name,
+      emoji: '🏧',
+      instructions: (orderNumber: string, amount: number) =>
+        messages.payment.methods.bankDeposit.instructions(orderNumber, formatPrice(amount)),
+      requiresProof: true,
+    },
 
-  MULTICAIXA_EXPRESS: {
-    id: 'multicaixa_express',
-    name: t.payment.methods.multicaixaExpress.name,
-    emoji: '📱',
-    instructions: (orderNumber: string, amount: number) =>
-      t.payment.methods.multicaixaExpress.instructions(orderNumber, formatPrice(amount)),
-    requiresProof: true,
-  },
+    MULTICAIXA_EXPRESS: {
+      id: 'multicaixa_express',
+      name: messages.payment.methods.multicaixaExpress.name,
+      emoji: '📱',
+      instructions: (orderNumber: string, amount: number) =>
+        messages.payment.methods.multicaixaExpress.instructions(orderNumber, formatPrice(amount)),
+      requiresProof: true,
+    },
 
-  MOBILE_POS: {
-    id: 'mobile_pos',
-    name: t.payment.methods.mobilePOS.name,
-    emoji: '💳',
-    instructions: (orderNumber: string, amount: number) =>
-      t.payment.methods.mobilePOS.instructions(orderNumber, formatPrice(amount)),
-    requiresProof: false,
-  },
+    MOBILE_POS: {
+      id: 'mobile_pos',
+      name: messages.payment.methods.mobilePOS.name,
+      emoji: '💳',
+      instructions: (orderNumber: string, amount: number) =>
+        messages.payment.methods.mobilePOS.instructions(orderNumber, formatPrice(amount)),
+      requiresProof: false,
+    },
 
-  CASH: {
-    id: 'cash',
-    name: t.payment.methods.cash.name,
-    emoji: '💵',
-    instructions: (orderNumber: string, amount: number) =>
-      t.payment.methods.cash.instructions(orderNumber, formatPrice(amount)),
-    requiresProof: false,
-  },
-};
+    CASH: {
+      id: 'cash',
+      name: messages.payment.methods.cash.name,
+      emoji: '💵',
+      instructions: (orderNumber: string, amount: number) =>
+        messages.payment.methods.cash.instructions(orderNumber, formatPrice(amount)),
+      requiresProof: false,
+    },
+  };
+}
 
 /**
  * Initiates the payment selection process via WhatsApp buttons.
  */
 export async function askPaymentMethod(phone: string, orderNumber: string, amount: number): Promise<void> {
-  const message = t.payment.askMethodBody(orderNumber, formatPrice(amount));
+  const messages = await resolveMessages(phone);
+  const message = messages.payment.askMethodBody(orderNumber, formatPrice(amount));
 
-  await sendWhatsAppButtons(phone, message, t.payment.askMethodButtons);
+  await sendWhatsAppButtons(phone, message, messages.payment.askMethodButtons);
 
   await db.query(
     `UPDATE orders SET status = 'awaiting_payment_method' WHERE number = $1`,
@@ -91,6 +100,9 @@ export async function getPendingPaymentOrder(phone: string) {
  * Processes the customer's response to the payment method list.
  */
 export async function processMethodChoice(phone: string, customerReply: string): Promise<boolean> {
+  const locale = (await getCustomerByPhone(phone))?.locale ?? DEFAULT_LOCALE;
+  const messages = getMessages(locale);
+  const paymentMethods = getPaymentMethods(locale);
   const { rows } = await db.query(
     `SELECT number, unit_price, service_price FROM orders
      WHERE customer_phone = $1
@@ -105,17 +117,17 @@ export async function processMethodChoice(phone: string, customerReply: string):
   const reply = customerReply.toLowerCase();
 
   if (reply.includes('transfer') || reply.includes('deposit') || reply.includes('depósito') || reply.includes('banco') || reply.includes('bank') || reply === '1') {
-    await sendWhatsAppButtons(phone, t.payment.askBankSubtypeBody(), t.payment.askBankSubtypeButtons);
+    await sendWhatsAppButtons(phone, messages.payment.askBankSubtypeBody(), messages.payment.askBankSubtypeButtons);
     await db.query(
       `UPDATE orders SET status = 'awaiting_bank_subtype' WHERE number = $1`,
       [number]
     );
     return true;
   } else if (reply.includes('multicaixa') || reply.includes('express') || reply === '2') {
-    await confirmMethodAndSendInstructions(phone, number, amount, PAYMENT_METHODS.MULTICAIXA_EXPRESS);
+    await confirmMethodAndSendInstructions(phone, number, amount, paymentMethods.MULTICAIXA_EXPRESS);
     return true;
   } else if (reply.includes('tpa') || reply.includes('terminal') || reply.includes('dinheiro') || reply === '3') {
-    await sendWhatsAppButtons(phone, t.payment.askInPersonSubtypeBody(), t.payment.askInPersonSubtypeButtons);
+    await sendWhatsAppButtons(phone, messages.payment.askInPersonSubtypeBody(), messages.payment.askInPersonSubtypeButtons);
     await db.query(
       `UPDATE orders SET status = 'awaiting_in_person_subtype' WHERE number = $1`,
       [number]
@@ -131,6 +143,8 @@ export async function processMethodChoice(phone: string, customerReply: string):
  * Processes banking or face-to-face payment sub-choices.
  */
 export async function processMethodSubtype(phone: string, reply: string): Promise<boolean> {
+  const locale = (await getCustomerByPhone(phone))?.locale ?? DEFAULT_LOCALE;
+  const paymentMethods = getPaymentMethods(locale);
   const { rows } = await db.query(
     `SELECT number, unit_price, service_price, status FROM orders
      WHERE customer_phone = $1
@@ -146,11 +160,11 @@ export async function processMethodSubtype(phone: string, reply: string): Promis
 
   let method: any;
   if (status === 'awaiting_bank_subtype') {
-    method = (r.includes('deposit') || r.includes('depósito')) ? PAYMENT_METHODS.BANK_DEPOSIT : PAYMENT_METHODS.BANK_TRANSFER;
+    method = (r.includes('deposit') || r.includes('depósito')) ? paymentMethods.BANK_DEPOSIT : paymentMethods.BANK_TRANSFER;
   } else {
     method = r.includes('dinheiro') || r.includes('entrega')
-      ? PAYMENT_METHODS.CASH
-      : PAYMENT_METHODS.MOBILE_POS;
+      ? paymentMethods.CASH
+      : paymentMethods.MOBILE_POS;
   }
 
   await confirmMethodAndSendInstructions(phone, number, amount, method);
@@ -198,6 +212,8 @@ export async function processPaymentProof(
   mediaType: string | null,
   customerName: string
 ): Promise<boolean> {
+  const locale = (await getCustomerByPhone(phone))?.locale ?? DEFAULT_LOCALE;
+  const messages = getMessages(locale);
   const { rows } = await db.query(
     `SELECT number, unit_price, service_price, payment_method FROM orders
      WHERE customer_phone = $1
@@ -218,7 +234,7 @@ export async function processPaymentProof(
     logger.info(
       `[PAYMENT] Rejected proof for order ${number} from ${phone}: ${extracted?.reason || 'could not download/read file'}`
     );
-    await sendWhatsAppMessage(phone, t.payment.proofInvalid());
+    await sendWhatsAppMessage(phone, messages.payment.proofInvalid());
     return true;
   }
 
@@ -236,10 +252,10 @@ export async function processPaymentProof(
     [number, mediaId, mediaType]
   );
 
-  const methodName = Object.values(PAYMENT_METHODS)
+  const methodName = Object.values(getPaymentMethods(locale))
     .find(m => m.id === payment_method)?.name || payment_method;
 
-  await sendWhatsAppMessage(phone, t.payment.proofReceivedCustomer(customerName));
+  await sendWhatsAppMessage(phone, messages.payment.proofReceivedCustomer(customerName));
 
   await createAlert(
     'payment_proof',
@@ -327,7 +343,8 @@ export async function processAdminPaymentReply(adminPhone: string, buttonReplyId
     logger.info(`[ADMIN PAYMENT] Order ${orderNumber} approved by ${adminPhone} — invoice sent to customer`);
   } else {
     await updateOrderStatus(orderNumber, 'rejected');
-    await sendWhatsAppMessage(order.customer_phone, t.order.rejected(orderNumber));
+    const customerMessages = await resolveMessages(order.customer_phone);
+    await sendWhatsAppMessage(order.customer_phone, customerMessages.order.rejected(orderNumber));
     await sendWhatsAppMessage(adminPhone, t.admin.paymentRejectedAck(orderNumber));
     logger.info(`[ADMIN PAYMENT] Order ${orderNumber} rejected by ${adminPhone} — customer notified`);
   }

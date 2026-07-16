@@ -1,5 +1,16 @@
 // Wipes all data from the database in DATABASE_URL (structure stays intact —
-// use db:migrate afterwards only if you also need to reapply schema changes).
+// use db:migrate afterwards only if you also need to reapply schema changes),
+// and flushes Redis (REDIS_URL) alongside it. Both together, always — Redis
+// only ever holds session state that *references* Postgres rows (pending
+// vehicle-choice/product-option lists, chosen-vehicle ids, etc; see
+// session.service.ts), so clearing one without the other leaves dangling
+// references: a customer with a stale pending-choice key survives the DB
+// wipe and gets served phantom data (an old vehicle/product id that no
+// longer exists) for up to its 4h TTL. There's no "admin data" in Redis to
+// preserve the way admin_users is preserved in Postgres, so this is never
+// gated behind a flag. Skipped automatically if REDIS_URL isn't set (the app
+// itself falls back to an in-memory cache in that case, so there's nothing
+// to flush from this process anyway — restart the app instead to clear it).
 // admin_users is preserved by default so you don't get locked out of the
 // admin panel; pass --all to wipe it too.
 //
@@ -15,6 +26,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import pg from 'pg';
+import { createClient } from 'redis';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '../.env') });
@@ -45,6 +57,7 @@ if (!skipConfirm) {
   console.log(`This will TRUNCATE these tables on ${target}:`);
   console.log('  ' + TABLES.join(', '));
   if (!includeAdmins) console.log('  (admin_users is kept — pass --all to wipe it too)');
+  if (process.env.REDIS_URL) console.log(`This will also FLUSH Redis (${process.env.REDIS_URL}) entirely.`);
   const answer = await rl.question('Type "yes" to continue: ');
   rl.close();
   if (answer.trim().toLowerCase() !== 'yes') {
@@ -64,4 +77,19 @@ try {
   process.exitCode = 1;
 } finally {
   await client.end();
+}
+
+if (process.env.REDIS_URL) {
+  const redisClient = createClient({ url: process.env.REDIS_URL });
+  try {
+    await redisClient.connect();
+    const keyCount = (await redisClient.keys('*')).length;
+    await redisClient.flushDb();
+    console.log(`Flushed Redis: ${keyCount} key(s) removed`);
+  } catch (err) {
+    console.error('Redis flush failed:', err.message);
+    process.exitCode = 1;
+  } finally {
+    if (redisClient.isOpen) await redisClient.quit();
+  }
 }

@@ -187,7 +187,10 @@ CREATE TABLE IF NOT EXISTS orders (
   -- supplier via the admin panel, not WhatsApp) → stock_unavailable (terminal,
   -- admin declines) | awaiting_payment_method → awaiting_bank_subtype |
   -- awaiting_in_person_subtype → awaiting_payment_proof |
-  -- awaiting_agent_confirmation → payment_proof_received → approved | rejected
+  -- awaiting_agent_confirmation → payment_proof_received → approved | rejected.
+  -- cancelled is a separate terminal status set by the admin panel's DELETE
+  -- /orders/:number (order.controller.ts) — only reachable from a non-terminal
+  -- status (an approved/rejected/already-cancelled order can't be cancelled).
   status                  TEXT DEFAULT 'awaiting_payment',
   payment_method          TEXT,
   approved_by             TEXT,
@@ -343,12 +346,21 @@ CREATE TABLE IF NOT EXISTS customers (
   address              TEXT,
   email                TEXT,
   registration_status  TEXT DEFAULT 'new',      -- new, awaiting_name, awaiting_nif, awaiting_nif_number, awaiting_address, complete (profile only — vehicle ID is tracked independently via the `vehicles` table)
+  -- Detected once from the customer's very first message (detectGreetingLocale in
+  -- src/utils/greeting.ts) and never re-evaluated afterward — sticky per customer,
+  -- not re-detected per message. NULL for rows created before this column existed;
+  -- the app resolves NULL to DEFAULT_LOCALE (src/i18n/messages.ts — the environment's
+  -- configured MESSAGE_LOCALE, not a hardcoded language) at read time (no reliable
+  -- backfill — the original greeting text was never stored).
+  locale               TEXT,                    -- 'pt' | 'en'
   first_contact_at     TIMESTAMPTZ DEFAULT NOW(),
   last_contact_at      TIMESTAMPTZ DEFAULT NOW(),
   registered_at        TIMESTAMPTZ,
   contact_count        INT DEFAULT 1,
   active               BOOLEAN DEFAULT true
 );
+
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS locale TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_customers_status ON customers (registration_status);
 CREATE INDEX IF NOT EXISTS idx_customers_last_contact ON customers (last_contact_at);
