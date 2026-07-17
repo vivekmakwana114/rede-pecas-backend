@@ -7,6 +7,7 @@ const WHATSAPP_API_URL = `${config.whatsapp.graphApiUrl}/${config.whatsapp.phone
  * Sends a standard text message via Meta WhatsApp Business API.
  */
 export async function sendWhatsAppMessage(phone: string, text: string): Promise<any> {
+  logger.debug(`[TEST-CAPTURE] text -> ${phone}: ${text}`);
   try {
     const response = await fetch(WHATSAPP_API_URL, {
       method: "POST",
@@ -116,6 +117,7 @@ export async function sendWhatsAppButtons(
       },
     },
   };
+  logger.debug(`[TEST-CAPTURE] buttons -> ${phone}: ${body} | [${buttons.join(' / ')}]`);
 
   try {
     const response = await fetch(WHATSAPP_API_URL, {
@@ -164,6 +166,7 @@ export async function sendWhatsAppList(
       },
     },
   };
+  logger.debug(`[TEST-CAPTURE] list -> ${phone}: ${body} | button="${buttonText}" | rows=${JSON.stringify(rows)}`);
 
   try {
     const response = await fetch(WHATSAPP_API_URL, {

@@ -70,7 +70,7 @@ Table orders {
   supplier_id int [ref: > suppliers.id]
   quantity int [default: 1]
   unit_price numeric(12,2)
-  status text [default: 'awaiting_payment', note: 'awaiting_payment (placeholder while service decision pending) → awaiting_stock_confirmation (admin panel) → stock_unavailable (terminal) | awaiting_payment_method → awaiting_bank_subtype | awaiting_in_person_subtype → awaiting_payment_proof | awaiting_agent_confirmation → payment_proof_received → approved | rejected']
+  status text [default: 'awaiting_payment', note: 'awaiting_payment (placeholder while service decision pending) → awaiting_stock_confirmation (admin panel) → stock_unavailable (terminal) | awaiting_payment_method → awaiting_bank_subtype | awaiting_in_person_subtype → awaiting_payment_proof | awaiting_agent_confirmation → payment_proof_received → approved | rejected. cancelled: separate terminal status, admin-only, only from a non-terminal status']
   payment_method text [note: 'bank_transfer | bank_deposit | multicaixa_express | mobile_pos | cash']
   approved_by text
   approved_at timestamptz

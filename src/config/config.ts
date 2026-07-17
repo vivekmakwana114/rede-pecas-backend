@@ -28,10 +28,6 @@ export const config = {
   env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '4000', 10),
   appUrl: process.env.APP_URL || 'http://localhost:4000',
-  // Customer-facing WhatsApp/PDF copy language. Defaults to 'pt' (production
-  // Angolan Portuguese) so nothing ships in English by accident — set
-  // MESSAGE_LOCALE=en locally to read messages while developing/testing.
-  messageLocale: (process.env.MESSAGE_LOCALE === 'en' ? 'en' : 'pt') as 'pt' | 'en',
   db: {
     url: process.env.DATABASE_URL
   },

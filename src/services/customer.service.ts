@@ -6,24 +6,57 @@ import {
   Customer
 } from '../models/customer.model.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons } from './whatsapp.service.js';
-import { markSessionActive, markPartPromptSent, markVehicleIdChoiceShown } from './session.service.js';
+import { markSessionActive, markPartPromptSent, markVehicleIdChoiceShown, getLocale } from './session.service.js';
 import { capitalize } from '../utils/helpers.js';
-import { t } from '../i18n/messages.js';
+import { getMessages, DEFAULT_LOCALE } from '../i18n/messages.js';
 
 export type { Customer };
 
 /**
+ * Resolves the customer's current conversation locale — detected fresh from
+ * each inbound message (see detectMessageLocale in utils/greeting.ts, run
+ * once per message in whatsapp.controller.ts before any reply is built) and
+ * cached for the session (session.service.ts's saveLocale/getLocale), not
+ * read from a durable `customers` column — a customer who switches language
+ * mid-conversation gets answered in whatever they just typed, instead of a
+ * locale frozen at first contact. Falls back to DEFAULT_LOCALE when nothing's
+ * been detected yet for this phone (e.g. the very first message isn't a
+ * recognizable PT/EN word or phrase).
+ */
+export async function resolveLocale(phone: string): Promise<'pt' | 'en'> {
+  return (await getLocale(phone)) ?? DEFAULT_LOCALE;
+}
+
+/**
+ * Resolves the right message set for a customer by phone — used by service
+ * functions that only have `phone` in scope (not the full `customer` row).
+ */
+export async function resolveMessages(phone: string) {
+  return getMessages(await resolveLocale(phone));
+}
+
+/**
  * Fetches the customer, or starts pre-registration + sends the welcome
  * message on first contact. Returns null when it just created the row —
- * the caller should return immediately in that case.
+ * the caller should return immediately in that case. The welcome message
+ * uses whatever locale was just detected from this same inbound message
+ * (see resolveLocale above) — detection itself happens once, centrally, in
+ * whatsapp.controller.ts before this is called.
  */
 export async function getOrCreateCustomer(phone: string): Promise<Customer | null> {
   const customer = await getAndUpdateCustomer(phone);
   if (customer) return customer;
 
   await createCustomerPreRegistration(phone, 'awaiting_name');
-  await sendWhatsAppMessage(phone, t.onboarding.welcome());
+  // Marked active before the send, not after: sendWhatsAppMessage throws on
+  // failure (e.g. the number isn't in the WhatsApp sandbox's allowlist yet —
+  // see TESTING.md), and if that aborted this function before reaching this
+  // call, the customer's very next message (their actual name) would see
+  // isNewSession() still true and get swallowed by the "let's continue your
+  // registration" resume-prompt instead of being captured — corrupting every
+  // registration field one step downstream from there.
   await markSessionActive(phone);
+  await sendWhatsAppMessage(phone, (await resolveMessages(phone)).onboarding.welcome());
   return null;
 }
 
@@ -32,6 +65,7 @@ export async function getOrCreateCustomer(phone: string): Promise<Customer | nul
  * vehicle identification, which is tracked separately via the `vehicles` table.
  */
 export async function processCustomerRegistration(phone: string, customer: Customer, reply: string): Promise<boolean> {
+  const messages = await resolveMessages(phone);
   const r = reply.trim();
   const status = customer.registration_status;
   // The name captured in the 'awaiting_name' step below, available on `customer` for
@@ -41,7 +75,7 @@ export async function processCustomerRegistration(phone: string, customer: Custo
   if (status === 'awaiting_name') {
     const name = capitalize(r);
     await updateCustomer(phone, { name, registration_status: 'awaiting_nif' });
-    await sendWhatsAppButtons(phone, t.onboarding.askNifBody(name), t.onboarding.askNifButtons);
+    await sendWhatsAppButtons(phone, messages.onboarding.askNifBody(name), messages.onboarding.askNifButtons);
     return true;
   }
 
@@ -51,12 +85,12 @@ export async function processCustomerRegistration(phone: string, customer: Custo
 
     if (noNif) {
       await updateCustomer(phone, { nif: null, registration_status: 'awaiting_address' });
-      await sendWhatsAppMessage(phone, t.onboarding.askAddress(firstName));
+      await sendWhatsAppMessage(phone, messages.onboarding.askAddress(firstName));
     } else {
       // "Sim, tenho NIF" only confirms they have one — the button reply itself isn't the
       // NIF number, so ask for it separately instead of saving the button title as data.
       await updateCustomer(phone, { registration_status: 'awaiting_nif_number' });
-      await sendWhatsAppMessage(phone, t.onboarding.askNifNumber());
+      await sendWhatsAppMessage(phone, messages.onboarding.askNifNumber());
     }
     return true;
   }
@@ -64,7 +98,7 @@ export async function processCustomerRegistration(phone: string, customer: Custo
   if (status === 'awaiting_nif_number') {
     const nif = r.replace(/\s/g, '').toUpperCase();
     await updateCustomer(phone, { nif, registration_status: 'awaiting_address' });
-    await sendWhatsAppMessage(phone, t.onboarding.askAddress(firstName));
+    await sendWhatsAppMessage(phone, messages.onboarding.askAddress(firstName));
     return true;
   }
 
@@ -83,7 +117,7 @@ export async function processCustomerRegistration(phone: string, customer: Custo
     // Profile is done, but the customer still has no vehicle on file — the vehicle-ID
     // gate in whatsapp.controller.ts picks this up on their next message regardless,
     // but showing the buttons immediately here avoids an unnecessary extra round trip.
-    await sendWhatsAppButtons(phone, t.onboarding.askVehicleIdBody(name), t.onboarding.askVehicleIdButtons);
+    await sendWhatsAppButtons(phone, messages.onboarding.askVehicleIdBody(name), messages.onboarding.askVehicleIdButtons);
     await markVehicleIdChoiceShown(phone);
     return true;
   }
@@ -98,18 +132,19 @@ export async function processCustomerRegistration(phone: string, customer: Custo
  * instead of silently treating this first message as the answer to that step.
  */
 export async function sendResumeRegistrationPrompt(phone: string, customer: Customer): Promise<void> {
-  await sendWhatsAppMessage(phone, t.onboarding.resumeRegistration());
+  const messages = await resolveMessages(phone);
+  await sendWhatsAppMessage(phone, messages.onboarding.resumeRegistration());
 
   if (customer.registration_status === 'awaiting_name') {
-    await sendWhatsAppMessage(phone, t.onboarding.askNameOnly());
+    await sendWhatsAppMessage(phone, messages.onboarding.askNameOnly());
   } else if (customer.registration_status === 'awaiting_nif') {
     const name = customer.name?.split(' ')[0] || 'Cliente';
-    await sendWhatsAppButtons(phone, t.onboarding.askNifBody(name), t.onboarding.askNifButtons);
+    await sendWhatsAppButtons(phone, messages.onboarding.askNifBody(name), messages.onboarding.askNifButtons);
   } else if (customer.registration_status === 'awaiting_nif_number') {
-    await sendWhatsAppMessage(phone, t.onboarding.askNifNumber());
+    await sendWhatsAppMessage(phone, messages.onboarding.askNifNumber());
   } else if (customer.registration_status === 'awaiting_address') {
     const firstName = customer.name?.split(' ')[0] || 'Cliente';
-    await sendWhatsAppMessage(phone, t.onboarding.askAddress(firstName));
+    await sendWhatsAppMessage(phone, messages.onboarding.askAddress(firstName));
   }
 }
 
@@ -128,13 +163,14 @@ export async function completeOnboardingIfNeeded(
 ): Promise<boolean> {
   if (customer.registered_at) return false;
 
+  const messages = await resolveMessages(phone);
   await updateCustomer(phone, { registered_at: new Date() });
 
   const name = customer.name?.split(' ')[0] || 'Cliente';
   await sendWhatsAppButtons(
     phone,
-    t.onboarding.onboardingComplete(name, vehicleSummary),
-    [t.vehicleConfirm.addVehicleButton()]
+    messages.onboarding.onboardingComplete(name, vehicleSummary),
+    [messages.vehicleConfirm.addVehicleButton()]
   );
   await markPartPromptSent(phone);
   return true;

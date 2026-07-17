@@ -1,12 +1,10 @@
-import { config } from '../config/config.js';
-
 /**
  * Central dictionary of every customer/staff-facing string (WhatsApp messages,
  * generated PDF text, the conversational agent's system prompt). Portuguese
  * (Angola) is the production language — see CLAUDE.md "Language split". The
- * English variant exists purely so a developer can set MESSAGE_LOCALE=en
- * locally and read what the bot is saying while testing; production always
- * defaults to 'pt' regardless of this file's contents.
+ * customer conversation picks between the two variants per message (see
+ * detectMessageLocale/resolveMessages); admin-facing strings (the fixed `t`
+ * export below) are pinned to the English variant.
  */
 
 interface PaymentMethodCopy {
@@ -214,11 +212,12 @@ interface Messages {
 const pt: Messages = {
   onboarding: {
     welcome: () =>
-      `👋 Bem-vindo à *Rede Peças*!\n\n` +
-      `Somos o marketplace automotivo de Angola — ` +
-      `encontramos as peças certas para o teu veículo no menor tempo possível. 🚗\n\n` +
-      `Para te servir melhor, vou registar o teu perfil rapidamente.\n\n` +
-      `*Como te chamas?* 👇`,
+      `Olá! Bem-vindo à Rede Peças, o teu marketplace automóvel angolano!\n\n` +
+      `Eu sou o Xico Peças, o teu assistente.\n\n` +
+      `Nos nossos fornecedores vou encontrar as melhores opções para ti — rápido.\n\n` +
+      `Peças  •  Lubrificantes  •  Acessórios  •  Serviços\n\n` +
+      `Vais poupar tempo, combustível, saldo e stress.\n\n` +
+      `Vamos começar! Como te chamas?`,
     welcomeBack: (name) =>
       `👋 Olá de novo, *${name}*! Bem-vindo de volta à *Rede Peças*. 😊`,
     resumeRegistration: () =>
@@ -600,11 +599,12 @@ const pt: Messages = {
 const en: Messages = {
   onboarding: {
     welcome: () =>
-      `👋 Welcome to *Rede Peças*!\n\n` +
-      `We're Angola's automotive parts marketplace. ` +
-      `Tell us what you need and we'll find it across all our suppliers — fast. 🚗\n\n` +
-      `Before we start, let me set up your profile so I can serve you better.\n\n` +
-      `*What's your name?*`,
+      `Hi! Welcome to Rede Peças, your Angolan automotive marketplace!\n\n` +
+      `I'm Xico Peças, your assistant.\n\n` +
+      `In our suppliers I will find you the best options — fast.\n\n` +
+      `Parts  •  Lubricants  •  Accessories  •  Services\n\n` +
+      `You'll save time, fuel, money and stress.\n\n` +
+      `Let's get started! What's your name?`,
     welcomeBack: (name) =>
       `👋 Hey again, *${name}*! Welcome back to *Rede Peças*. 😊`,
     resumeRegistration: () =>
@@ -987,4 +987,33 @@ const en: Messages = {
   },
 };
 
-export const t: Messages = config.messageLocale === 'en' ? en : pt;
+// Admin-facing messages (stock-confirmation pushes, payment approve/reject
+// acks, password-reset codes, t.admin.*/t.adminAuth.*) and the supplier
+// delivery notice are not part of the customer conversation, so they don't
+// follow per-message locale detection — pinned to English, independent of
+// any env var (previously governed by a MESSAGE_LOCALE env var; removed
+// 2026-07-17 along with the whole "one process-wide default" concept).
+export const t: Messages = en;
+
+/**
+ * Fallback locale for a customer conversation when no language signal has
+ * been detected yet in this session — e.g. the very first message isn't a
+ * recognizable PT/EN word or phrase (see detectMessageLocale in
+ * utils/greeting.ts). Hardcoded rather than sourced from an env var:
+ * customer locale is now detected fresh per message and cached per-session
+ * (session.service.ts's saveLocale/getLocale), never stored durably or
+ * pinned to a single process-wide default the way MESSAGE_LOCALE used to.
+ */
+export const DEFAULT_LOCALE: 'pt' | 'en' = 'pt';
+
+/**
+ * Per-customer message resolver — used by every customer-facing send via the
+ * customer's own detected locale (see resolveMessages/resolveLocale in
+ * customer.service.ts), instead of the fixed `t` above. `t` itself is
+ * untouched and keeps backing the paths that intentionally stay on a single
+ * fixed language: the admin-panel/admin-push messages (t.admin.*,
+ * t.adminAuth.*), which aren't part of "greeting the bot".
+ */
+export function getMessages(locale: 'pt' | 'en'): Messages {
+  return locale === 'en' ? en : pt;
+}

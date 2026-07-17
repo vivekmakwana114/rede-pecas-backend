@@ -4,6 +4,7 @@ import authRoute from './auth.route.js';
 import orderRoute from './order.route.js';
 import productRoute from './product.route.js';
 import alertRoute from './alert.route.js';
+import customerRoute from './customer.route.js';
 
 const router = express.Router();
 
@@ -13,6 +14,7 @@ const defaultRoutes = [
   { path: '/admin', route: orderRoute },
   { path: '/admin', route: productRoute },
   { path: '/admin', route: alertRoute },
+  { path: '/admin', route: customerRoute },
 ];
 
 defaultRoutes.forEach((route) => {

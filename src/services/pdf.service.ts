@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { config } from '../config/config.js';
 import { logger } from '../config/logger.js';
 import { formatPrice } from '../utils/helpers.js';
-import { t } from '../i18n/messages.js';
+import { getMessages, DEFAULT_LOCALE } from '../i18n/messages.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,13 +26,15 @@ function addDays(date: Date, days: number): Date {
  * Generates an A4 PDF Proforma invoice for the customer. When `service` is
  * given, it's rendered as its own table row (own reference-less line, own
  * price) below the product, and the total box sums both.
- * Document text is Portuguese (customer-facing).
+ * Document text follows `locale` (the customer's own detected locale, not
+ * the fixed MESSAGE_LOCALE) — pass the caller's resolved customer locale.
  */
 export async function generateProformaPDF(
   orderNumber: string,
   phone: string,
   item: any,
-  service: { name: string; price: number } | null = null
+  service: { name: string; price: number } | null = null,
+  locale: 'pt' | 'en' = DEFAULT_LOCALE
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
@@ -45,7 +47,7 @@ export async function generateProformaPDF(
     const stream = fs.createWriteStream(filePath);
     doc.pipe(stream);
 
-    const pc = t.pdf.proforma;
+    const pc = getMessages(locale).pdf.proforma;
 
     // Header
     doc.fontSize(22).fillColor('#1A3A5C').font('Helvetica-Bold').text(pc.companyName, 50, 50);
@@ -144,7 +146,8 @@ export async function generateProformaPDF(
 export async function sendProformaWhatsApp(
   phone: string,
   pdfPath: string,
-  orderNumber: string
+  orderNumber: string,
+  locale: 'pt' | 'en' = DEFAULT_LOCALE
 ): Promise<void> {
   const API_URL = `${config.whatsapp.graphApiUrl}/${config.whatsapp.phoneNumberId}`;
   const token = config.whatsapp.token;
@@ -188,7 +191,7 @@ export async function sendProformaWhatsApp(
         document: {
           id: mediaId,
           filename: `Proforma_${orderNumber}.pdf`,
-          caption: t.pdf.sendMessage.documentCaption(orderNumber),
+          caption: getMessages(locale).pdf.sendMessage.documentCaption(orderNumber),
         },
       }),
     });
@@ -203,14 +206,14 @@ export async function sendProformaWhatsApp(
 /**
  * Generates the official tax invoice via Primavera API (certified by AGT Angola).
  */
-export async function generatePrimaveraInvoice(order: any): Promise<string> {
+export async function generatePrimaveraInvoice(order: any, locale: 'pt' | 'en' = DEFAULT_LOCALE): Promise<string> {
   const primaveraUrl = config.primavera.apiUrl;
   const primaveraToken = config.primavera.token;
 
   // Mock implementation if token is missing
   if (!primaveraToken || primaveraToken === 'TOKEN_DO_PRIMAVERA_AQUI') {
     logger.warn('PRIMAVERA_API_TOKEN is missing or is placeholder. Generating mock invoice PDF.');
-    return generateMockInvoicePDF(order);
+    return generateMockInvoicePDF(order, locale);
   }
 
   try {
@@ -272,7 +275,7 @@ export async function generatePrimaveraInvoice(order: any): Promise<string> {
     return pdfPath;
   } catch (error: any) {
     logger.error(`Error generating Primavera invoice, falling back to mock: ${error.message}`);
-    return generateMockInvoicePDF(order);
+    return generateMockInvoicePDF(order, locale);
   }
 }
 
@@ -283,7 +286,8 @@ export async function sendFinalInvoiceWhatsApp(
   phone: string,
   pdfPath: string,
   orderNumber: string,
-  customerName: string
+  customerName: string,
+  locale: 'pt' | 'en' = DEFAULT_LOCALE
 ): Promise<void> {
   const API_URL = `${config.whatsapp.graphApiUrl}/${config.whatsapp.phoneNumberId}`;
   const token = config.whatsapp.token;
@@ -319,7 +323,7 @@ export async function sendFinalInvoiceWhatsApp(
         to: phone,
         type: 'text',
         text: {
-          body: t.pdf.finalInvoice.notification(customerName),
+          body: getMessages(locale).pdf.finalInvoice.notification(customerName),
         },
       }),
     });
@@ -338,7 +342,7 @@ export async function sendFinalInvoiceWhatsApp(
         document: {
           id: mediaId,
           filename: `Factura_${orderNumber}.pdf`,
-          caption: t.pdf.finalInvoice.documentCaption(orderNumber),
+          caption: getMessages(locale).pdf.finalInvoice.documentCaption(orderNumber),
         },
       }),
     });
@@ -353,7 +357,7 @@ export async function sendFinalInvoiceWhatsApp(
 /**
  * Generates a mock invoice PDF when Primavera ERP is not connected.
  */
-async function generateMockInvoicePDF(order: any): Promise<string> {
+async function generateMockInvoicePDF(order: any, locale: 'pt' | 'en' = DEFAULT_LOCALE): Promise<string> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
     const tempDir = path.join(__dirname, '../../temp');
@@ -364,7 +368,7 @@ async function generateMockInvoicePDF(order: any): Promise<string> {
     const stream = fs.createWriteStream(filePath);
     doc.pipe(stream);
 
-    const mc = t.pdf.mockInvoice;
+    const mc = getMessages(locale).pdf.mockInvoice;
 
     // Header
     doc.fontSize(22).fillColor('#2E7D32').font('Helvetica-Bold').text(mc.headerTitle, 50, 50);
