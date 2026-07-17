@@ -8,8 +8,7 @@ import * as sessionService from '../services/session.service.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons } from '../services/whatsapp.service.js';
 import { getAdminByPhone } from '../models/adminUser.model.js';
 import { config } from '../config/config.js';
-import { getMessages, DEFAULT_LOCALE } from '../i18n/messages.js';
-import { GREETING_PATTERN } from '../utils/greeting.js';
+import { GREETING_PATTERN, detectMessageLocale } from '../utils/greeting.js';
 
 // Deterministic keyword trigger for reaching a human — there's no conversational AI left
 // to infer this from tone/intent, so it's a plain keyword match (PT/EN).
@@ -100,17 +99,26 @@ async function processMessageFlow(
     return;
   }
 
-  // 1. Get-or-create customer (handles pre-registration + welcome on first contact —
-  // customerText is passed through so a brand-new customer's locale can be detected
-  // from their very first message, see getOrCreateCustomer)
-  const customer = await customerService.getOrCreateCustomer(phone, customerText);
+  // 1. Detect this message's language and cache it for the session (see
+  // detectMessageLocale in utils/greeting.ts and saveLocale/getLocale in
+  // session.service.ts) *before* any reply is built below — including the
+  // brand-new-customer welcome message in getOrCreateCustomer, which reads
+  // this same cached value. A message with no recognizable PT/EN signal
+  // (e.g. a VIN, a bare digit, a button tap with an ambiguous title) leaves
+  // whatever locale was already cached untouched, so a customer switches
+  // language mid-conversation only when they actually type in the other one.
+  if (customerText) {
+    const detected = detectMessageLocale(customerText);
+    if (detected) await sessionService.saveLocale(phone, detected);
+  }
+
+  // 1.1 Get-or-create customer (handles pre-registration + welcome on first contact)
+  const customer = await customerService.getOrCreateCustomer(phone);
   if (!customer) return;
 
   // Every customer-facing send below resolves messages via this instead of the
-  // fixed `t` import — customer.locale is detected once at first contact and
-  // never changes afterward (sticky), see the `locale` column comment in
-  // db/schema.sql.
-  const messages = getMessages(customer.locale ?? DEFAULT_LOCALE);
+  // fixed `t` import — see resolveMessages/resolveLocale in customer.service.ts.
+  const messages = await customerService.resolveMessages(phone);
 
   // 2. Session-freshness check: has this number been active in the last 4h? Touched
   // unconditionally on every message so the *next* message is treated as a live answer.

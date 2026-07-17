@@ -661,3 +661,48 @@ export async function clearDocumentRetryChoice(phone: string): Promise<void> {
   }
 }
 
+/**
+ * Tracks the customer's most recently detected conversation language —
+ * refreshed on every inbound message whose text carries a recognizable PT/EN
+ * signal (see detectMessageLocale in utils/greeting.ts), so a customer who
+ * switches language mid-conversation gets answered in whatever they just
+ * typed rather than a locale frozen at first contact. Deliberately
+ * session-scoped (same SESSION_TTL as everything else here) instead of
+ * durable — this used to be persisted forever on customers.locale, which
+ * meant it was detected once and never re-evaluated; see resolveLocale in
+ * customer.service.ts, the sole reader of this.
+ */
+const localeSessions = new Map<string, { locale: 'pt' | 'en'; expiresAt: number }>();
+
+export async function saveLocale(phone: string, locale: 'pt' | 'en'): Promise<void> {
+  const key = `locale:${phone}`;
+  localeSessions.set(key, { locale, expiresAt: Date.now() + SESSION_TTL * 1000 });
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, SESSION_TTL, locale);
+  } catch (err) {
+    logger.error('Error saving locale to Redis', err);
+  }
+}
+
+export async function getLocale(phone: string): Promise<'pt' | 'en' | null> {
+  const key = `locale:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    const entry = localeSessions.get(key);
+    return entry && entry.expiresAt >= Date.now() ? entry.locale : null;
+  }
+
+  try {
+    const data = await redisClient.get(key);
+    return data === 'pt' || data === 'en' ? data : null;
+  } catch (err) {
+    logger.error('Error fetching locale from Redis', err);
+    const entry = localeSessions.get(key);
+    return entry && entry.expiresAt >= Date.now() ? entry.locale : null;
+  }
+}
+

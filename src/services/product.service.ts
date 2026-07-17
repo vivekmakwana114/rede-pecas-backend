@@ -28,7 +28,7 @@ import {
 import { getCustomerVehicles } from '../models/vehicle.model.js';
 import { getCustomerByPhone } from '../models/customer.model.js';
 import { getAllAdmins } from '../models/adminUser.model.js';
-import { resolveMessages } from './customer.service.js';
+import { resolveMessages, resolveLocale } from './customer.service.js';
 import { sendWhatsAppMessage, sendWhatsAppList, sendWhatsAppButtons } from './whatsapp.service.js';
 import { generateProformaPDF, sendProformaWhatsApp } from './pdf.service.js';
 import { askPaymentMethod } from './payment.service.js';
@@ -48,7 +48,7 @@ import {
   PendingStockUnavailableOffer
 } from './session.service.js';
 import { formatPrice } from '../utils/helpers.js';
-import { t, getMessages, DEFAULT_LOCALE } from '../i18n/messages.js';
+import { t, getMessages } from '../i18n/messages.js';
 
 /**
  * A customer can have several confirmed vehicles. With one, it's unambiguous; with
@@ -234,11 +234,12 @@ export async function confirmStockAndFinalizeOrder(orderNumber: string): Promise
 
   const customer = await getCustomerByPhone(phone);
   const firstName = customer?.name?.split(' ')[0] || 'Cliente';
-  const messages = getMessages(customer?.locale ?? DEFAULT_LOCALE);
+  const locale = await resolveLocale(phone);
+  const messages = getMessages(locale);
   await sendWhatsAppMessage(phone, messages.agent.stockConfirmedIntro(product.name, firstName));
 
-  const proformaPath = await generateProformaPDF(orderNumber, phone, product, service);
-  await sendProformaWhatsApp(phone, proformaPath, orderNumber);
+  const proformaPath = await generateProformaPDF(orderNumber, phone, product, service, locale);
+  await sendProformaWhatsApp(phone, proformaPath, orderNumber, locale);
   await askPaymentMethod(phone, orderNumber, total);
 
   // Clean temp PDF asynchronously
@@ -552,7 +553,7 @@ export async function notifyWaitlistedCustomers(restockNotifications: RestockNot
       try {
         const customer = await getCustomerByPhone(phone);
         const firstName = customer?.name?.split(' ')[0] || 'Cliente';
-        const messages = getMessages(customer?.locale ?? DEFAULT_LOCALE);
+        const messages = getMessages(await resolveLocale(phone));
 
         const vehicles = await getCustomerVehicles(phone);
         const vehicleSummary = vehicles.length ? `${vehicles[0].make} ${vehicles[0].model} ${vehicles[0].year}` : null;

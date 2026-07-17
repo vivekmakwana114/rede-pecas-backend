@@ -7,11 +7,6 @@ export interface Customer {
   address: string | null;
   email: string | null;
   registration_status: string;
-  // Detected once from the customer's first message and never re-evaluated —
-  // NULL for rows created before this column existed (resolve via
-  // `customer.locale ?? DEFAULT_LOCALE` at call sites — see DEFAULT_LOCALE
-  // in i18n/messages.ts). See detectGreetingLocale in utils/greeting.ts.
-  locale: 'pt' | 'en' | null;
   first_contact_at: Date;
   last_contact_at: Date;
   registered_at: Date | null;
@@ -53,16 +48,14 @@ export async function getCustomerByPhone(phone: string): Promise<Customer | null
 }
 
 /**
- * Creates a pre-registration entry for a new customer, stamping the locale
- * detected from their first message (sticky from here on — see the `locale`
- * column comment above).
+ * Creates a pre-registration entry for a new customer.
  */
-export async function createCustomerPreRegistration(phone: string, registrationStatus: string, locale: 'pt' | 'en'): Promise<void> {
+export async function createCustomerPreRegistration(phone: string, registrationStatus: string): Promise<void> {
   await db.query(
-    `INSERT INTO customers (phone, registration_status, locale, first_contact_at, last_contact_at)
-     VALUES ($1, $2, $3, NOW(), NOW())
+    `INSERT INTO customers (phone, registration_status, first_contact_at, last_contact_at)
+     VALUES ($1, $2, NOW(), NOW())
      ON CONFLICT (phone) DO NOTHING`,
-    [phone, registrationStatus, locale]
+    [phone, registrationStatus]
   );
 }
 

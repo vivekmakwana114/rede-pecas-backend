@@ -28,7 +28,6 @@ import {
   markDocumentRetryChoiceShown,
   clearDocumentRetryChoice,
 } from './session.service.js';
-import { getMessages, DEFAULT_LOCALE } from '../i18n/messages.js';
 
 // Pure pass-through so the controller never imports vehicle.model.js directly
 export { getActiveManualCollection, startManualCollection };
@@ -306,7 +305,7 @@ export async function processManualCollectionStep(
   reply: string,
   customer: Customer
 ): Promise<boolean> {
-  const messages = getMessages(customer.locale ?? DEFAULT_LOCALE);
+  const messages = await resolveMessages(phone);
   const r = reply.trim();
 
   if (collection.status === 'awaiting_make') {
@@ -570,7 +569,7 @@ export async function processDocumentRetryChoice(phone: string, reply: string): 
  * Processes vehicle quick confirmation buttons.
  */
 export async function processVehicleConfirmation(phone: string, reply: string, customer: Customer): Promise<boolean> {
-  const messages = getMessages(customer.locale ?? DEFAULT_LOCALE);
+  const messages = await resolveMessages(phone);
   const r = reply.toLowerCase();
 
   if (r.includes('sim') || r.includes('yes') || r.includes('✅') || r === '1' || r.includes('btn_0')) {

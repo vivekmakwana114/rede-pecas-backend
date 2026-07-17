@@ -143,7 +143,6 @@ Table customers {
   address text
   email text
   registration_status text [default: 'new', note: 'new → awaiting_name → awaiting_nif → awaiting_nif_number → awaiting_address → awaiting_vehicle_id → complete']
-  locale text [note: 'pt | en — detected once from the first message, sticky, NULL resolves to pt']
   first_contact_at timestamptz [default: `NOW()`]
   last_contact_at timestamptz [default: `NOW()`]
   registered_at timestamptz

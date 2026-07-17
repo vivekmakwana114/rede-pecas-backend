@@ -346,13 +346,6 @@ CREATE TABLE IF NOT EXISTS customers (
   address              TEXT,
   email                TEXT,
   registration_status  TEXT DEFAULT 'new',      -- new, awaiting_name, awaiting_nif, awaiting_nif_number, awaiting_address, complete (profile only — vehicle ID is tracked independently via the `vehicles` table)
-  -- Detected once from the customer's very first message (detectGreetingLocale in
-  -- src/utils/greeting.ts) and never re-evaluated afterward — sticky per customer,
-  -- not re-detected per message. NULL for rows created before this column existed;
-  -- the app resolves NULL to DEFAULT_LOCALE (src/i18n/messages.ts — the environment's
-  -- configured MESSAGE_LOCALE, not a hardcoded language) at read time (no reliable
-  -- backfill — the original greeting text was never stored).
-  locale               TEXT,                    -- 'pt' | 'en'
   first_contact_at     TIMESTAMPTZ DEFAULT NOW(),
   last_contact_at      TIMESTAMPTZ DEFAULT NOW(),
   registered_at        TIMESTAMPTZ,
@@ -360,7 +353,12 @@ CREATE TABLE IF NOT EXISTS customers (
   active               BOOLEAN DEFAULT true
 );
 
-ALTER TABLE customers ADD COLUMN IF NOT EXISTS locale TEXT;
+-- Conversation locale used to be stamped here once from the customer's first
+-- message and never re-evaluated (sticky) — removed as of 2026-07-17 in favor
+-- of per-message detection cached in Redis session state (session.service.ts's
+-- saveLocale/getLocale), so a customer switching language mid-conversation
+-- gets answered in whatever they just typed instead of a frozen locale.
+ALTER TABLE customers DROP COLUMN IF EXISTS locale;
 
 CREATE INDEX IF NOT EXISTS idx_customers_status ON customers (registration_status);
 CREATE INDEX IF NOT EXISTS idx_customers_last_contact ON customers (last_contact_at);

@@ -1,12 +1,10 @@
-import { config } from '../config/config.js';
-
 /**
  * Central dictionary of every customer/staff-facing string (WhatsApp messages,
  * generated PDF text, the conversational agent's system prompt). Portuguese
  * (Angola) is the production language — see CLAUDE.md "Language split". The
- * English variant exists purely so a developer can set MESSAGE_LOCALE=en
- * locally and read what the bot is saying while testing; production always
- * defaults to 'pt' regardless of this file's contents.
+ * customer conversation picks between the two variants per message (see
+ * detectMessageLocale/resolveMessages); admin-facing strings (the fixed `t`
+ * export below) are pinned to the English variant.
  */
 
 interface PaymentMethodCopy {
@@ -989,30 +987,32 @@ const en: Messages = {
   },
 };
 
-export const t: Messages = config.messageLocale === 'en' ? en : pt;
+// Admin-facing messages (stock-confirmation pushes, payment approve/reject
+// acks, password-reset codes, t.admin.*/t.adminAuth.*) and the supplier
+// delivery notice are not part of the customer conversation, so they don't
+// follow per-message locale detection — pinned to English, independent of
+// any env var (previously governed by a MESSAGE_LOCALE env var; removed
+// 2026-07-17 along with the whole "one process-wide default" concept).
+export const t: Messages = en;
 
 /**
- * The locale to use when a customer's own locale is unknown — either their
- * `customers.locale` row is NULL (a customer created before this column
- * existed, or a legacy row from before per-customer detection shipped) or a
- * brand-new customer's first message wasn't a recognizable greeting at all.
- * Deliberately the *environment's* configured default (same source `t`
- * already uses), not a hardcoded 'pt': hardcoding it meant a NULL-locale
- * customer fell back to Portuguese even in this dev environment where
- * MESSAGE_LOCALE=en, while anything still on the fixed `t` stayed English —
- * an inconsistent mix of the two languages for the exact same customer.
- * Using the same source for both eliminates that mismatch.
+ * Fallback locale for a customer conversation when no language signal has
+ * been detected yet in this session — e.g. the very first message isn't a
+ * recognizable PT/EN word or phrase (see detectMessageLocale in
+ * utils/greeting.ts). Hardcoded rather than sourced from an env var:
+ * customer locale is now detected fresh per message and cached per-session
+ * (session.service.ts's saveLocale/getLocale), never stored durably or
+ * pinned to a single process-wide default the way MESSAGE_LOCALE used to.
  */
-export const DEFAULT_LOCALE: 'pt' | 'en' = config.messageLocale;
+export const DEFAULT_LOCALE: 'pt' | 'en' = 'pt';
 
 /**
- * Per-customer message resolver — used by every customer-facing send once the
- * customer's own locale (customers.locale, detected from their first greeting —
- * see detectGreetingLocale in whatsapp.controller.ts) is known, instead of the
- * fixed `t` above. `t` itself is untouched and keeps backing the paths that
- * intentionally stay on the single global MESSAGE_LOCALE: the PDF proforma and
- * admin-panel/admin-push messages (t.admin.*, t.adminAuth.*), which aren't part
- * of "greeting the bot".
+ * Per-customer message resolver — used by every customer-facing send via the
+ * customer's own detected locale (see resolveMessages/resolveLocale in
+ * customer.service.ts), instead of the fixed `t` above. `t` itself is
+ * untouched and keeps backing the paths that intentionally stay on a single
+ * fixed language: the admin-panel/admin-push messages (t.admin.*,
+ * t.adminAuth.*), which aren't part of "greeting the bot".
  */
 export function getMessages(locale: 'pt' | 'en'): Messages {
   return locale === 'en' ? en : pt;

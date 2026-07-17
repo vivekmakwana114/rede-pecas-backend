@@ -9,8 +9,8 @@ import { getCustomerByPhone } from '../models/customer.model.js';
 import { getAllAdmins, getAdminByPhone } from '../models/adminUser.model.js';
 import { createAlert } from '../models/alert.model.js';
 import { formatPrice } from '../utils/helpers.js';
-import { t, getMessages, DEFAULT_LOCALE } from '../i18n/messages.js';
-import { resolveMessages } from './customer.service.js';
+import { t, getMessages } from '../i18n/messages.js';
+import { resolveMessages, resolveLocale } from './customer.service.js';
 
 // Display names and instruction texts come from src/i18n/messages.ts (customer-facing);
 // ids are English because they are persisted in orders.payment_method. A function
@@ -100,7 +100,7 @@ export async function getPendingPaymentOrder(phone: string) {
  * Processes the customer's response to the payment method list.
  */
 export async function processMethodChoice(phone: string, customerReply: string): Promise<boolean> {
-  const locale = (await getCustomerByPhone(phone))?.locale ?? DEFAULT_LOCALE;
+  const locale = await resolveLocale(phone);
   const messages = getMessages(locale);
   const paymentMethods = getPaymentMethods(locale);
   const { rows } = await db.query(
@@ -143,7 +143,7 @@ export async function processMethodChoice(phone: string, customerReply: string):
  * Processes banking or face-to-face payment sub-choices.
  */
 export async function processMethodSubtype(phone: string, reply: string): Promise<boolean> {
-  const locale = (await getCustomerByPhone(phone))?.locale ?? DEFAULT_LOCALE;
+  const locale = await resolveLocale(phone);
   const paymentMethods = getPaymentMethods(locale);
   const { rows } = await db.query(
     `SELECT number, unit_price, service_price, status FROM orders
@@ -212,7 +212,7 @@ export async function processPaymentProof(
   mediaType: string | null,
   customerName: string
 ): Promise<boolean> {
-  const locale = (await getCustomerByPhone(phone))?.locale ?? DEFAULT_LOCALE;
+  const locale = await resolveLocale(phone);
   const messages = getMessages(locale);
   const { rows } = await db.query(
     `SELECT number, unit_price, service_price, payment_method FROM orders
@@ -369,13 +369,15 @@ export async function approveOrder(orderNumber: string, employeeId: number): Pro
   const details = await getOrderByNumber(orderNumber);
   const fullOrder = details ? { ...order, ...details } : order;
 
-  // Generate tax invoice PDF
-  const invoicePDF = await generatePrimaveraInvoice(fullOrder);
-
-  // Send the final PDF invoice to the customer
   const customer = await getCustomerByPhone(order.customer_phone);
   const firstName = customer?.name?.split(' ')[0] || 'Cliente';
-  await sendFinalInvoiceWhatsApp(order.customer_phone, invoicePDF, orderNumber, firstName);
+  const locale = await resolveLocale(order.customer_phone);
+
+  // Generate tax invoice PDF
+  const invoicePDF = await generatePrimaveraInvoice(fullOrder, locale);
+
+  // Send the final PDF invoice to the customer
+  await sendFinalInvoiceWhatsApp(order.customer_phone, invoicePDF, orderNumber, firstName, locale);
 
   // Notify the supplier to prepare delivery
   await notifySupplierDelivery(fullOrder);

@@ -270,12 +270,17 @@ export interface AnalyticsPoint {
   stockConfirmation: number;
 }
 
-// Range/bucket shape per period for the admin dashboard charts — daily buckets
-// by hour (today), monthly by day (this calendar month), yearly by month
-// (this calendar year). rangeStartExpr/rangeEndExpr are trusted SQL snippets
-// (not user input — period is constrained to these three keys by the Joi
-// validation before this is ever called), interpolated directly into the
-// query text since date/interval expressions can't be bound as query params.
+// Range/bucket shape per period for the admin dashboard charts — each is a
+// rolling window ending at the current hour/day/month (not snapped to
+// midnight/the 1st/Jan-1), so the chart always shows the full trailing
+// window's worth of history instead of resetting to near-empty right after
+// a calendar boundary ticks over. Same all-time spirit as getOrderStats
+// below, just windowed so the X axis stays a fixed, readable size (24
+// hourly / 30 daily / 12 monthly buckets) instead of growing unbounded.
+// rangeStartExpr/rangeEndExpr are trusted SQL snippets (not user input —
+// period is constrained to these three keys by the Joi validation before
+// this is ever called), interpolated directly into the query text since
+// date/interval expressions can't be bound as query params.
 const ANALYTICS_PERIOD_CONFIG: Record<AnalyticsPeriod, {
   rangeStartExpr: string;
   rangeEndExpr: string;
@@ -284,35 +289,39 @@ const ANALYTICS_PERIOD_CONFIG: Record<AnalyticsPeriod, {
   labelFormat: string;
 }> = {
   daily: {
-    rangeStartExpr: `date_trunc('day', NOW())`,
-    rangeEndExpr: `date_trunc('day', NOW()) + interval '23 hours'`,
+    // Last 24 hours ending at the current hour (24 buckets: now-23h..now).
+    rangeStartExpr: `date_trunc('hour', NOW()) - interval '23 hours'`,
+    rangeEndExpr: `date_trunc('hour', NOW())`,
     step: '1 hour',
     truncUnit: 'hour',
     labelFormat: 'HH24:00',
   },
   monthly: {
-    rangeStartExpr: `date_trunc('month', NOW())`,
-    rangeEndExpr: `date_trunc('month', NOW()) + interval '1 month' - interval '1 day'`,
+    // Last 30 days ending today (30 buckets: today-29d..today).
+    rangeStartExpr: `date_trunc('day', NOW()) - interval '29 days'`,
+    rangeEndExpr: `date_trunc('day', NOW())`,
     step: '1 day',
     truncUnit: 'day',
     labelFormat: 'DD Mon',
   },
   yearly: {
-    rangeStartExpr: `date_trunc('year', NOW())`,
-    rangeEndExpr: `date_trunc('year', NOW()) + interval '11 months'`,
+    // Last 12 months ending this month (12 buckets: this month-11..this month).
+    rangeStartExpr: `date_trunc('month', NOW()) - interval '11 months'`,
+    rangeEndExpr: `date_trunc('month', NOW())`,
     step: '1 month',
     truncUnit: 'month',
-    labelFormat: 'Mon',
+    labelFormat: 'Mon YYYY',
   },
 };
 
 /**
  * Buckets orders into one point per hour/day/month (depending on `period`)
- * for the admin dashboard's revenue/orders charts. Every bucket in the range
- * is included even when empty (0 revenue, 0 counts) via the generate_series
- * CTE left-joined to the actual order rows, so the X axis is always a
- * complete, evenly-spaced today/this-month/this-year — not just the hours/
- * days/months that happen to have orders.
+ * for the admin dashboard's revenue/orders charts, over a rolling window
+ * ending now (last 24h / last 30d / last 12mo — see ANALYTICS_PERIOD_CONFIG).
+ * Every bucket in the range is included even when empty (0 revenue, 0
+ * counts) via the generate_series CTE left-joined to the actual order rows,
+ * so the X axis is always a complete, evenly-spaced window — not just the
+ * hours/days/months that happen to have orders.
  *
  * Bucketed by created_at (when the order was placed), not approved_at/
  * updated_at — keeps both charts on the same X axis and revenue attributed
