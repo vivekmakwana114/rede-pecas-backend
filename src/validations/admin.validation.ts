@@ -71,6 +71,30 @@ export const customerUpdate: ValidationSchema = {
     .min(1),
 };
 
+export const productIdParams: ValidationSchema = {
+  params: Joi.object().keys({
+    id: Joi.number().integer().required(),
+  }),
+};
+
+export const productUpdate: ValidationSchema = {
+  params: Joi.object().keys({
+    id: Joi.number().integer().required(),
+  }),
+  body: Joi.object()
+    .keys({
+      name: Joi.string(),
+      reference: Joi.string(),
+      price: Joi.number(),
+      quantity: Joi.number().integer().min(0),
+      delivery_time: Joi.string().allow('', null),
+      service_offered: Joi.boolean(),
+      service_name: Joi.string().allow('', null),
+      service_price: Joi.number().allow(null),
+    })
+    .min(1),
+};
+
 export const importProductsBatch: ValidationSchema = {
   body: Joi.object().keys({
     // Fallback supplier for any item that doesn't specify its own — optional

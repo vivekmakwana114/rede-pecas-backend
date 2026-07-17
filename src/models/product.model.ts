@@ -153,6 +153,37 @@ export async function getProductById(id: number): Promise<Product | null> {
 }
 
 /**
+ * Admin edits to a product's catalog/stock fields — backs PATCH
+ * /admin/products/:id. supplier_id is intentionally not editable here:
+ * reassigning it would change the row's UNIQUE (supplier_id, reference)
+ * identity, which is out of scope for a simple field edit.
+ */
+export async function updateProduct(id: number, fields: Partial<Product>): Promise<void> {
+  const keys = Object.keys(fields);
+  if (!keys.length) return;
+
+  const setClauses = keys.map((key, index) => `"${key}" = $${index + 2}`).join(', ');
+  const values = keys.map((key) => (fields as any)[key]);
+
+  await db.query(
+    `UPDATE products SET ${setClauses}, updated_at = NOW() WHERE id = $1`,
+    [id, ...values]
+  );
+}
+
+/**
+ * Soft-deletes a product (active = false) — backs DELETE /admin/products/:id.
+ * Matches deactivateCustomer's convention elsewhere in the admin API.
+ */
+export async function deactivateProduct(id: number): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE products SET active = false WHERE id = $1 AND active = true`,
+    [id]
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
  * Finds an out-of-stock product matching the requested part, so a waitlist
  * opt-in has somewhere to attach the customer's phone. Not vehicle-aware —
  * a part with no product row at all (never stocked) can't be waitlisted

@@ -789,3 +789,32 @@ export async function importInventoryFromFile(fileBuffer: Buffer): Promise<Inven
 
   return importInventoryBatch(items, null);
 }
+
+// Column order matches the primary alias for each HEADER_ALIASES field (and
+// postman/generate-test-inventory.js's sample file), so a template downloaded
+// here round-trips through importInventoryFromFile unchanged once data rows
+// are added.
+const TEMPLATE_HEADER_ROW = [
+  'reference',
+  'name',
+  'price',
+  'quantity',
+  'supplier',
+  'supplier_nif',
+  'supplier_province',
+  'service',
+  'service_name',
+  'service_price',
+];
+
+/**
+ * Builds a blank XLSX workbook containing only the header row expected by
+ * importInventoryFromFile — lets an admin start from a file guaranteed to
+ * have the right columns instead of guessing at names.
+ */
+export function generateInventoryTemplateFile(): Buffer {
+  const worksheet = XLSX.utils.aoa_to_sheet([TEMPLATE_HEADER_ROW]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Inventory');
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
