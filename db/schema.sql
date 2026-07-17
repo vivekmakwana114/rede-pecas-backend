@@ -186,8 +186,14 @@ CREATE TABLE IF NOT EXISTS orders (
   -- → awaiting_stock_confirmation (admin confirms availability with the
   -- supplier via the admin panel, not WhatsApp) → stock_unavailable (terminal,
   -- admin declines) | awaiting_payment_method → awaiting_bank_subtype |
-  -- awaiting_in_person_subtype → awaiting_payment_proof |
-  -- awaiting_agent_confirmation → payment_proof_received → approved | rejected.
+  -- awaiting_in_person_subtype → awaiting_payment_proof → awaiting_proof_verification
+  -- (transient, set for the duration of the Claude Vision validation call in
+  -- processPaymentProof — reverts to awaiting_payment_proof if the proof is
+  -- invalid) → payment_proof_received → approved | rejected. Methods that
+  -- don't require a proof (cash/in-person) skip straight to
+  -- awaiting_agent_confirmation, reviewed by the admin directly (approved |
+  -- rejected) once payment is physically confirmed, instead of going through
+  -- the proof-upload/verification path above.
   -- cancelled is a separate terminal status set by the admin panel's DELETE
   -- /orders/:number (order.controller.ts) — only reachable from a non-terminal
   -- status (an approved/rejected/already-cancelled order can't be cancelled).

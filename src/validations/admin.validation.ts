@@ -1,6 +1,12 @@
 import Joi from 'joi';
 import { ValidationSchema } from '../middlewares/validate.js';
 
+export const orderListQuery: ValidationSchema = {
+  query: Joi.object().keys({
+    range: Joi.string().valid('today', 'all').default('all'),
+  }),
+};
+
 export const orderReview: ValidationSchema = {
   params: Joi.object().keys({
     number: Joi.string().required(),

@@ -3,8 +3,8 @@ import { catchAsync } from '../utils/catchAsync.js';
 import { ApiError } from '../utils/ApiError.js';
 import {
   getOrdersPendingApproval,
-  getOrdersApprovedToday,
-  getOrdersRejectedToday,
+  getOrdersApproved,
+  getOrdersRejected,
   getOrdersPendingStockConfirmation,
   updateOrderStatus,
   getOrderByNumber,
@@ -18,16 +18,19 @@ import { resolveMessages } from '../services/customer.service.js';
 import { sendWhatsAppMessage, downloadWhatsAppMedia } from '../services/whatsapp.service.js';
 
 /**
- * Returns pending approvals, current-day approved/rejected logs, and orders
- * awaiting stock-with-supplier confirmation to the dashboard/queues. `pending`
- * is always the first key in `data` so the admin panel sees the newest
- * actionable orders first.
+ * Returns pending approvals, approved/rejected logs, and orders awaiting
+ * stock-with-supplier confirmation to the dashboard/queues. `pending` is
+ * always the first key in `data` so the admin panel sees the newest
+ * actionable orders first. `?range=today|all` (default 'all') scopes the
+ * approved/rejected logs — pending/stockConfirmation are always "all
+ * currently open", never date-scoped.
  */
 export const getOrders = catchAsync(async (req: Request, res: Response) => {
+  const range = (req.query.range as 'today' | 'all') || 'all';
   const [pending, approved, rejected, stockConfirmation] = await Promise.all([
     getOrdersPendingApproval(),
-    getOrdersApprovedToday(),
-    getOrdersRejectedToday(),
+    getOrdersApproved(range),
+    getOrdersRejected(range),
     getOrdersPendingStockConfirmation(),
   ]);
 

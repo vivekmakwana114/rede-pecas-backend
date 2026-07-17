@@ -15,7 +15,7 @@ import { adminValidation } from '../../validations/index.js';
 
 const router = express.Router();
 
-router.get('/orders', authMiddleware, getOrders);
+router.get('/orders', authMiddleware, validate(adminValidation.orderListQuery), getOrders);
 // Must come before /orders/:number — otherwise Express would match
 // "analytics" as the :number param and this route would never be reached.
 router.get('/orders/analytics', authMiddleware, validate(adminValidation.orderAnalyticsQuery), getOrderAnalyticsHandler);

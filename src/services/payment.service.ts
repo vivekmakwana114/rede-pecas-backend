@@ -227,6 +227,11 @@ export async function processPaymentProof(
   const { number, unit_price, service_price, payment_method } = rows[0];
   const amount = Number(unit_price) + Number(service_price || 0);
 
+  // Marks the order as mid-verification so the admin panel can show a
+  // "Verifying…" state instead of leaving it looking untouched while Claude
+  // processes the proof — reverted below if the proof turns out invalid.
+  await updateOrderStatus(number, 'awaiting_proof_verification');
+
   const fileBase64 = await downloadWhatsAppMedia(mediaId);
   const extracted = fileBase64 ? await extractPaymentProofData(fileBase64, mediaType) : null;
 
@@ -234,6 +239,7 @@ export async function processPaymentProof(
     logger.info(
       `[PAYMENT] Rejected proof for order ${number} from ${phone}: ${extracted?.reason || 'could not download/read file'}`
     );
+    await updateOrderStatus(number, 'awaiting_payment_proof');
     await sendWhatsAppMessage(phone, messages.payment.proofInvalid());
     return true;
   }
