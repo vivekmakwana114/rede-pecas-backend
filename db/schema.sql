@@ -185,12 +185,13 @@ CREATE TABLE IF NOT EXISTS orders (
   -- still deciding on an attached service, if any — see product.service.ts)
   -- → awaiting_stock_confirmation (admin confirms availability with the
   -- supplier via the admin panel, not WhatsApp) → stock_unavailable (terminal,
-  -- admin declines) | awaiting_payment_method → awaiting_bank_subtype |
-  -- awaiting_in_person_subtype → awaiting_payment_proof → awaiting_proof_verification
+  -- admin declines) | awaiting_payment_method → awaiting_bank_subtype (bank
+  -- transfer/deposit only — Multicaixa Express and Mobile POS confirm directly,
+  -- no subtype step) → awaiting_payment_proof → awaiting_proof_verification
   -- (transient, set for the duration of the Claude Vision validation call in
   -- processPaymentProof — reverts to awaiting_payment_proof if the proof is
-  -- invalid) → payment_proof_received → approved | rejected. Methods that
-  -- don't require a proof (cash/in-person) skip straight to
+  -- invalid) → payment_proof_received → approved | rejected. Mobile POS (the
+  -- only method that doesn't require a proof) skips straight to
   -- awaiting_agent_confirmation, reviewed by the admin directly (approved |
   -- rejected) once payment is physically confirmed, instead of going through
   -- the proof-upload/verification path above.

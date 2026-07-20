@@ -82,11 +82,13 @@ Pipeline order:
 
 New message-handling behavior must slot into this chain deliberately — position determines what can intercept what.
 
+As of 2026-07-20, every strictly button-driven choice (vehicle-ID picker, document-processing retry, VIN-already-registered, vehicle Sim/Não confirm, bank transfer/deposit subtype) re-asks the same question (`messages.common.notUnderstood()` + the original buttons) when the reply doesn't match an expected option, instead of falling through the rest of the pipeline — the previous behavior silently started manual vehicle-entry with whatever the customer typed, or (for the payment subtype) silently guessed one of the two options. This required a new `vehicleConfirmShown` session flag (`session.service.ts`) since the vehicle-confirm step previously had no gate at all — it just regex-matched sim/não against every message that reached that stage, which would have made a blind re-ask unsafe. The 4 "pending offer" yes/no prompts (waitlist notify, add-service, stock-unavailable alternatives, restock-reorder) deliberately keep the old fall-through behavior — an unmatched reply there is more likely to be a genuinely new request (e.g. a fresh part search) than a misunderstood answer.
+
 ### Conversational state
 
 State is per-phone-number and lives in two places:
 
-- **PostgreSQL** — durable step-machine state: `customers.registration_status`, `vehicles.status` (the merged per-customer vehicle-identification table — see below), and `orders.status` (state machine in `src/services/payment.service.ts`: `awaiting_payment → awaiting_payment_method → awaiting_bank_subtype | awaiting_in_person_subtype → awaiting_payment_proof | awaiting_agent_confirmation → payment_proof_received → approved | rejected`).
+- **PostgreSQL** — durable step-machine state: `customers.registration_status`, `vehicles.status` (the merged per-customer vehicle-identification table — see below), and `orders.status` (state machine in `src/services/payment.service.ts`: `awaiting_payment → awaiting_payment_method → awaiting_bank_subtype → awaiting_payment_proof | awaiting_agent_confirmation → payment_proof_received → approved | rejected`). As of 2026-07-20, `awaiting_bank_subtype` (transfer vs deposit) is the only payment sub-choice left — the old `awaiting_in_person_subtype` step is gone: tapping "Mobile POS (TPA)" now confirms that method directly instead of opening a redundant "TPA (cartão) or Dinheiro" sub-menu, and cash-on-delivery (`payment_method = 'cash'`) was dropped entirely as a customer-selectable option (WhatsApp reply buttons cap at 3, and Bank/Multicaixa/Mobile POS already fill them).
 - **Redis** — pending search options awaiting the customer's list tap or typed digit (key `options:<phone>`), 4h TTL (`src/services/session.service.ts`), with silent in-memory fallback when Redis is down.
 
 ### No conversational AI (as of 2026-07-09)

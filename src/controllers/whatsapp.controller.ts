@@ -205,6 +205,16 @@ async function processMessageFlow(
     if (handled) return;
   }
 
+  // 3.7 PRIORITY: pending "try again" / "manual entry" reply after a VIN failed to
+  // decode (processVIN's NHTSA lookup came back empty). Same reasoning as 3.6 above —
+  // must run before stage 4, which would otherwise misroute "Manual" here too, and
+  // before this used to auto-start manual collection with no choice at all.
+  const vinDecodeFailedChoiceShown = await sessionService.wasVinDecodeFailedShown(phone);
+  if (vinDecodeFailedChoiceShown && customerText) {
+    const handled = await vehicleService.processVinDecodeFailedChoice(phone, customerText);
+    if (handled) return;
+  }
+
   // 4. PRIORITY: vehicle-ID option button tap (VIN / photo / manual), shown right after
   // profile registration completes, a returning customer's vehicle session expired, or
   // an "add another vehicle" request just above. Must run before manual collection
@@ -333,8 +343,21 @@ async function processMessageFlow(
       }
       await sessionService.clearVehicleIdChoiceShown(phone);
     } else {
-      await vehicleService.startManualCollection(phone, 'awaiting_make');
-      await sendWhatsAppMessage(phone, messages.manual.askMakePrompt());
+      // Neither a VIN, an active manual-collection reply, nor a greeting — the
+      // customer's text didn't match anything we understand while a vehicle ID
+      // is still outstanding. Re-show the same VIN/photo/manual choice instead
+      // of silently starting manual collection with whatever they typed (that
+      // used to swallow typos, stray questions, or a garbled VIN attempt as if
+      // the customer had asked for manual entry). A near-miss VIN (wrong
+      // length — a dropped/extra character from a typo or copy-paste) gets
+      // specific feedback instead of the generic nudge, since the customer did
+      // try to give a VIN, just not a valid one.
+      const trimmed = customerText.trim();
+      const body = vehicleService.looksLikeVinAttempt(trimmed)
+        ? messages.vin.invalidLength(trimmed.length)
+        : messages.common.notUnderstood();
+      await sendWhatsAppButtons(phone, body, messages.onboarding.askVehicleIdButtons);
+      await sessionService.markVehicleIdChoiceShown(phone); // refresh the TTL so the choice stays open
       return;
     }
   }

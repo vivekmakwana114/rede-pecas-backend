@@ -13,6 +13,15 @@ interface PaymentMethodCopy {
 }
 
 interface Messages {
+  common: {
+    // Shared "didn't catch that" nudge, sent right before re-showing whichever
+    // buttons were already on screen — used by every strictly button-driven
+    // choice (vehicle-ID picker, document retry, VIN-duplicate, vehicle confirm,
+    // bank subtype) so an unrecognized reply re-asks instead of silently
+    // branching into an unrelated flow. Deliberately not offer-specific (the
+    // waitlist/service/stock/restock Sim-Não offers still fall through as before).
+    notUnderstood: () => string;
+  };
   onboarding: {
     welcome: () => string;
     welcomeBack: (name: string) => string;
@@ -40,6 +49,10 @@ interface Messages {
     askVinPrompt: () => string;
     identifying: () => string;
     decodeFailed: () => string;
+    decodeFailedButtons: [string, string];
+    restartChoiceBody: () => string;
+    invalidLength: (length: number) => string;
+    modelUnknownNote: () => string;
     confirmBody: (description: string) => string;
     confirmButtons: [string, string];
     alreadyRegistered: (description: string) => string;
@@ -100,14 +113,11 @@ interface Messages {
       bankDeposit: PaymentMethodCopy;
       multicaixaExpress: PaymentMethodCopy;
       mobilePOS: PaymentMethodCopy;
-      cash: PaymentMethodCopy;
     };
     askMethodBody: (orderNumber: string, amount: string) => string;
     askMethodButtons: [string, string, string];
     askBankSubtypeBody: () => string;
     askBankSubtypeButtons: [string, string];
-    askInPersonSubtypeBody: () => string;
-    askInPersonSubtypeButtons: [string, string];
     proofReceivedCustomer: (customerName: string) => string;
     proofInvalid: () => string;
     supplierDeliveryNotice: (productName: string, reference: string, quantity: number, orderNumber: string) => string;
@@ -210,6 +220,10 @@ interface Messages {
 }
 
 const pt: Messages = {
+  common: {
+    notUnderstood: () =>
+      `🤔 Não percebi essa resposta. Escolhe uma das opções abaixo:`,
+  },
   onboarding: {
     welcome: () =>
       `Olá! Bem-vindo à Rede Peças, o teu marketplace automóvel angolano!\n\n` +
@@ -277,8 +291,14 @@ const pt: Messages = {
     identifying: () => `🔍 A identificar a viatura pelo número de chassi...`,
     decodeFailed: () =>
       `⚠️ Não consegui identificar esse número de chassi.\n\n` +
-      `Vamos preencher os dados manualmente. Qual é a *marca* do veículo?\n\n` +
-      `Exemplo: _Toyota, Mercedes, Volvo..._`,
+      `Queres tentar identificar o veículo de outra forma, ou preencher os dados manualmente?`,
+    decodeFailedButtons: ['🔄 Tentar novamente', '✍️ Manual'],
+    restartChoiceBody: () =>
+      `Sem problema! Como preferes identificar o veículo? 👇`,
+    invalidLength: (length) =>
+      `⚠️ Isso não parece ser um VIN válido — tem ${length} caracteres, mas um VIN tem sempre *17*.\n\n` +
+      `Confere o número e envia novamente, ou escolhe outra opção abaixo 👇`,
+    modelUnknownNote: () => `modelo não identificado`,
     confirmBody: (description) =>
       `✅ Viatura identificada!\n\n🚗 *${description}*\n\nÉ este o teu carro?`,
     confirmButtons: ['✅ Sim, é este', '❌ Não, é outro'],
@@ -444,15 +464,6 @@ const pt: Messages = {
           `Pedido: *${orderNumber}*\n\n` +
           `A nossa equipa entrará em contacto para combinar a visita. 🚗`,
       },
-      cash: {
-        name: 'Dinheiro em Mão',
-        instructions: (orderNumber, amount) =>
-          `💵 *Pagamento em Dinheiro*\n\n` +
-          `Um agente da Rede Peças irá recolher o pagamento na entrega.\n\n` +
-          `Valor a preparar: *${amount}*\n` +
-          `Pedido: *${orderNumber}*\n\n` +
-          `Por favor tenha o valor exacto disponível. 🙏`,
-      },
     },
     askMethodBody: (orderNumber, amount) =>
       `💰 *Como preferes pagar?*\n\n` +
@@ -463,8 +474,6 @@ const pt: Messages = {
     askMethodButtons: ['🏦 Banco', '📱 Multicaixa', '💳 Mobile POS (TPA)'],
     askBankSubtypeBody: () => 'Preferes transferência ou depósito bancário?',
     askBankSubtypeButtons: ['🏦 Transferência', '🏧 Depósito'],
-    askInPersonSubtypeBody: () => 'Preferes pagar com cartão no terminal ou em dinheiro na entrega?',
-    askInPersonSubtypeButtons: ['💳 TPA (cartão)', '💵 Dinheiro'],
     proofReceivedCustomer: (customerName) =>
       `Recebido, obrigado ${customerName}! 🙏\n\n` +
       `Vamos verificar o teu pagamento e emitir a factura oficial em breve.\n\n` +
@@ -597,6 +606,10 @@ const pt: Messages = {
 };
 
 const en: Messages = {
+  common: {
+    notUnderstood: () =>
+      `🤔 I didn't quite catch that. Please choose one of the options below:`,
+  },
   onboarding: {
     welcome: () =>
       `Hi! Welcome to Rede Peças, your Angolan automotive marketplace!\n\n` +
@@ -664,12 +677,16 @@ const en: Messages = {
       `vehicle document or stamped on the chassis itself.`,
     identifying: () => `Give me just a second... 🔍`,
     decodeFailed: () =>
-      `VIN not recognised by NHTSA:\n\n` +
-      `Hmm, I wasn't able to identify that chassis number — \n` +
-      `it might be a European or Japanese import not in the US database.\n\n`+
-      `No problem at all! Let me ask you a few quick questions instead. 👇\n\n`+
-      `What's the make of your vehicle?\n\n` +
-      `Example: Toyota, Mercedes, Volvo...`,
+      `⚠️ Hmm, I wasn't able to identify that chassis number — \n` +
+      `it might be a European or Japanese import not in the US database.\n\n` +
+      `Want to try identifying your vehicle another way, or fill in the details manually?`,
+    decodeFailedButtons: ['🔄 Try again', '✍️ Manual entry'],
+    restartChoiceBody: () =>
+      `No problem! How would you like to identify your vehicle? 👇`,
+    invalidLength: (length) =>
+      `⚠️ That doesn't look like a valid VIN — it has ${length} characters, but a VIN is always *17*.\n\n` +
+      `Double-check the number and resend it, or choose another option below 👇`,
+    modelUnknownNote: () => `model not identified`,
     confirmBody: (description) =>
       `Found it! Here's what came up:\n\n🚗 *${description}*\n\nIs this your car?`,
     confirmButtons: ['✅ Yes, that\'s mine', '❌ No, different car'],
@@ -835,15 +852,6 @@ const en: Messages = {
           `Order: *${orderNumber}*\n\n` +
           `Our team will contact you to arrange the visit. 🚗`,
       },
-      cash: {
-        name: 'Cash on Delivery',
-        instructions: (orderNumber, amount) =>
-          `💵 *Cash Payment*\n\n` +
-          `A Rede Peças agent will collect payment on delivery.\n\n` +
-          `Amount to prepare: *${amount}*\n` +
-          `Order: *${orderNumber}*\n\n` +
-          `Please have the exact amount ready. 🙏`,
-      },
     },
     askMethodBody: (orderNumber, amount) =>
       `💰 *How would you like to pay?*\n\n` +
@@ -854,8 +862,6 @@ const en: Messages = {
     askMethodButtons: ['🏦 Bank', '📱 Multicaixa', '💳 Mobile POS (TPA)'],
     askBankSubtypeBody: () => 'Would you prefer a bank transfer or a bank deposit?',
     askBankSubtypeButtons: ['🏦 Bank Transfer', '🏧 Bank Deposit'],
-    askInPersonSubtypeBody: () => 'Would you prefer to pay by card on the terminal or cash on delivery?',
-    askInPersonSubtypeButtons: ['💳 POS (card)', '💵 Cash on delivery'],
     proofReceivedCustomer: (customerName) =>
       `Got it, thank you ${customerName}! 🙏\n\n` +
       `We'll verify your payment and issue the official invoice shortly.\n\n` +
