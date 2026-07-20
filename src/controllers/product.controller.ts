@@ -3,6 +3,7 @@ import { catchAsync } from '../utils/catchAsync.js';
 import { ApiError } from '../utils/ApiError.js';
 import * as productService from '../services/product.service.js';
 import { getAllActiveProducts, getProductById, updateProduct, deactivateProduct, Product } from '../models/product.model.js';
+import { resolveSupplierForProductEdit } from '../models/supplier.model.js';
 
 /**
  * Lists every active product (joined with its supplier) for the admin
@@ -37,24 +38,56 @@ export const getProductHandler = catchAsync(async (req: Request, res: Response) 
 });
 
 /**
- * Admin edits to a product's catalog/stock fields — supplier is not
- * editable here (see updateProduct in product.model.ts).
+ * Admin edits to a product's catalog/stock fields, plus its supplier's
+ * contact/display fields (name, address, phone). Editing this product's
+ * supplier fields never mutates the supplier row it currently points to —
+ * that row is shared by every other product from the same supplier. Instead
+ * it resolves (via resolveSupplierForProductEdit) which supplier row this
+ * product *should* point to given the submitted name/address/phone, and only
+ * repoints this one product's supplier_id — every other product stays on
+ * whatever it already pointed to. There's no dedicated supplier management
+ * screen yet, so this panel doubles as it.
  */
 export const updateProductHandler = catchAsync(async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const existing = await getProductById(id);
   if (!existing) throw new ApiError(404, `Product ${id} not found`);
 
-  const { name, reference, price, quantity, delivery_time, service_offered, service_name, service_price } = req.body;
+  const {
+    name,
+    reference,
+    price,
+    quantity,
+    service_offered,
+    service_name,
+    service_price,
+    supplierName,
+    supplierAddress,
+    supplierPhone,
+  } = req.body;
   const fields: Partial<Product> = {};
   if (name !== undefined) fields.name = name;
   if (reference !== undefined) fields.reference = reference;
   if (price !== undefined) fields.price = price;
   if (quantity !== undefined) fields.quantity = quantity;
-  if (delivery_time !== undefined) fields.delivery_time = delivery_time;
   if (service_offered !== undefined) fields.service_offered = service_offered;
   if (service_name !== undefined) fields.service_name = service_name;
   if (service_price !== undefined) fields.service_price = service_price;
+
+  if (existing.supplier_id && (supplierName !== undefined || supplierAddress !== undefined || supplierPhone !== undefined)) {
+    const targetName = supplierName !== undefined ? supplierName : existing.supplier;
+    const targetAddress = supplierAddress !== undefined ? supplierAddress : existing.supplier_address ?? null;
+    const targetPhone = supplierPhone !== undefined ? supplierPhone : existing.supplier_phone ?? null;
+
+    const supplierChanged =
+      targetName !== existing.supplier ||
+      (targetAddress || null) !== (existing.supplier_address || null) ||
+      (targetPhone || null) !== (existing.supplier_phone || null);
+
+    if (supplierChanged && targetName) {
+      fields.supplier_id = await resolveSupplierForProductEdit(targetName, targetAddress, targetPhone, existing.supplier_id);
+    }
+  }
 
   await updateProduct(id, fields);
   const updated = await getProductById(id);

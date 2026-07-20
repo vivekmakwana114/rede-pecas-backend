@@ -84,9 +84,6 @@ CREATE TABLE IF NOT EXISTS products (
   quantity         INT NOT NULL DEFAULT 0,
   unit             TEXT DEFAULT 'unidade',
 
-  -- Delivery
-  delivery_time    TEXT DEFAULT 'Em stock',     -- e.g. "Hoje", "2 dias", "Sob encomenda"
-
   -- Optional attached service (e.g. installation), offered as a follow-up
   -- when a customer picks this product — see CLAUDE.md message pipeline.
   service_offered  BOOLEAN DEFAULT false,
@@ -120,6 +117,10 @@ ALTER TABLE products DROP COLUMN IF EXISTS category_id;
 -- Replaced by the waitlist_requests table below — a real table records who
 -- joined and when, which an opaque array column couldn't.
 ALTER TABLE products DROP COLUMN IF EXISTS waitlist_phones;
+-- Never surfaced to the customer in the WhatsApp search results (the search-
+-- result description now shows only ref/price/supplier) and had no admin
+-- panel field either — dropped rather than kept as unused dead weight.
+ALTER TABLE products DROP COLUMN IF EXISTS delivery_time;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS service_offered BOOLEAN DEFAULT false;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS service_name TEXT;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS service_price NUMERIC(12,2);
@@ -185,12 +186,13 @@ CREATE TABLE IF NOT EXISTS orders (
   -- still deciding on an attached service, if any — see product.service.ts)
   -- → awaiting_stock_confirmation (admin confirms availability with the
   -- supplier via the admin panel, not WhatsApp) → stock_unavailable (terminal,
-  -- admin declines) | awaiting_payment_method → awaiting_bank_subtype |
-  -- awaiting_in_person_subtype → awaiting_payment_proof → awaiting_proof_verification
+  -- admin declines) | awaiting_payment_method → awaiting_bank_subtype (bank
+  -- transfer/deposit only — Multicaixa Express and Mobile POS confirm directly,
+  -- no subtype step) → awaiting_payment_proof → awaiting_proof_verification
   -- (transient, set for the duration of the Claude Vision validation call in
   -- processPaymentProof — reverts to awaiting_payment_proof if the proof is
-  -- invalid) → payment_proof_received → approved | rejected. Methods that
-  -- don't require a proof (cash/in-person) skip straight to
+  -- invalid) → payment_proof_received → approved | rejected. Mobile POS (the
+  -- only method that doesn't require a proof) skips straight to
   -- awaiting_agent_confirmation, reviewed by the admin directly (approved |
   -- rejected) once payment is physically confirmed, instead of going through
   -- the proof-upload/verification path above.

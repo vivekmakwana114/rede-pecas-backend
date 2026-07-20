@@ -609,6 +609,137 @@ export async function clearVinDuplicateChoice(phone: string): Promise<void> {
   }
 }
 
+// Tracks "the customer was just shown the vehicle Sim/Não confirm buttons"
+// (right after a VIN decode or document scan succeeds) — same shape/lifecycle
+// as vehicleIdChoiceSessions above. Without this, processVehicleConfirmation
+// had no way to tell "no vehicle is actually pending confirmation" apart from
+// "the customer's reply just didn't match sim/não", so it could never safely
+// re-ask on a mismatch without risking hijacking unrelated messages.
+const vehicleConfirmSessions = new Map<string, number>();
+
+export async function markVehicleConfirmShown(phone: string): Promise<void> {
+  const key = `vehicleConfirm:${phone}`;
+  vehicleConfirmSessions.set(key, Date.now() + VEHICLE_ID_CHOICE_TTL * 1000);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, VEHICLE_ID_CHOICE_TTL, '1');
+  } catch (err) {
+    logger.error('Error marking vehicle-confirm choice shown in Redis', err);
+  }
+}
+
+export async function wasVehicleConfirmShown(phone: string): Promise<boolean> {
+  const key = `vehicleConfirm:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    const expiresAt = vehicleConfirmSessions.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
+  }
+
+  try {
+    const exists = await redisClient.exists(key);
+    return exists === 1;
+  } catch (err) {
+    logger.error('Error checking vehicle-confirm choice state in Redis', err);
+    const expiresAt = vehicleConfirmSessions.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
+  }
+}
+
+export async function clearVehicleConfirmShown(phone: string): Promise<void> {
+  const key = `vehicleConfirm:${phone}`;
+  vehicleConfirmSessions.delete(key);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.del(key);
+  } catch (err) {
+    logger.error('Error clearing vehicle-confirm choice in Redis', err);
+  }
+}
+
+// Tracks "the customer was just shown the VIN-decode-failed retry/manual-entry
+// choice" (processVIN's NHTSA lookup came back empty) — stores the attempted
+// VIN (not just '1' like the boolean flags above) so it can still be threaded
+// into startManualCollection's attempted_vin column if the customer picks
+// manual, exactly like the old auto-fallback used to do unconditionally.
+const vinDecodeFailedSessions = new Map<string, { vin: string; expiresAt: number }>();
+
+export async function markVinDecodeFailedShown(phone: string, attemptedVin: string): Promise<void> {
+  const key = `vinDecodeFailed:${phone}`;
+  vinDecodeFailedSessions.set(key, { vin: attemptedVin, expiresAt: Date.now() + VEHICLE_ID_CHOICE_TTL * 1000 });
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, VEHICLE_ID_CHOICE_TTL, attemptedVin);
+  } catch (err) {
+    logger.error('Error marking VIN-decode-failed choice shown in Redis', err);
+  }
+}
+
+export async function wasVinDecodeFailedShown(phone: string): Promise<boolean> {
+  const key = `vinDecodeFailed:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    const entry = vinDecodeFailedSessions.get(key);
+    return !!entry && entry.expiresAt >= Date.now();
+  }
+
+  try {
+    const exists = await redisClient.exists(key);
+    return exists === 1;
+  } catch (err) {
+    logger.error('Error checking VIN-decode-failed choice state in Redis', err);
+    const entry = vinDecodeFailedSessions.get(key);
+    return !!entry && entry.expiresAt >= Date.now();
+  }
+}
+
+// Retrieves the attempted VIN stored by markVinDecodeFailedShown, for
+// processVinDecodeFailedChoice to thread into startManualCollection if the
+// customer picks manual entry. Returns null when nothing's pending (distinct
+// from wasVinDecodeFailedShown only in that callers here already know the
+// flag is set — this is the value-fetching counterpart, not another gate).
+export async function getVinDecodeFailedVin(phone: string): Promise<string | null> {
+  const key = `vinDecodeFailed:${phone}`;
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    const entry = vinDecodeFailedSessions.get(key);
+    return entry && entry.expiresAt >= Date.now() ? entry.vin : null;
+  }
+
+  try {
+    const data = await redisClient.get(key);
+    return data ?? null;
+  } catch (err) {
+    logger.error('Error fetching VIN-decode-failed VIN from Redis', err);
+    const entry = vinDecodeFailedSessions.get(key);
+    return entry && entry.expiresAt >= Date.now() ? entry.vin : null;
+  }
+}
+
+export async function clearVinDecodeFailedChoice(phone: string): Promise<void> {
+  const key = `vinDecodeFailed:${phone}`;
+  vinDecodeFailedSessions.delete(key);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.del(key);
+  } catch (err) {
+    logger.error('Error clearing VIN-decode-failed choice in Redis', err);
+  }
+}
+
 // Tracks "the customer was just shown the document-unreadable retry/manual-entry
 // choice" (processVehicleDocument's failure paths) — same shape/lifecycle as
 // vehicleIdChoiceSessions above, 30-min TTL.

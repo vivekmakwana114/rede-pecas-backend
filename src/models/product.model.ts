@@ -7,10 +7,11 @@ export interface Product {
   reference: string;
   price: number;
   quantity: number;
-  delivery_time: string;
   supplier?: string;
   supplier_id?: number;
   supplier_rating?: number;
+  supplier_address?: string;
+  supplier_phone?: string;
   service_offered?: boolean;
   service_name?: string;
   service_price?: number;
@@ -57,7 +58,6 @@ export async function searchProductsInInventory({
       p.reference,
       p.price,
       p.quantity,
-      p.delivery_time,
       p.service_offered,
       p.service_name,
       p.service_price,
@@ -109,13 +109,14 @@ export async function getAllActiveProducts(): Promise<Product[]> {
       p.reference,
       p.price,
       p.quantity,
-      p.delivery_time,
       p.service_offered,
       p.service_name,
       p.service_price,
       p.supplier_id,
       s.name AS supplier,
-      s.rating AS supplier_rating
+      s.rating AS supplier_rating,
+      s.province AS supplier_address,
+      s.phone AS supplier_phone
     FROM products p
     JOIN suppliers s ON s.id = p.supplier_id
     WHERE p.active = true
@@ -137,13 +138,14 @@ export async function getProductById(id: number): Promise<Product | null> {
       p.reference,
       p.price,
       p.quantity,
-      p.delivery_time,
       p.service_offered,
       p.service_name,
       p.service_price,
       p.supplier_id,
       s.name AS supplier,
-      s.rating AS supplier_rating
+      s.rating AS supplier_rating,
+      s.province AS supplier_address,
+      s.phone AS supplier_phone
     FROM products p
     JOIN suppliers s ON s.id = p.supplier_id
     WHERE p.id = $1 AND p.active = true`,

@@ -56,15 +56,6 @@ export function getPaymentMethods(locale: 'pt' | 'en') {
         messages.payment.methods.mobilePOS.instructions(orderNumber, formatPrice(amount)),
       requiresProof: false,
     },
-
-    CASH: {
-      id: 'cash',
-      name: messages.payment.methods.cash.name,
-      emoji: '💵',
-      instructions: (orderNumber: string, amount: number) =>
-        messages.payment.methods.cash.instructions(orderNumber, formatPrice(amount)),
-      requiresProof: false,
-    },
   };
 }
 
@@ -92,7 +83,6 @@ export async function getPendingPaymentOrder(phone: string) {
   return getLatestOrderByStatus(phone, [
     'awaiting_payment_method',
     'awaiting_bank_subtype',
-    'awaiting_in_person_subtype'
   ]);
 }
 
@@ -126,12 +116,12 @@ export async function processMethodChoice(phone: string, customerReply: string):
   } else if (reply.includes('multicaixa') || reply.includes('express') || reply === '2') {
     await confirmMethodAndSendInstructions(phone, number, amount, paymentMethods.MULTICAIXA_EXPRESS);
     return true;
-  } else if (reply.includes('tpa') || reply.includes('terminal') || reply.includes('dinheiro') || reply === '3') {
-    await sendWhatsAppButtons(phone, messages.payment.askInPersonSubtypeBody(), messages.payment.askInPersonSubtypeButtons);
-    await db.query(
-      `UPDATE orders SET status = 'awaiting_in_person_subtype' WHERE number = $1`,
-      [number]
-    );
+  } else if (reply.includes('tpa') || reply.includes('terminal') || reply.includes('mobile') || reply.includes('pos') || reply === '3') {
+    // Mobile POS is a single, direct method — no sub-menu. It used to open an
+    // "TPA (cartão) or Dinheiro" follow-up here, which was redundant (the
+    // customer already tapped "Mobile POS (TPA)") and offered a cash-on-delivery
+    // option the top-level buttons never mentioned.
+    await confirmMethodAndSendInstructions(phone, number, amount, paymentMethods.MOBILE_POS);
     return true;
   } else {
     await askPaymentMethod(phone, number, amount);
@@ -140,34 +130,41 @@ export async function processMethodChoice(phone: string, customerReply: string):
 }
 
 /**
- * Processes banking or face-to-face payment sub-choices.
+ * Processes the bank transfer-vs-deposit sub-choice (Mobile POS/Multicaixa no
+ * longer have a subtype step — see processMethodChoice). Unlike the old
+ * version, an unrecognized reply doesn't guess a default — it re-asks the
+ * same two buttons instead of silently picking bank transfer for the customer.
  */
 export async function processMethodSubtype(phone: string, reply: string): Promise<boolean> {
   const locale = await resolveLocale(phone);
+  const messages = getMessages(locale);
   const paymentMethods = getPaymentMethods(locale);
   const { rows } = await db.query(
-    `SELECT number, unit_price, service_price, status FROM orders
+    `SELECT number, unit_price, service_price FROM orders
      WHERE customer_phone = $1
-       AND status IN ('awaiting_bank_subtype', 'awaiting_in_person_subtype')
+       AND status = 'awaiting_bank_subtype'
      ORDER BY created_at DESC LIMIT 1`,
     [phone]
   );
   if (!rows.length) return false;
 
-  const { number, unit_price, service_price, status } = rows[0];
+  const { number, unit_price, service_price } = rows[0];
   const amount = Number(unit_price) + Number(service_price || 0);
   const r = reply.toLowerCase();
 
-  let method: any;
-  if (status === 'awaiting_bank_subtype') {
-    method = (r.includes('deposit') || r.includes('depósito')) ? paymentMethods.BANK_DEPOSIT : paymentMethods.BANK_TRANSFER;
-  } else {
-    method = r.includes('dinheiro') || r.includes('entrega')
-      ? paymentMethods.CASH
-      : paymentMethods.MOBILE_POS;
+  const isDeposit = r.includes('deposit') || r.includes('depósito') || r.includes('deposito') || r === '2';
+  const isTransfer = r.includes('transfer') || r.includes('transferência') || r.includes('transferencia') || r === '1';
+
+  if (isDeposit) {
+    await confirmMethodAndSendInstructions(phone, number, amount, paymentMethods.BANK_DEPOSIT);
+    return true;
+  }
+  if (isTransfer) {
+    await confirmMethodAndSendInstructions(phone, number, amount, paymentMethods.BANK_TRANSFER);
+    return true;
   }
 
-  await confirmMethodAndSendInstructions(phone, number, amount, method);
+  await sendWhatsAppButtons(phone, messages.payment.askBankSubtypeBody(), messages.payment.askBankSubtypeButtons);
   return true;
 }
 
@@ -407,12 +404,13 @@ export async function confirmInPersonPayment(orderNumber: string, employeeId: nu
 }
 
 /**
- * Alerts staff about a physical payment request (mobile POS or cash on
- * delivery) so they can arrange it: records it in the admin alerts feed, and
- * also pushes the details straight to every admin's own WhatsApp number —
- * the alerts feed alone means nobody gets pinged until they happen to check
- * the panel, and this needs a terminal taken to the customer promptly.
- * Best-effort per admin — one failed send must not block the rest.
+ * Alerts staff about a physical payment request (Mobile POS — the only
+ * requiresProof:false method left, see getPaymentMethods) so they can arrange
+ * it: records it in the admin alerts feed, and also pushes the details
+ * straight to every admin's own WhatsApp number — the alerts feed alone means
+ * nobody gets pinged until they happen to check the panel, and this needs a
+ * terminal taken to the customer promptly. Best-effort per admin — one failed
+ * send must not block the rest.
  */
 async function notifyAgentInPersonPayment(
   orderNumber: string,

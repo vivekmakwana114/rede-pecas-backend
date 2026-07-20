@@ -161,7 +161,7 @@ export async function getOrdersPendingApproval(): Promise<OrderInfo[]> {
     JOIN products p ON p.id = o.product_id
     JOIN suppliers s ON s.id = o.supplier_id
     WHERE o.status IN (
-      'awaiting_payment', 'awaiting_payment_method', 'awaiting_bank_subtype', 'awaiting_in_person_subtype',
+      'awaiting_payment', 'awaiting_payment_method', 'awaiting_bank_subtype',
       'awaiting_payment_proof', 'awaiting_proof_verification', 'awaiting_agent_confirmation', 'payment_proof_received'
     )
     ORDER BY o.created_at DESC
