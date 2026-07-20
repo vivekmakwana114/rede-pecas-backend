@@ -58,7 +58,6 @@ export const updateProductHandler = catchAsync(async (req: Request, res: Respons
     reference,
     price,
     quantity,
-    delivery_time,
     service_offered,
     service_name,
     service_price,
@@ -71,7 +70,6 @@ export const updateProductHandler = catchAsync(async (req: Request, res: Respons
   if (reference !== undefined) fields.reference = reference;
   if (price !== undefined) fields.price = price;
   if (quantity !== undefined) fields.quantity = quantity;
-  if (delivery_time !== undefined) fields.delivery_time = delivery_time;
   if (service_offered !== undefined) fields.service_offered = service_offered;
   if (service_name !== undefined) fields.service_name = service_name;
   if (service_price !== undefined) fields.service_price = service_price;

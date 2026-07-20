@@ -7,7 +7,6 @@ export interface Product {
   reference: string;
   price: number;
   quantity: number;
-  delivery_time: string;
   supplier?: string;
   supplier_id?: number;
   supplier_rating?: number;
@@ -59,7 +58,6 @@ export async function searchProductsInInventory({
       p.reference,
       p.price,
       p.quantity,
-      p.delivery_time,
       p.service_offered,
       p.service_name,
       p.service_price,
@@ -111,7 +109,6 @@ export async function getAllActiveProducts(): Promise<Product[]> {
       p.reference,
       p.price,
       p.quantity,
-      p.delivery_time,
       p.service_offered,
       p.service_name,
       p.service_price,
@@ -141,7 +138,6 @@ export async function getProductById(id: number): Promise<Product | null> {
       p.reference,
       p.price,
       p.quantity,
-      p.delivery_time,
       p.service_offered,
       p.service_name,
       p.service_price,

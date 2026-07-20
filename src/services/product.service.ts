@@ -118,7 +118,7 @@ function buildProductListRows(options: Product[]): { id: string; title: string; 
     id: `option_${i + 1}`,
     title: truncate(item.name, 24),
     description: truncate(
-      `Ref: ${item.reference} • ${formatPrice(item.price)} • ${item.delivery_time}${item.supplier ? ` • ${item.supplier}` : ''}`,
+      `Ref: ${item.reference} • ${formatPrice(item.price)}${item.supplier ? ` • ${item.supplier}` : ''}`,
       72
     ),
   }));
@@ -224,7 +224,6 @@ export async function confirmStockAndFinalizeOrder(orderNumber: string): Promise
     reference: order.reference,
     price: Number(order.unit_price),
     quantity: order.quantity,
-    delivery_time: '',
     supplier: order.supplier_name,
   };
   const service = order.service_price

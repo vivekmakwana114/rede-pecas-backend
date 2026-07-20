@@ -33,7 +33,6 @@ Table products {
   price numeric(12,2) [not null, note: 'Kwanzas (AOA)']
   quantity int [not null, default: 0]
   unit text [default: 'unidade']
-  delivery_time text [default: 'Em stock']
   service_offered boolean [default: false, note: 'optional attached service, e.g. installation']
   service_name text
   service_price numeric(12,2)

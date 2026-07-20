@@ -87,7 +87,6 @@ export const productUpdate: ValidationSchema = {
       reference: Joi.string(),
       price: Joi.number(),
       quantity: Joi.number().integer().min(0),
-      delivery_time: Joi.string().allow('', null),
       service_offered: Joi.boolean(),
       service_name: Joi.string().allow('', null),
       service_price: Joi.number().allow(null),

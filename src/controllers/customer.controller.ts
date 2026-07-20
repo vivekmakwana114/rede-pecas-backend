@@ -1,13 +1,29 @@
 import { Request, Response } from 'express';
 import { catchAsync } from '../utils/catchAsync.js';
 import { ApiError } from '../utils/ApiError.js';
+import { formatDateTime } from '../utils/helpers.js';
 import {
   getAllCustomers,
   getActiveCustomerByPhone,
   updateCustomer,
   deactivateCustomer,
   Customer,
+  CustomerWithStats,
 } from '../models/customer.model.js';
+
+/**
+ * Renders first_contact_at/last_contact_at/registered_at as `dd/mm/yyyy HH:mm`
+ * (Africa/Luanda) before they leave the API — the admin panel displays
+ * whatever the backend sends verbatim, with no client-side reformatting.
+ */
+function serializeCustomer(customer: CustomerWithStats) {
+  return {
+    ...customer,
+    first_contact_at: formatDateTime(customer.first_contact_at),
+    last_contact_at: formatDateTime(customer.last_contact_at),
+    registered_at: formatDateTime(customer.registered_at),
+  };
+}
 
 /**
  * Lists active customers for the admin panel, newest-contact-first.
@@ -26,7 +42,7 @@ export const getCustomersHandler = catchAsync(async (req: Request, res: Response
     success: true,
     message: 'Customers retrieved.',
     code: 200,
-    data: { customers, total, page, limit },
+    data: { customers: customers.map(serializeCustomer), total, page, limit },
     meta: { timestamp: new Date().toISOString() },
   });
 });
@@ -40,7 +56,7 @@ export const getCustomerHandler = catchAsync(async (req: Request, res: Response)
     success: true,
     message: 'Customer retrieved.',
     code: 200,
-    data: customer,
+    data: serializeCustomer(customer),
     meta: { timestamp: new Date().toISOString() },
   });
 });
@@ -69,7 +85,7 @@ export const updateCustomerHandler = catchAsync(async (req: Request, res: Respon
     success: true,
     message: `Customer ${phone} updated.`,
     code: 200,
-    data: updated,
+    data: updated ? serializeCustomer(updated) : null,
     meta: { timestamp: new Date().toISOString() },
   });
 });

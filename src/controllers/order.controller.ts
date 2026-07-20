@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { catchAsync } from '../utils/catchAsync.js';
 import { ApiError } from '../utils/ApiError.js';
+import { formatDateTime } from '../utils/helpers.js';
 import {
   getOrdersPendingApproval,
   getOrdersApproved,
@@ -146,7 +147,12 @@ export const getOrderStatsHandler = catchAsync(async (req: Request, res: Respons
 
 /**
  * Details of a single order, joined with product/supplier — the admin
- * panel's individual order view.
+ * panel's individual order view. created_at/approved_at/updated_at are
+ * rendered as `dd/mm/yyyy HH:mm` here (unlike the list queues above, whose
+ * raw timestamps the admin panel still parses for chronological sorting —
+ * see adapters.ts) since this is a single read-only record with nothing left
+ * to sort; the admin panel displays whatever the backend sends verbatim,
+ * with no client-side reformatting.
  */
 export const getOrderHandler = catchAsync(async (req: Request, res: Response) => {
   const { number } = req.params;
@@ -157,7 +163,12 @@ export const getOrderHandler = catchAsync(async (req: Request, res: Response) =>
     success: true,
     message: 'Order retrieved.',
     code: 200,
-    data: order,
+    data: {
+      ...order,
+      created_at: formatDateTime(order.created_at),
+      approved_at: formatDateTime(order.approved_at),
+      updated_at: formatDateTime(order.updated_at),
+    },
     meta: { timestamp: new Date().toISOString() },
   });
 });

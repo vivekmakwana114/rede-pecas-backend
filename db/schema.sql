@@ -84,9 +84,6 @@ CREATE TABLE IF NOT EXISTS products (
   quantity         INT NOT NULL DEFAULT 0,
   unit             TEXT DEFAULT 'unidade',
 
-  -- Delivery
-  delivery_time    TEXT DEFAULT 'Em stock',     -- e.g. "Hoje", "2 dias", "Sob encomenda"
-
   -- Optional attached service (e.g. installation), offered as a follow-up
   -- when a customer picks this product — see CLAUDE.md message pipeline.
   service_offered  BOOLEAN DEFAULT false,
@@ -120,6 +117,10 @@ ALTER TABLE products DROP COLUMN IF EXISTS category_id;
 -- Replaced by the waitlist_requests table below — a real table records who
 -- joined and when, which an opaque array column couldn't.
 ALTER TABLE products DROP COLUMN IF EXISTS waitlist_phones;
+-- Never surfaced to the customer in the WhatsApp search results (the search-
+-- result description now shows only ref/price/supplier) and had no admin
+-- panel field either — dropped rather than kept as unused dead weight.
+ALTER TABLE products DROP COLUMN IF EXISTS delivery_time;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS service_offered BOOLEAN DEFAULT false;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS service_name TEXT;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS service_price NUMERIC(12,2);
