@@ -11,6 +11,8 @@ export interface Product {
   supplier?: string;
   supplier_id?: number;
   supplier_rating?: number;
+  supplier_address?: string;
+  supplier_phone?: string;
   service_offered?: boolean;
   service_name?: string;
   service_price?: number;
@@ -115,7 +117,9 @@ export async function getAllActiveProducts(): Promise<Product[]> {
       p.service_price,
       p.supplier_id,
       s.name AS supplier,
-      s.rating AS supplier_rating
+      s.rating AS supplier_rating,
+      s.province AS supplier_address,
+      s.phone AS supplier_phone
     FROM products p
     JOIN suppliers s ON s.id = p.supplier_id
     WHERE p.active = true
@@ -143,7 +147,9 @@ export async function getProductById(id: number): Promise<Product | null> {
       p.service_price,
       p.supplier_id,
       s.name AS supplier,
-      s.rating AS supplier_rating
+      s.rating AS supplier_rating,
+      s.province AS supplier_address,
+      s.phone AS supplier_phone
     FROM products p
     JOIN suppliers s ON s.id = p.supplier_id
     WHERE p.id = $1 AND p.active = true`,

@@ -15,8 +15,8 @@ export interface ImportItem {
   // original one-supplier-per-file behavior) when none of these are given.
   supplierId?: number;
   supplierName?: string;
-  supplierNif?: string;
-  supplierProvince?: string;
+  supplierAddress?: string;
+  supplierPhone?: string;
   // Optional attached service (e.g. installation) offered as a WhatsApp
   // follow-up when a customer picks this product. serviceOffered is only
   // ever true when serviceName/servicePrice both parsed successfully — see
@@ -33,20 +33,24 @@ export interface ImportItem {
  * `defaultSupplierId` (the original single-supplier-per-file behavior).
  * Rows that resolve to no supplier at all are skipped, same as rows missing
  * a reference/name.
+ *
+ * Purely incremental — insert/update only the rows actually in `items`.
+ * Products belonging to the same supplier that this batch doesn't mention
+ * are left untouched (an admin uploading a 2-row correction file must not
+ * wipe out the rest of that supplier's catalog).
  */
 export async function importProductsBatch(
   items: ImportItem[],
   defaultSupplierId: number | null = null
-): Promise<{ inserted: number; updated: number; deactivated: number; restockNotifications: RestockNotification[] }> {
+): Promise<{ inserted: number; updated: number; restockNotifications: RestockNotification[] }> {
   let inserted = 0;
   let updated = 0;
-  let deactivated = 0;
   const restockNotifications: RestockNotification[] = [];
 
   // Resolve each row's supplier id up front — cached by name so the same new
   // supplier name repeated across many rows only gets created once — then
-  // group rows by resolved supplier so the "deactivate missing" step only
-  // ever touches suppliers actually present in this file.
+  // group rows by resolved supplier so the sync_logs entry below is per
+  // supplier actually present in this file.
   const supplierCache = new Map<string, number>();
   const bySupplier = new Map<number, ImportItem[]>();
 
@@ -56,10 +60,10 @@ export async function importProductsBatch(
     let supplierId = item.supplierId ?? null;
 
     if (!supplierId && item.supplierName) {
-      const cacheKey = `${item.supplierName.toLowerCase()}|${item.supplierNif || ''}`;
+      const cacheKey = item.supplierName.toLowerCase();
       supplierId = supplierCache.get(cacheKey) ?? null;
       if (!supplierId) {
-        supplierId = await getOrCreateSupplierByName(item.supplierName, item.supplierNif, item.supplierProvince);
+        supplierId = await getOrCreateSupplierByName(item.supplierName, item.supplierAddress, item.supplierPhone);
         supplierCache.set(cacheKey, supplierId);
       }
     }
@@ -77,7 +81,6 @@ export async function importProductsBatch(
     await client.query("BEGIN");
 
     for (const [supplierId, supplierItems] of bySupplier) {
-      const receivedReferences = new Set(supplierItems.map((i) => i.reference));
       let groupInserted = 0;
       let groupUpdated = 0;
 
@@ -142,32 +145,20 @@ export async function importProductsBatch(
         }
       }
 
-      // Deactivate items from this supplier that are missing in the new document import
-      const deactivatedResult = await client.query(
-        `UPDATE products
-         SET active = false, quantity = 0, updated_at = NOW()
-         WHERE supplier_id = $1
-           AND active = true
-           AND reference != ALL($2::text[])`,
-        [supplierId, [...receivedReferences]]
-      );
-      const groupDeactivated = deactivatedResult.rowCount || 0;
-
       // Log the synchronization event
       await client.query(
-        `INSERT INTO sync_logs (supplier_id, inserted_count, updated_count, deactivated_count, created_at)
-         VALUES ($1, $2, $3, $4, NOW())`,
-        [supplierId, groupInserted, groupUpdated, groupDeactivated]
+        `INSERT INTO sync_logs (supplier_id, inserted_count, updated_count, created_at)
+         VALUES ($1, $2, $3, NOW())`,
+        [supplierId, groupInserted, groupUpdated]
       );
 
       inserted += groupInserted;
       updated += groupUpdated;
-      deactivated += groupDeactivated;
     }
 
     await client.query("COMMIT");
 
-    return { inserted, updated, deactivated, restockNotifications };
+    return { inserted, updated, restockNotifications };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -191,13 +182,16 @@ export async function getSupplierPhoneById(supplierId: number): Promise<string |
  * Finds a supplier by name, or creates one if it doesn't exist yet.
  * Used by the CSV/XLSX file-upload endpoint when the admin (or a row within
  * the file) references a supplier by name instead of an existing id. No
- * unique constraint exists on suppliers.name/nif — this is a plain
+ * unique constraint exists on suppliers.name — this is a plain
  * check-then-insert, acceptable for low-concurrency admin-triggered usage.
+ * address/phone only seed a brand-new supplier row — an existing supplier's
+ * address/phone is left as-is by an import (see resolveSupplierForProductEdit
+ * for editing it after the fact from the product panel).
  */
 export async function getOrCreateSupplierByName(
   name: string,
-  nif?: string | null,
-  province?: string | null
+  address?: string | null,
+  phone?: string | null
 ): Promise<number> {
   const { rows } = await db.query(
     'SELECT id FROM suppliers WHERE name ILIKE $1 LIMIT 1',
@@ -206,8 +200,47 @@ export async function getOrCreateSupplierByName(
   if (rows.length) return rows[0].id;
 
   const inserted = await db.query(
-    'INSERT INTO suppliers (name, nif, province) VALUES ($1, $2, $3) RETURNING id',
-    [name, nif || null, province || null]
+    'INSERT INTO suppliers (name, province, phone) VALUES ($1, $2, $3) RETURNING id',
+    [name, address || null, phone || null]
+  );
+  return inserted.rows[0].id;
+}
+
+/**
+ * Resolves the supplier a product's edited Name/Address/Phone fields should
+ * point to — backs the Supplier section of the product detail panel
+ * (rede-pecas-admin), the only place an admin can touch supplier data today
+ * since there's no dedicated supplier management screen.
+ *
+ * Deliberately does NOT update the product's current supplier row in place —
+ * that row is shared by every other product from the same supplier (see
+ * getOrCreateSupplierByName above), so mutating it in place would silently
+ * change every other product's listed supplier too, even though the edit
+ * form looks like it belongs to just one product. Instead:
+ *  - if another *different* supplier already has this exact name, this
+ *    product is repointed to that existing row (its address/phone/rating
+ *    take over — you're telling the system "this is actually that same
+ *    real supplier", the same dedup rule importProductsBatch uses)
+ *  - otherwise a brand-new supplier row is created with the submitted
+ *    name/address/phone and this product is repointed to it
+ * Either way, only the one product being edited is repointed — every other
+ * product still on the original supplier row is untouched.
+ */
+export async function resolveSupplierForProductEdit(
+  name: string,
+  address: string | null,
+  phone: string | null,
+  currentSupplierId: number
+): Promise<number> {
+  const { rows } = await db.query(
+    'SELECT id FROM suppliers WHERE name ILIKE $1 AND id != $2 LIMIT 1',
+    [name, currentSupplierId]
+  );
+  if (rows.length) return rows[0].id;
+
+  const inserted = await db.query(
+    'INSERT INTO suppliers (name, province, phone) VALUES ($1, $2, $3) RETURNING id',
+    [name, address || null, phone || null]
   );
   return inserted.rows[0].id;
 }

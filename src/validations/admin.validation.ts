@@ -91,32 +91,46 @@ export const productUpdate: ValidationSchema = {
       service_offered: Joi.boolean(),
       service_name: Joi.string().allow('', null),
       service_price: Joi.number().allow(null),
+      // Supplier's own fields — edited from a product's own panel since
+      // there's no dedicated supplier management screen yet (see
+      // resolveSupplierForProductEdit in supplier.model.ts).
+      supplierName: Joi.string(),
+      supplierAddress: Joi.string().allow('', null),
+      supplierPhone: Joi.string().allow('', null),
     })
     .min(1),
 };
+
+// Mirrors validateRow's row-level rules in product.service.ts (the
+// file-upload import path) so both entry points into importProductsBatch
+// reject the same bad data — serviceName/servicePrice only become required
+// once serviceOffered is actually true.
+const importItemSchema = Joi.object({
+  reference: Joi.string().required(),
+  name: Joi.string().required(),
+  price: Joi.number().min(0).required(),
+  quantity: Joi.number().integer().min(0).required(),
+  supplierId: Joi.number().integer(),
+  supplierName: Joi.string(),
+  supplierAddress: Joi.string().allow(''),
+  supplierPhone: Joi.string().allow(''),
+  serviceOffered: Joi.boolean(),
+  serviceName: Joi.string().allow(''),
+  servicePrice: Joi.number().min(0),
+}).when('.serviceOffered', {
+  is: true,
+  then: Joi.object({
+    serviceName: Joi.string().min(1).required(),
+    servicePrice: Joi.number().min(0).required(),
+  }),
+});
 
 export const importProductsBatch: ValidationSchema = {
   body: Joi.object().keys({
     // Fallback supplier for any item that doesn't specify its own — optional
     // since every item can instead carry its own supplierId/supplierName.
     supplierId: Joi.number().integer(),
-    items: Joi.array()
-      .items(
-        Joi.object().keys({
-          reference: Joi.string().required(),
-          name: Joi.string().required(),
-          price: Joi.number().required(),
-          quantity: Joi.number().required(),
-          supplierId: Joi.number().integer(),
-          supplierName: Joi.string(),
-          supplierNif: Joi.string().allow(''),
-          supplierProvince: Joi.string().allow(''),
-          serviceOffered: Joi.boolean(),
-          serviceName: Joi.string().allow(''),
-          servicePrice: Joi.number(),
-        })
-      )
-      .required(),
+    items: Joi.array().items(importItemSchema).required(),
   }),
 };
 

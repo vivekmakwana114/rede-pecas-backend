@@ -613,7 +613,6 @@ export async function processRestockOrderChoice(
 export interface InventoryImportResult {
   inserted: number;
   updated: number;
-  deactivated: number;
   restockNotifications: RestockNotification[];
 }
 
@@ -633,16 +632,19 @@ export async function importInventoryBatch(
 }
 
 const HEADER_ALIASES: Record<string, string[]> = {
-  reference: ['reference', 'referencia', 'ref', 'sku'],
-  name: ['name', 'nome', 'descricao', 'description', 'descrição'],
+  reference: ['sku', 'reference', 'referencia', 'ref'],
+  name: ['product', 'produto', 'name', 'nome', 'descricao', 'description', 'descrição'],
   price: ['price', 'preco', 'preço'],
   quantity: ['quantity', 'quantidade', 'qty', 'stock'],
-  supplierName: ['supplier', 'supplier_name', 'fornecedor', 'nome_fornecedor'],
-  supplierNif: ['supplier_nif', 'nif_fornecedor'],
-  supplierProvince: ['supplier_province', 'provincia_fornecedor'],
+  supplierName: ['supplier name', 'supplier', 'supplier_name', 'fornecedor', 'nome_fornecedor'],
+  // "Address" here is the same underlying suppliers.province DB column, just
+  // relabeled — Angola supplier addresses are commonly just a province name,
+  // and there's no separate address column (a deliberate choice, not a gap).
+  supplierAddress: ['supplier address', 'supplier_address', 'endereco_fornecedor', 'supplier_province', 'provincia_fornecedor'],
+  supplierPhone: ['supplier phone', 'supplier_phone', 'telefone_fornecedor'],
   service: ['service', 'servico', 'serviço'],
-  serviceName: ['service_name', 'nome_servico', 'nome_serviço'],
-  servicePrice: ['service_price', 'preco_servico', 'preço_serviço'],
+  serviceName: ['service name', 'service_name', 'nome_servico', 'nome_serviço'],
+  servicePrice: ['service price', 'service_price', 'preco_servico', 'preço_serviço'],
 };
 
 // Values a CSV/XLSX author would plausibly type in the "service: yes/no" column.
@@ -652,11 +654,11 @@ const YES_VALUES = new Set(['yes', 'sim', 'true', '1']);
 // every one of these must have at least one alias in the file, or the whole
 // upload is rejected up front (see getMissingRequiredColumns).
 const REQUIRED_COLUMNS: { field: 'reference' | 'name' | 'price' | 'quantity' | 'supplierName'; label: string }[] = [
-  { field: 'reference', label: 'Reference' },
-  { field: 'name', label: 'Name' },
+  { field: 'reference', label: 'SKU' },
+  { field: 'name', label: 'Product' },
   { field: 'price', label: 'Price' },
   { field: 'quantity', label: 'Quantity' },
-  { field: 'supplierName', label: 'Supplier' },
+  { field: 'supplierName', label: 'Supplier Name' },
 ];
 
 /**
@@ -733,8 +735,8 @@ function validateRow(row: Record<string, any>, rowNumber: number): { item: Impor
       price,
       quantity,
       supplierName: String(supplierName),
-      supplierNif: pick('supplierNif') ? String(pick('supplierNif')) : undefined,
-      supplierProvince: pick('supplierProvince') ? String(pick('supplierProvince')) : undefined,
+      supplierAddress: pick('supplierAddress') ? String(pick('supplierAddress')) : undefined,
+      supplierPhone: pick('supplierPhone') ? String(pick('supplierPhone')) : undefined,
       serviceOffered: wantsService,
       serviceName: wantsService ? String(serviceName) : undefined,
       servicePrice: wantsService ? servicePrice : undefined,
@@ -750,12 +752,14 @@ const MAX_ROW_ERRORS_SHOWN = 20;
 /**
  * Parses a single uploaded CSV/XLSX file and imports every row, each row
  * naming its own supplier (created on the fly by name if it doesn't exist
- * yet). Column headers map via HEADER_ALIASES so PT/EN header variants both
- * work. Validates in two passes before writing anything: first the header
- * row against REQUIRED_COLUMNS (missing columns reject the file immediately,
- * naming them), then every data row (bad/missing price, quantity, supplier,
- * or an incomplete service) — any row problem rejects the whole file with
- * every problem listed, so nothing partially imports.
+ * yet). Columns are SKU, Product, Price, Quantity, Supplier Name, Supplier
+ * Address, Supplier Phone, Service, Service Name, Service Price — headers
+ * map via HEADER_ALIASES so PT/EN variants and the older snake_case column
+ * names both still work. Validates in two passes before writing anything:
+ * first the header row against REQUIRED_COLUMNS (missing columns reject the
+ * file immediately, naming them), then every data row (bad/missing price,
+ * quantity, supplier, or an incomplete service) — any row problem rejects
+ * the whole file with every problem listed, so nothing partially imports.
  */
 export async function importInventoryFromFile(fileBuffer: Buffer): Promise<InventoryImportResult> {
   const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
@@ -795,16 +799,16 @@ export async function importInventoryFromFile(fileBuffer: Buffer): Promise<Inven
 // here round-trips through importInventoryFromFile unchanged once data rows
 // are added.
 const TEMPLATE_HEADER_ROW = [
-  'reference',
-  'name',
-  'price',
-  'quantity',
-  'supplier',
-  'supplier_nif',
-  'supplier_province',
-  'service',
-  'service_name',
-  'service_price',
+  'SKU',
+  'Product',
+  'Price',
+  'Quantity',
+  'Supplier Name',
+  'Supplier Address',
+  'Supplier Phone',
+  'Service',
+  'Service Name',
+  'Service Price',
 ];
 
 /**
