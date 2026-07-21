@@ -1,4 +1,5 @@
 import { createClient } from 'redis';
+import { createHash } from 'crypto';
 import { config } from '../config/config.js';
 import { logger } from '../config/logger.js';
 import { Product } from '../models/product.model.js';
@@ -834,6 +835,187 @@ export async function getLocale(phone: string): Promise<'pt' | 'en' | null> {
     logger.error('Error fetching locale from Redis', err);
     const entry = localeSessions.get(key);
     return entry && entry.expiresAt >= Date.now() ? entry.locale : null;
+  }
+}
+
+/**
+ * Generic per-phone string slot, backing the two conversation-context values
+ * the humanization layer reads (see humanize.service.ts). Both are stored here
+ * rather than threaded as parameters through the ~45 send call sites: every
+ * sender already has the phone number in hand, so a session lookup keeps the
+ * migration to reply.service.ts a one-line import change per file.
+ */
+const stringSessions = new Map<string, { value: string; expiresAt: number }>();
+
+async function saveString(key: string, value: string): Promise<void> {
+  stringSessions.set(key, { value, expiresAt: Date.now() + SESSION_TTL * 1000 });
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, SESSION_TTL, value);
+  } catch (err) {
+    logger.error(`Error saving ${key} to Redis`, err);
+  }
+}
+
+async function getString(key: string): Promise<string | null> {
+  const readMemory = () => {
+    const entry = stringSessions.get(key);
+    return entry && entry.expiresAt >= Date.now() ? entry.value : null;
+  };
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return readMemory();
+  }
+
+  try {
+    return (await redisClient.get(key)) ?? null;
+  } catch (err) {
+    logger.error(`Error fetching ${key} from Redis`, err);
+    return readMemory();
+  }
+}
+
+/**
+ * The customer's most recent inbound message text. Written once per message in
+ * processMessageFlow, read by the humanization layer so a rewrite can react to
+ * what the customer actually said rather than only to the canned string.
+ */
+export async function saveLastMessage(phone: string, text: string): Promise<void> {
+  return saveString(`lastmsg:${phone}`, text);
+}
+
+export async function getLastMessage(phone: string): Promise<string | null> {
+  return getString(`lastmsg:${phone}`);
+}
+
+/**
+ * The customer's first name, cached at the get-or-create step so a contextual
+ * rewrite doesn't cost a DB round-trip on every send.
+ */
+export async function saveCustomerName(phone: string, name: string): Promise<void> {
+  return saveString(`custname:${phone}`, name);
+}
+
+export async function getCustomerName(phone: string): Promise<string | null> {
+  return getString(`custname:${phone}`);
+}
+
+/**
+ * The Meta message id (wamid) of the last interactive (button/list) message
+ * actually sent to this phone. WhatsApp never disables an old button/list
+ * message client-side, so a customer can tap one from earlier in the
+ * conversation at any time — comparing an inbound reply's `context.id`
+ * against this value is how whatsapp.controller.ts tells a live answer apart
+ * from a stale tap on an already-superseded question. Written by every
+ * customer-facing interactive send (reply.service.ts's sendReplyButtons/
+ * sendReplyList, plus the handful of call sites that intentionally bypass it)
+ * — never by admin-facing sends, which can have several valid prompts live
+ * at once and aren't part of this single-threaded guard.
+ */
+export async function saveActivePromptId(phone: string, messageId?: string | null): Promise<void> {
+  if (!messageId) return;
+  return saveString(`activePrompt:${phone}`, messageId);
+}
+
+export async function getActivePromptId(phone: string): Promise<string | null> {
+  return getString(`activePrompt:${phone}`);
+}
+
+/**
+ * Content-addressed cache of humanized message bodies. Keyed by a hash of the
+ * source text (plus locale and, for contextual rewrites, the context), never by
+ * phone — so the fixed prompts every customer sees cost exactly one Anthropic
+ * call across the system's lifetime. TTL is deliberately longer than
+ * SESSION_TTL: these entries aren't tied to any one conversation.
+ */
+const HUMANIZE_CACHE_TTL = 60 * 60 * 24; // 24 hours
+const humanizeCache = new Map<string, { value: string; expiresAt: number }>();
+
+export async function getHumanized(key: string): Promise<string | null> {
+  const readMemory = () => {
+    const entry = humanizeCache.get(key);
+    return entry && entry.expiresAt >= Date.now() ? entry.value : null;
+  };
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return readMemory();
+  }
+
+  try {
+    return (await redisClient.get(key)) ?? null;
+  } catch (err) {
+    logger.error('Error fetching humanized text from Redis', err);
+    return readMemory();
+  }
+}
+
+export async function saveHumanized(key: string, value: string): Promise<void> {
+  humanizeCache.set(key, { value, expiresAt: Date.now() + HUMANIZE_CACHE_TTL * 1000 });
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, HUMANIZE_CACHE_TTL, value);
+  } catch (err) {
+    logger.error('Error saving humanized text to Redis', err);
+  }
+}
+
+/**
+ * Server-side admin token blacklist. This JWT setup is otherwise fully
+ * stateless (see adminAuth.service.ts) — an access/refresh token stays valid
+ * until its own expiry regardless of anything happening server-side. Logging
+ * out (POST /admin/logout, authMiddleware.ts) needs the token to actually stop
+ * working immediately rather than silently remain valid until it naturally
+ * expires, so the exact token is recorded here as revoked, TTL'd to exactly
+ * its own remaining lifetime — never longer, since there's no reason to
+ * remember a token past the point it would've stopped working anyway.
+ * Keyed by a hash of the token rather than the raw string, same reasoning as
+ * humanize.service.ts's cacheKey: no reason to let a live bearer token sit
+ * around as a plain Redis key/value.
+ */
+const revokedTokens = new Map<string, number>();
+
+function revokedTokenKey(token: string): string {
+  return `revokedToken:${createHash('sha1').update(token).digest('hex')}`;
+}
+
+export async function revokeToken(token: string, ttlSeconds: number): Promise<void> {
+  if (ttlSeconds <= 0) return; // already past its own expiry — nothing to blacklist
+  const key = revokedTokenKey(token);
+  revokedTokens.set(key, Date.now() + ttlSeconds * 1000);
+
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    return;
+  }
+
+  try {
+    await redisClient.setEx(key, ttlSeconds, '1');
+  } catch (err) {
+    logger.error('Error revoking token in Redis', err);
+  }
+}
+
+export async function isTokenRevoked(token: string): Promise<boolean> {
+  const key = revokedTokenKey(token);
+  if (useMemoryFallback || !redisClient?.isOpen) {
+    const expiresAt = revokedTokens.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
+  }
+
+  try {
+    const exists = await redisClient.exists(key);
+    return exists === 1;
+  } catch (err) {
+    logger.error('Error checking token revocation in Redis', err);
+    const expiresAt = revokedTokens.get(key);
+    return !!expiresAt && expiresAt >= Date.now();
   }
 }
 

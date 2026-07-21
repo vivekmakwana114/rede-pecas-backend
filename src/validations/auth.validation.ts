@@ -41,3 +41,9 @@ export const refresh: ValidationSchema = {
     refreshToken: Joi.string().required(),
   }),
 };
+
+export const logout: ValidationSchema = {
+  body: Joi.object().keys({
+    refreshToken: Joi.string(),
+  }),
+};

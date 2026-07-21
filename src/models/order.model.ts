@@ -145,7 +145,7 @@ export async function getOrdersPendingApproval(): Promise<OrderInfo[]> {
   const { rows } = await db.query(`
     SELECT
       o.number, o.customer_phone AS customer,
-      o.unit_price AS price, o.quantity, o.created_at, o.updated_at,
+      (o.unit_price + COALESCE(o.service_price, 0)) AS price, o.quantity, o.created_at, o.updated_at,
       o.service_name, o.service_price,
       (o.service_name IS NOT NULL) AS service_offered,
       p.name AS part, p.reference,
@@ -179,7 +179,7 @@ export async function getOrdersPendingStockConfirmation(): Promise<any[]> {
   const { rows } = await db.query(`
     SELECT
       o.number, o.customer_phone AS customer,
-      o.unit_price AS price, o.quantity, o.created_at,
+      (o.unit_price + COALESCE(o.service_price, 0)) AS price, o.quantity, o.created_at,
       o.service_name, o.service_price,
       (o.service_name IS NOT NULL) AS service_offered,
       p.id AS product_id, p.name AS part, p.reference,
@@ -259,7 +259,7 @@ export async function getOrdersApproved(range: 'today' | 'all' = 'all'): Promise
   const { rows } = await db.query(`
     SELECT
       o.number, o.customer_phone AS customer,
-      o.unit_price AS price, o.quantity,
+      (o.unit_price + COALESCE(o.service_price, 0)) AS price, o.quantity,
       o.service_name, o.service_price,
       (o.service_name IS NOT NULL) AS service_offered,
       p.name AS part,
@@ -289,7 +289,7 @@ export async function getOrdersRejected(range: 'today' | 'all' = 'all'): Promise
   const { rows } = await db.query(`
     SELECT
       o.number, o.customer_phone AS customer,
-      o.unit_price AS price, o.quantity,
+      (o.unit_price + COALESCE(o.service_price, 0)) AS price, o.quantity,
       o.service_name, o.service_price,
       (o.service_name IS NOT NULL) AS service_offered,
       p.name AS part,
@@ -374,8 +374,12 @@ const ANALYTICS_PERIOD_CONFIG: Record<AnalyticsPeriod, {
  * updated_at — keeps both charts on the same X axis and revenue attributed
  * to when the sale started, not when the admin got around to approving it.
  *
- * revenue sums unit_price only (not service_price), matching the existing
- * "Revenue (Approved)" convention elsewhere (OrderInfo.price / StatsGrid).
+ * revenue sums unit_price + service_price (when a service was attached) —
+ * same "what the customer actually paid" total used everywhere else an order
+ * total is shown (getOrdersApproved/Pending/Rejected's `price`,
+ * notifyAdminsStockConfirmationNeeded's WhatsApp push). Summed as unit_price
+ * only until 2026-07-21, which under-reported revenue on any order with a
+ * service line despite the order-detail view always showing the correct sum.
  * stock_unavailable and cancelled orders are excluded from every status
  * bucket — same as the live /orders queues, which also drop them.
  */
@@ -387,14 +391,15 @@ export async function getOrderAnalytics(period: AnalyticsPeriod): Promise<Analyt
        SELECT generate_series(${rangeStartExpr}, ${rangeEndExpr}, $1::interval) AS bucket_start
      ),
      order_stats AS (
-       SELECT date_trunc('${truncUnit}', created_at) AS bucket_start, status, unit_price
+       SELECT date_trunc('${truncUnit}', created_at) AS bucket_start, status,
+              (unit_price + COALESCE(service_price, 0)) AS total_price
        FROM orders
        WHERE created_at >= ${rangeStartExpr}
          AND created_at < ${rangeEndExpr} + $1::interval
      )
      SELECT
        to_char(b.bucket_start, $2) AS label,
-       COALESCE(SUM(o.unit_price) FILTER (WHERE o.status = 'approved'), 0) AS revenue,
+       COALESCE(SUM(o.total_price) FILTER (WHERE o.status = 'approved'), 0) AS revenue,
        COUNT(*) FILTER (WHERE o.status = 'approved')::int AS approved,
        COUNT(*) FILTER (WHERE o.status = 'rejected')::int AS rejected,
        COUNT(*) FILTER (WHERE o.status = 'awaiting_stock_confirmation')::int AS "stockConfirmation",
@@ -424,8 +429,9 @@ export interface OrderStats {
  * are scoped to CURRENT_DATE on purpose for the Orders queue page's daily
  * log. totalOrders counts every order row regardless of status (including
  * cancelled/stock_unavailable — still a real order that was placed), while
- * approvedRevenue sums unit_price only, matching the existing
- * "Revenue (Approved)" convention (OrderInfo.price / getOrderAnalytics).
+ * approvedRevenue sums unit_price + service_price — the same order-total
+ * convention used everywhere else a price is shown (OrderInfo.price /
+ * getOrderAnalytics).
  */
 export async function getOrderStats(): Promise<OrderStats> {
   const { rows } = await db.query(`
@@ -433,7 +439,7 @@ export async function getOrderStats(): Promise<OrderStats> {
       COUNT(*)::int AS "totalOrders",
       COUNT(*) FILTER (WHERE status = 'approved')::int AS "approvedOrders",
       COUNT(*) FILTER (WHERE status = 'rejected')::int AS "rejectedOrders",
-      COALESCE(SUM(unit_price) FILTER (WHERE status = 'approved'), 0) AS "approvedRevenue"
+      COALESCE(SUM(unit_price + COALESCE(service_price, 0)) FILTER (WHERE status = 'approved'), 0) AS "approvedRevenue"
     FROM orders
   `);
   return rows[0];

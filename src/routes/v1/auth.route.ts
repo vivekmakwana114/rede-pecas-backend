@@ -2,6 +2,7 @@ import express from 'express';
 import {
   login,
   refresh,
+  logout,
   getProfile,
   changeProfile,
   changePassword,
@@ -21,6 +22,7 @@ router.post('/forgot/password', validate(authValidation.forgotPassword), forgotP
 router.post('/reset/password', validate(authValidation.resetPassword), resetPassword);
 
 // Protected
+router.post('/logout', authMiddleware, validate(authValidation.logout), logout);
 router.get('/profile', authMiddleware, getProfile);
 router.patch('/profile', authMiddleware, validate(authValidation.changeProfile), changeProfile);
 router.post('/change/password', authMiddleware, validate(authValidation.changePassword), changePassword);

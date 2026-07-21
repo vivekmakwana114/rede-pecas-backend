@@ -16,7 +16,8 @@ import {
 import { approveOrder } from '../services/payment.service.js';
 import { confirmStockAndFinalizeOrder, markStockUnavailableAndOfferAlternative } from '../services/product.service.js';
 import { resolveMessages } from '../services/customer.service.js';
-import { sendWhatsAppMessage, downloadWhatsAppMedia } from '../services/whatsapp.service.js';
+import { downloadWhatsAppMedia } from '../services/whatsapp.service.js';
+import { sendReply } from '../services/reply.service.js';
 
 /**
  * Returns pending approvals, approved/rejected logs, and orders awaiting
@@ -98,7 +99,7 @@ export const reviewOrderHandler = catchAsync(async (req: Request, res: Response)
   const order = await getOrderByNumber(number);
   if (order) {
     const messages = await resolveMessages(order.customer_phone);
-    await sendWhatsAppMessage(order.customer_phone, messages.order.rejected(number));
+    await sendReply(order.customer_phone, messages.order.rejected(number));
   }
 
   res.status(200).json({

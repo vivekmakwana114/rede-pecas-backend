@@ -5,8 +5,14 @@ import {
   getCustomerByPhone,
   Customer
 } from '../models/customer.model.js';
-import { sendWhatsAppMessage, sendWhatsAppButtons } from './whatsapp.service.js';
-import { markSessionActive, markPartPromptSent, markVehicleIdChoiceShown, getLocale } from './session.service.js';
+import { sendReply, sendReplyButtons } from './reply.service.js';
+import {
+  markSessionActive,
+  markPartPromptSent,
+  markVehicleIdChoiceShown,
+  getLocale,
+  saveCustomerName
+} from './session.service.js';
 import { capitalize } from '../utils/helpers.js';
 import { getMessages, DEFAULT_LOCALE } from '../i18n/messages.js';
 
@@ -45,7 +51,12 @@ export async function resolveMessages(phone: string) {
  */
 export async function getOrCreateCustomer(phone: string): Promise<Customer | null> {
   const customer = await getAndUpdateCustomer(phone);
-  if (customer) return customer;
+  if (customer) {
+    // Cached here so a contextual rewrite (humanize.service.ts) can address the
+    // customer by name without a DB round-trip on every send.
+    if (customer.name) await saveCustomerName(phone, customer.name.split(' ')[0]);
+    return customer;
+  }
 
   await createCustomerPreRegistration(phone, 'awaiting_name');
   // Marked active before the send, not after: sendWhatsAppMessage throws on
@@ -56,7 +67,7 @@ export async function getOrCreateCustomer(phone: string): Promise<Customer | nul
   // registration" resume-prompt instead of being captured — corrupting every
   // registration field one step downstream from there.
   await markSessionActive(phone);
-  await sendWhatsAppMessage(phone, (await resolveMessages(phone)).onboarding.welcome());
+  await sendReply(phone, (await resolveMessages(phone)).onboarding.welcome(), { contextual: true });
   return null;
 }
 
@@ -75,7 +86,7 @@ export async function processCustomerRegistration(phone: string, customer: Custo
   if (status === 'awaiting_name') {
     const name = capitalize(r);
     await updateCustomer(phone, { name, registration_status: 'awaiting_nif' });
-    await sendWhatsAppButtons(phone, messages.onboarding.askNifBody(name), messages.onboarding.askNifButtons);
+    await sendReplyButtons(phone, messages.onboarding.askNifBody(name), messages.onboarding.askNifButtons);
     return true;
   }
 
@@ -85,12 +96,12 @@ export async function processCustomerRegistration(phone: string, customer: Custo
 
     if (noNif) {
       await updateCustomer(phone, { nif: null, registration_status: 'awaiting_address' });
-      await sendWhatsAppMessage(phone, messages.onboarding.askAddress(firstName));
+      await sendReply(phone, messages.onboarding.askAddress(firstName));
     } else {
       // "Sim, tenho NIF" only confirms they have one — the button reply itself isn't the
       // NIF number, so ask for it separately instead of saving the button title as data.
       await updateCustomer(phone, { registration_status: 'awaiting_nif_number' });
-      await sendWhatsAppMessage(phone, messages.onboarding.askNifNumber());
+      await sendReply(phone, messages.onboarding.askNifNumber());
     }
     return true;
   }
@@ -98,7 +109,7 @@ export async function processCustomerRegistration(phone: string, customer: Custo
   if (status === 'awaiting_nif_number') {
     const nif = r.replace(/\s/g, '').toUpperCase();
     await updateCustomer(phone, { nif, registration_status: 'awaiting_address' });
-    await sendWhatsAppMessage(phone, messages.onboarding.askAddress(firstName));
+    await sendReply(phone, messages.onboarding.askAddress(firstName));
     return true;
   }
 
@@ -117,7 +128,7 @@ export async function processCustomerRegistration(phone: string, customer: Custo
     // Profile is done, but the customer still has no vehicle on file — the vehicle-ID
     // gate in whatsapp.controller.ts picks this up on their next message regardless,
     // but showing the buttons immediately here avoids an unnecessary extra round trip.
-    await sendWhatsAppButtons(phone, messages.onboarding.askVehicleIdBody(name), messages.onboarding.askVehicleIdButtons);
+    await sendReplyButtons(phone, messages.onboarding.askVehicleIdBody(name), messages.onboarding.askVehicleIdButtons);
     await markVehicleIdChoiceShown(phone);
     return true;
   }
@@ -133,18 +144,18 @@ export async function processCustomerRegistration(phone: string, customer: Custo
  */
 export async function sendResumeRegistrationPrompt(phone: string, customer: Customer): Promise<void> {
   const messages = await resolveMessages(phone);
-  await sendWhatsAppMessage(phone, messages.onboarding.resumeRegistration());
+  await sendReply(phone, messages.onboarding.resumeRegistration());
 
   if (customer.registration_status === 'awaiting_name') {
-    await sendWhatsAppMessage(phone, messages.onboarding.askNameOnly());
+    await sendReply(phone, messages.onboarding.askNameOnly());
   } else if (customer.registration_status === 'awaiting_nif') {
     const name = customer.name?.split(' ')[0] || 'Cliente';
-    await sendWhatsAppButtons(phone, messages.onboarding.askNifBody(name), messages.onboarding.askNifButtons);
+    await sendReplyButtons(phone, messages.onboarding.askNifBody(name), messages.onboarding.askNifButtons);
   } else if (customer.registration_status === 'awaiting_nif_number') {
-    await sendWhatsAppMessage(phone, messages.onboarding.askNifNumber());
+    await sendReply(phone, messages.onboarding.askNifNumber());
   } else if (customer.registration_status === 'awaiting_address') {
     const firstName = customer.name?.split(' ')[0] || 'Cliente';
-    await sendWhatsAppMessage(phone, messages.onboarding.askAddress(firstName));
+    await sendReply(phone, messages.onboarding.askAddress(firstName));
   }
 }
 
@@ -167,7 +178,7 @@ export async function completeOnboardingIfNeeded(
   await updateCustomer(phone, { registered_at: new Date() });
 
   const name = customer.name?.split(' ')[0] || 'Cliente';
-  await sendWhatsAppButtons(
+  await sendReplyButtons(
     phone,
     messages.onboarding.onboardingComplete(name, vehicleSummary),
     [messages.vehicleConfirm.addVehicleButton()]

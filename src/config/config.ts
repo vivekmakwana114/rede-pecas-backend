@@ -37,6 +37,14 @@ export const config = {
   anthropic: {
     apiKey: process.env.ANTHROPIC_API_KEY
   },
+  claudeMessage: {
+    // Kill switch for the Claude rewrite layer that makes canned replies from
+    // src/i18n/messages.ts sound less scripted (see humanize.service.ts).
+    // Defaults to OFF: with this unset the bot sends the exact deterministic
+    // strings it always has, so the layer can be disabled in production
+    // without a revert if the persona misbehaves.
+    enabled: process.env.CLAUDE_MESSAGE_ENABLED === 'true'
+  },
   whatsapp: {
     token: process.env.WHATSAPP_TOKEN,
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,

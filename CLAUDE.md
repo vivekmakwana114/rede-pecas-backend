@@ -6,8 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Rede Peças — central API backend for a WhatsApp AI sales agent (auto parts marketplace in Angola) and its admin approval panel. The AI agent converses with customers over the Meta WhatsApp Cloud API, identifies their vehicle (VIN or guided steps), searches inventory, generates proforma PDFs, and walks them through payment; staff approve orders via the admin API (consumed by the separate `rede-pecas-admin` React repo at `D:\Invennico\rede-pecas-admin`).
 
-See `PROJECT_PROGRESS.md` for the current status against the SOW, known gaps, and the agreed next steps — read it before planning any feature work, and keep it updated when a gap listed there is closed. `TESTING.md` is the manual end-to-end test guide for the WhatsApp flow (there's no automated test runner — see below).
-
 ## Commands
 
 ```bash
@@ -103,7 +101,6 @@ Neither call ever sees customer chat text — both take image/document input onl
 
 ### Intended end-to-end workflow (agreed with Vivek, 2026-07-02; registration/vehicle split reversed 2026-07-07)
 
-The target customer journey is documented in full in `PROJECT_PROGRESS.md` → "Full intended workflow". Of the three decisions from that discussion:
 
 - **Onboarding was a single merged flow from 2026-07-02, split back into two independent state machines on 2026-07-07** (registration and vehicle ID have their own status again — see the message pipeline above): the merge made it impossible to resume "just the vehicle" for a returning customer whose vehicle session expired without also re-checking profile status, and complicated adding more independent-status entities (e.g. suppliers) the same way later.
 - **Image routing is now state-aware** (implemented 2026-07-02): resolved as part of the same change, since it was a hard prerequisite for wiring in Vision. Still keyed off `needsVehicleId` after the 2026-07-07 split, just computed differently.

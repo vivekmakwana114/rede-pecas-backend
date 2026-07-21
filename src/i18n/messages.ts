@@ -21,6 +21,14 @@ interface Messages {
     // branching into an unrelated flow. Deliberately not offer-specific (the
     // waitlist/service/stock/restock Sim-Não offers still fall through as before).
     notUnderstood: () => string;
+    // Sent instead of processing an interactive reply whose context.id doesn't
+    // match the last interactive message we actually sent this phone — i.e. a
+    // tap on an old button/list message from earlier in the conversation,
+    // already answered or superseded by a newer question (see the stale-reply
+    // guard in whatsapp.controller.ts). Deliberately generic for the same
+    // reason notUnderstood() is: it has to make sense regardless of which old
+    // question was tapped.
+    alreadyAnswered: () => string;
   };
   onboarding: {
     welcome: () => string;
@@ -223,6 +231,8 @@ const pt: Messages = {
   common: {
     notUnderstood: () =>
       `🤔 Não percebi essa resposta. Escolhe uma das opções abaixo:`,
+    alreadyAnswered: () =>
+      `🤔 Essa já foi respondida! Vê a última mensagem para continuares.`,
   },
   onboarding: {
     welcome: () =>
@@ -609,6 +619,8 @@ const en: Messages = {
   common: {
     notUnderstood: () =>
       `🤔 I didn't quite catch that. Please choose one of the options below:`,
+    alreadyAnswered: () =>
+      `🤔 Already answered that one! Check my latest message to continue.`,
   },
   onboarding: {
     welcome: () =>

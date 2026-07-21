@@ -14,6 +14,7 @@ import {
   clearResetCode,
 } from '../models/adminUser.model.js';
 import { sendWhatsAppMessage } from './whatsapp.service.js';
+import { revokeToken, isTokenRevoked } from './session.service.js';
 import { t } from '../i18n/messages.js';
 
 const RESET_CODE_TTL_MINUTES = 10;
@@ -67,7 +68,10 @@ export async function login(
 /**
  * Exchanges a refresh token for a new access token. Stateless (no DB-tracked
  * session) — the refresh token stays valid until its own expiry regardless of
- * password changes; it can't be individually revoked.
+ * password changes, EXCEPT when it's been explicitly revoked by logout (see
+ * the isTokenRevoked check below) — without that check, POST /admin/logout
+ * blacklisting a refresh token was a no-op in practice, since this endpoint
+ * (unlike every authMiddleware-protected route) never consulted the blacklist.
  */
 export async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; admin: AdminProfile }> {
   let decoded: any;
@@ -81,10 +85,41 @@ export async function refreshAccessToken(refreshToken: string): Promise<{ access
     throw new ApiError(401, 'Invalid or expired refresh token.');
   }
 
+  if (await isTokenRevoked(refreshToken)) {
+    throw new ApiError(401, 'Invalid or expired refresh token.');
+  }
+
   const admin = await getAdminById(decoded.id);
   if (!admin) throw new ApiError(401, 'Invalid or expired refresh token.');
 
   return { accessToken: signAccessToken(admin), admin: toProfile(admin) };
+}
+
+/**
+ * Blacklists the admin's current access token server-side (session.service.ts's
+ * revokeToken), TTL'd to exactly that token's own remaining lifetime — so it
+ * stops working immediately instead of silently staying valid until it expires
+ * naturally, which is otherwise this stateless-JWT setup's default behavior.
+ * Also revokes the refresh token when the client sends one along, since it
+ * could otherwise still be exchanged for a fresh access token after "logout".
+ * An invalid/garbled/already-expired refreshToken is ignored rather than
+ * failing the whole request — the access token (the one actually authenticating
+ * this call) is always valid at this point, so logout should always succeed.
+ */
+export async function logout(token: string, tokenExp: number, refreshToken?: string): Promise<void> {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  await revokeToken(token, tokenExp - nowSeconds);
+
+  if (refreshToken) {
+    try {
+      const decoded = jwt.verify(refreshToken, config.jwt.secret) as any;
+      if (decoded.type === 'refresh' && typeof decoded.exp === 'number') {
+        await revokeToken(refreshToken, decoded.exp - nowSeconds);
+      }
+    } catch {
+      // Not our problem at logout time — see doc comment above.
+    }
+  }
 }
 
 export async function getProfile(adminId: number): Promise<AdminProfile> {
@@ -125,6 +160,10 @@ export async function changePassword(
 
   if (!(await bcrypt.compare(currentPassword, admin.password_hash))) {
     throw new ApiError(401, 'Current password is incorrect.');
+  }
+
+  if (newPassword === currentPassword) {
+    throw new ApiError(400, 'New password must be different from your current password.');
   }
 
   const passwordHash = await bcrypt.hash(newPassword, 10);
