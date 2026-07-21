@@ -39,6 +39,24 @@ export const refresh = catchAsync(async (req: Request, res: Response) => {
 });
 
 /**
+ * Logs out the authenticated admin by revoking their current access token
+ * server-side (and the refresh token too, if the client sends one) — see
+ * adminAuthService.logout.
+ */
+export const logout = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+  const { refreshToken } = req.body;
+  await adminAuthService.logout(req.token as string, req.user.exp, refreshToken);
+
+  res.status(200).json({
+    success: true,
+    message: 'Logged out successfully.',
+    code: 200,
+    data: null,
+    meta: { timestamp: new Date().toISOString() },
+  });
+});
+
+/**
  * Returns the authenticated admin's own profile.
  */
 export const getProfile = catchAsync(async (req: AuthenticatedRequest, res: Response) => {

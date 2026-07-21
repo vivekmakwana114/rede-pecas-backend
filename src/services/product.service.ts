@@ -29,7 +29,8 @@ import { getCustomerVehicles } from '../models/vehicle.model.js';
 import { getCustomerByPhone } from '../models/customer.model.js';
 import { getAllAdmins } from '../models/adminUser.model.js';
 import { resolveMessages, resolveLocale } from './customer.service.js';
-import { sendWhatsAppMessage, sendWhatsAppList, sendWhatsAppButtons } from './whatsapp.service.js';
+import { sendWhatsAppMessage, sendWhatsAppButtons } from './whatsapp.service.js';
+import { sendReply, sendReplyButtons, sendReplyList } from './reply.service.js';
 import { generateProformaPDF, sendProformaWhatsApp } from './pdf.service.js';
 import { askPaymentMethod } from './payment.service.js';
 import {
@@ -74,7 +75,7 @@ async function resolveSearchVehicle(phone: string) {
 export async function searchAndRespond(phone: string, customerText: string, customerName: string): Promise<void> {
   const messages = await resolveMessages(phone);
   logger.info(`[PRODUCT SEARCH] ${phone} searching for: "${customerText}"`);
-  await sendWhatsAppMessage(phone, messages.agent.checkingStock());
+  await sendReply(phone, messages.agent.checkingStock());
 
   const options = await searchProductsInInventory({ part: customerText });
 
@@ -87,10 +88,17 @@ export async function searchAndRespond(phone: string, customerText: string, cust
       // out-of-stock product to attach them to — tapping "yes" with nothing to
       // wait on would be a dead end.
       logger.info(`[PRODUCT SEARCH] ${phone} offering waitlist for out-of-stock match: ${candidate.name}`);
-      await sendWhatsAppButtons(phone, messages.agent.noStockFound(), messages.agent.noStockFoundButtons);
+      await sendReplyButtons(phone, messages.agent.noStockFound(), messages.agent.noStockFoundButtons);
       await savePendingWaitlistOffer(phone, { productId: candidate.id, productName: candidate.name });
     } else {
-      await sendWhatsAppMessage(phone, messages.agent.noStockFound());
+      // Not contextual: noStockFound() is a fixed "no stock, want the waitlist?"
+      // notice that doesn't need to react to what the customer searched for — and
+      // folding in their (often vague) search text as context invited Claude to
+      // "helpfully" add a clarifying ask that isn't in the source string at all,
+      // once inventing "tell me the name or send a photo" — product search has no
+      // photo-identification path (that only exists for vehicle documents), so
+      // that instruction was simply wrong on top of not being in the original.
+      await sendReply(phone, messages.agent.noStockFound());
     }
     return;
   }
@@ -104,7 +112,7 @@ export async function searchAndRespond(phone: string, customerText: string, cust
   const body = vehicle
     ? messages.agent.searchListBodyForVehicle(options.length, customerText, vehicle.make, vehicle.model, vehicle.year, customerName)
     : messages.agent.searchListBody(options.length, customerText, customerName);
-  await sendWhatsAppList(phone, body, messages.agent.searchListButton(), buildProductListRows(options));
+  await sendReplyList(phone, body, messages.agent.searchListButton(), buildProductListRows(options));
 }
 
 // WhatsApp caps list row title at 24 chars and description at 72 — truncate
@@ -155,7 +163,7 @@ async function requestStockConfirmation(
 ): Promise<void> {
   const messages = await resolveMessages(phone);
   await updateOrderStatus(orderNumber, 'awaiting_stock_confirmation');
-  await sendWhatsAppMessage(phone, messages.agent.confirmingAvailability());
+  await sendReply(phone, messages.agent.confirmingAvailability());
   await notifyAdminsStockConfirmationNeeded(orderNumber);
 }
 
@@ -235,7 +243,7 @@ export async function confirmStockAndFinalizeOrder(orderNumber: string): Promise
   const firstName = customer?.name?.split(' ')[0] || 'Cliente';
   const locale = await resolveLocale(phone);
   const messages = getMessages(locale);
-  await sendWhatsAppMessage(phone, messages.agent.stockConfirmedIntro(product.name, firstName));
+  await sendReply(phone, messages.agent.stockConfirmedIntro(product.name, firstName));
 
   const proformaPath = await generateProformaPDF(orderNumber, phone, product, service, locale);
   await sendProformaWhatsApp(phone, proformaPath, orderNumber, locale);
@@ -265,7 +273,7 @@ export async function markStockUnavailableAndOfferAlternative(orderNumber: strin
 
   const phone = order.customer_phone;
   const messages = await resolveMessages(phone);
-  await sendWhatsAppButtons(phone, messages.agent.stockUnavailable(order.product_name, order.reference), messages.agent.stockUnavailableButtons);
+  await sendReplyButtons(phone, messages.agent.stockUnavailable(order.product_name, order.reference), messages.agent.stockUnavailableButtons);
   await savePendingStockUnavailableOffer(phone, {
     orderNumber,
     productId: order.product_id,
@@ -296,12 +304,12 @@ export async function processStockUnavailableChoice(
     if (!options.length) {
       // No alternatives either — offer to waitlist them for the exact product
       // that was just declined, same as the main no-stock-found path.
-      await sendWhatsAppButtons(phone, messages.agent.noStockFound(), messages.agent.noStockFoundButtons);
+      await sendReplyButtons(phone, messages.agent.noStockFound(), messages.agent.noStockFoundButtons);
       await savePendingWaitlistOffer(phone, { productId: offer.productId, productName: offer.productName });
       return true;
     }
     await savePendingOptions(phone, options);
-    await sendWhatsAppList(
+    await sendReplyList(
       phone,
       messages.agent.searchListBody(options.length, offer.productName, customerName),
       messages.agent.searchListButton(),
@@ -312,7 +320,7 @@ export async function processStockUnavailableChoice(
   if (isNo) {
     await clearPendingStockUnavailableOffer(phone);
     await addToProductWaitlist(offer.productId, phone);
-    await sendWhatsAppMessage(phone, messages.agent.waitlistConfirmed(offer.productName));
+    await sendReply(phone, messages.agent.waitlistConfirmed(offer.productName));
     return true;
   }
   return false; // leave the offer pending; let the message fall through to normal processing
@@ -371,7 +379,7 @@ export async function sendStockConfirmationCourtesyMessages(): Promise<void> {
   for (const order of overdue) {
     try {
       const messages = await resolveMessages(order.customer_phone);
-      await sendWhatsAppMessage(order.customer_phone, messages.agent.stockConfirmationCourtesy());
+      await sendReply(order.customer_phone, messages.agent.stockConfirmationCourtesy());
       await markCourtesyMessageSent(order.number);
     } catch (error: any) {
       logger.error(`Error sending stock-confirmation courtesy message for order ${order.number}`, error);
@@ -423,14 +431,14 @@ async function startOrderForProduct(phone: string, product: Product): Promise<vo
   await createOrder(orderNumber, phone, product);
 
   if (product.service_offered && product.service_name && product.service_price) {
-    await sendWhatsAppMessage(phone, messages.agent.productSelected(product.name, formatPrice(product.price)));
+    await sendReply(phone, messages.agent.productSelected(product.name, formatPrice(product.price)));
     await savePendingServiceOffer(phone, {
       orderNumber,
       product,
       serviceName: product.service_name,
       servicePrice: product.service_price,
     });
-    await sendWhatsAppButtons(
+    await sendReplyButtons(
       phone,
       messages.agent.serviceOfferBody(product.service_name, formatPrice(product.service_price)),
       messages.agent.serviceOfferButtons
@@ -460,7 +468,7 @@ export async function processProductSelection(
   const choice = pendingOptions[idx];
   if (!choice) {
     const messages = await resolveMessages(phone);
-    await sendWhatsAppMessage(phone, messages.agent.optionNotFound());
+    await sendReply(phone, messages.agent.optionNotFound());
     return true;
   }
 
@@ -496,13 +504,13 @@ export async function processServiceOptIn(
     // ("15650.00" + "5000.00" -> "15650.005000.00") instead of summing, and
     // formatPrice's Number() coercion then fails to parse that as NaN.
     const total = Number(offer.product.price) + Number(offer.servicePrice);
-    await sendWhatsAppMessage(phone, messages.agent.serviceAdded(offer.serviceName, formatPrice(total)));
+    await sendReply(phone, messages.agent.serviceAdded(offer.serviceName, formatPrice(total)));
     await requestStockConfirmation(phone, offer.orderNumber);
     return true;
   }
   if (isNo) {
     await clearPendingServiceOffer(phone);
-    await sendWhatsAppMessage(phone, messages.agent.serviceDeclined());
+    await sendReply(phone, messages.agent.serviceDeclined());
     await requestStockConfirmation(phone, offer.orderNumber);
     return true;
   }
@@ -526,12 +534,12 @@ export async function processWaitlistOptIn(
   if (isYes) {
     await addToProductWaitlist(offer.productId, phone);
     await clearPendingWaitlistOffer(phone);
-    await sendWhatsAppMessage(phone, messages.agent.waitlistConfirmed(offer.productName));
+    await sendReply(phone, messages.agent.waitlistConfirmed(offer.productName));
     return true;
   }
   if (isNo) {
     await clearPendingWaitlistOffer(phone);
-    await sendWhatsAppMessage(phone, messages.agent.waitlistDeclined());
+    await sendReply(phone, messages.agent.waitlistDeclined());
     return true;
   }
   return false; // leave the offer pending; let the message fall through to normal processing
@@ -557,7 +565,7 @@ export async function notifyWaitlistedCustomers(restockNotifications: RestockNot
         const vehicles = await getCustomerVehicles(phone);
         const vehicleSummary = vehicles.length ? `${vehicles[0].make} ${vehicles[0].model} ${vehicles[0].year}` : null;
 
-        await sendWhatsAppButtons(
+        await sendReplyButtons(
           phone,
           messages.agent.restockNotification(firstName, productName, vehicleSummary, formatPrice(product.price), product.supplier || ''),
           messages.agent.restockNotificationButtons
@@ -595,7 +603,7 @@ export async function processRestockOrderChoice(
       // waitlistConfirmed (not noStockFound) since this re-add already happened —
       // asking "want me to do that?" would be misleading about something already done.
       await addToProductWaitlist(offer.productId, phone);
-      await sendWhatsAppMessage(phone, messages.agent.waitlistConfirmed(offer.productName));
+      await sendReply(phone, messages.agent.waitlistConfirmed(offer.productName));
       return true;
     }
     await startOrderForProduct(phone, product);
@@ -603,7 +611,7 @@ export async function processRestockOrderChoice(
   }
   if (isNo) {
     await clearPendingRestockOrderOffer(phone);
-    await sendWhatsAppMessage(phone, messages.agent.waitlistDeclined());
+    await sendReply(phone, messages.agent.waitlistDeclined());
     return true;
   }
   return false; // leave the offer pending; let the message fall through to normal processing

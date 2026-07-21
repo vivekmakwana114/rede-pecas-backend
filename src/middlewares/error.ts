@@ -23,7 +23,20 @@ export function errorHandler(err: ApiError, req: Request, res: Response, _next: 
   // Full error (including stack) is always logged server-side — never sent to the
   // client, in development or otherwise. Matches the success envelope's shape
   // (src/utils/apiResponse.ts) so callers only ever need to branch on `success`.
-  logger.error(`[Error Handler] ${statusCode} - ${message} - Stack: ${err.stack}`);
+  // Severity follows isOperational + statusCode, not a flat logger.error for
+  // everything: an expired/invalid JWT, a bad login, a validation failure — all
+  // expected client-side conditions, thrown deliberately as `new ApiError(...)`
+  // (isOperational defaults true) — logged at warn. A genuine unexpected crash
+  // (errorConverter marks any non-ApiError isOperational: false) stays at error.
+  // Without this split, something as routine as a stale admin token after logout
+  // polling a protected route floods the logs at error severity indefinitely,
+  // burying whatever real error should actually be paged on.
+  const logLine = `[Error Handler] ${statusCode} - ${message} - Stack: ${err.stack}`;
+  if (err.isOperational && statusCode < 500) {
+    logger.warn(logLine);
+  } else {
+    logger.error(logLine);
+  }
 
   res.status(statusCode).json({
     success: false,

@@ -12,7 +12,8 @@ import {
   getNhtsaVehicle,
   saveNhtsaVehicle,
 } from '../models/vehicle.model.js';
-import { sendWhatsAppMessage, sendWhatsAppButtons, downloadWhatsAppMedia } from './whatsapp.service.js';
+import { downloadWhatsAppMedia, sendWhatsAppButtons } from './whatsapp.service.js';
+import { sendReply, sendReplyButtons } from './reply.service.js';
 import { extractDataWithClaudeVision, VisionData } from './ai.service.js';
 import { completeOnboardingIfNeeded, resolveMessages, Customer } from './customer.service.js';
 import {
@@ -33,6 +34,7 @@ import {
   markVinDecodeFailedShown,
   getVinDecodeFailedVin,
   clearVinDecodeFailedChoice,
+  saveActivePromptId,
 } from './session.service.js';
 
 // Pure pass-through so the controller never imports vehicle.model.js directly
@@ -60,14 +62,14 @@ export async function sendAskPartPrompt(phone: string, greeting?: { name: string
   if (vehicles.length === 1) {
     const v = vehicles[0];
     const body = messages.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year, greeting?.name);
-    await sendWhatsAppButtons(phone, body, [messages.vehicleConfirm.addVehicleButton()]);
+    await sendReplyButtons(phone, body, [messages.vehicleConfirm.addVehicleButton()]);
     await markPartPromptSent(phone);
     return true;
   }
 
   await savePendingVehicleChoice(phone, vehicles.map(v => ({ id: v.id, make: v.make, model: v.model, year: v.year })));
   const chooseBody = messages.vehicleConfirm.chooseVehiclePrompt(vehicles, greeting?.name);
-  await sendWhatsAppMessage(phone, chooseBody);
+  await sendReply(phone, chooseBody);
   return true;
 }
 
@@ -85,13 +87,13 @@ export async function resolvePendingVehicleChoice(phone: string, reply: string):
   const idx = parseInt(reply.trim(), 10) - 1;
   const chosen = pending[idx];
   if (!chosen) {
-    await sendWhatsAppMessage(phone, messages.vehicleConfirm.vehicleChoiceNotFound());
+    await sendReply(phone, messages.vehicleConfirm.vehicleChoiceNotFound());
     return true;
   }
 
   await clearPendingVehicleChoice(phone);
   await saveChosenVehicle(phone, chosen.id);
-  await sendWhatsAppButtons(
+  await sendReplyButtons(
     phone,
     messages.vehicleConfirm.confirmedAskPart(chosen.make, chosen.model, chosen.year),
     [messages.vehicleConfirm.addVehicleButton()]
@@ -130,7 +132,7 @@ export function isAddVehicleRequest(text: string): boolean {
  */
 export async function startAddVehicleFlow(phone: string): Promise<void> {
   const messages = await resolveMessages(phone);
-  await sendWhatsAppButtons(phone, messages.vehicleConfirm.addVehicleBody(), messages.onboarding.askVehicleIdButtons);
+  await sendReplyButtons(phone, messages.vehicleConfirm.addVehicleBody(), messages.onboarding.askVehicleIdButtons);
   await markVehicleIdChoiceShown(phone);
 }
 
@@ -288,12 +290,12 @@ export async function processVehicleIdOptionChoice(phone: string, reply: string)
   const r = reply.toLowerCase();
 
   if (r.includes('vin')) {
-    await sendWhatsAppMessage(phone, messages.vin.askVinPrompt());
+    await sendReply(phone, messages.vin.askVinPrompt());
     return true;
   }
 
   if (r.includes('foto') || r.includes('photo') || r.includes('documento')) {
-    await sendWhatsAppMessage(phone, messages.document.askPhotoPrompt());
+    await sendReply(phone, messages.document.askPhotoPrompt());
     return true;
   }
 
@@ -305,7 +307,7 @@ export async function processVehicleIdOptionChoice(phone: string, reply: string)
     // still choosing between VIN/photo/manual.
     await clearVehicleIdChoiceShown(phone);
     await startManualCollection(phone, 'awaiting_make');
-    await sendWhatsAppMessage(phone, messages.manual.askMakePrompt());
+    await sendReply(phone, messages.manual.askMakePrompt());
     return true;
   }
 
@@ -340,7 +342,12 @@ export async function processVinDuplicateChoice(phone: string, reply: string): P
     return true;
   }
 
-  await sendWhatsAppButtons(phone, messages.common.notUnderstood(), messages.vin.alreadyRegisteredButtons);
+  // Sent verbatim, not through sendReplyButtons — notUnderstood() is generic by
+  // design so it can pair with any button set (see whatsapp.controller.ts's
+  // comment on this same pattern), which gives a humanize rewrite nothing to
+  // anchor to and lets it invent an instruction that doesn't match these buttons.
+  const alreadyRegisteredRes = await sendWhatsAppButtons(phone, messages.common.notUnderstood(), messages.vin.alreadyRegisteredButtons);
+  await saveActivePromptId(phone, alreadyRegisteredRes?.messages?.[0]?.id);
   await markVinDuplicateChoiceShown(phone); // refresh the TTL so the choice stays open
   return true;
 }
@@ -360,14 +367,14 @@ export async function processManualCollectionStep(
   if (collection.status === 'awaiting_make') {
     const make = capitalize(r);
     await updateManualCollection(collection.id, { make, status: 'awaiting_model' });
-    await sendWhatsAppMessage(phone, messages.manual.askModel(make));
+    await sendReply(phone, messages.manual.askModel(make));
     return true;
   }
 
   if (collection.status === 'awaiting_model') {
     const model = capitalize(r);
     await updateManualCollection(collection.id, { model, status: 'awaiting_year' });
-    await sendWhatsAppMessage(phone, messages.manual.askYear(collection.make, model));
+    await sendReply(phone, messages.manual.askYear(collection.make, model));
     return true;
   }
 
@@ -377,12 +384,12 @@ export async function processManualCollectionStep(
     const currentYear = new Date().getFullYear();
 
     if (!yearClean || yearClean.length !== 4 || yearInt < 1980 || yearInt > currentYear + 1) {
-      await sendWhatsAppMessage(phone, messages.manual.invalidYear());
+      await sendReply(phone, messages.manual.invalidYear());
       return true;
     }
 
     await updateManualCollection(collection.id, { year: yearClean, status: 'awaiting_engine_number' });
-    await sendWhatsAppMessage(phone, messages.manual.askEngineNumber(collection.make, collection.model, yearClean));
+    await sendReply(phone, messages.manual.askEngineNumber(collection.make, collection.model, yearClean));
     return true;
   }
 
@@ -412,7 +419,7 @@ export async function processManualCollectionStep(
 
     const completedOnboarding = await completeOnboardingIfNeeded(phone, customer, summary);
     if (!completedOnboarding) {
-      await sendWhatsAppButtons(phone, messages.manual.collectionComplete(summary), [messages.vehicleConfirm.addVehicleButton()]);
+      await sendReplyButtons(phone, messages.manual.collectionComplete(summary), [messages.vehicleConfirm.addVehicleButton()]);
       await markPartPromptSent(phone);
     }
     return true;
@@ -438,13 +445,13 @@ export async function processVIN(phone: string, vin: string): Promise<void> {
       existing.fuel_type || null,
     ].filter(Boolean).join(' · ');
 
-    await sendWhatsAppButtons(phone, messages.vin.alreadyRegistered(description), messages.vin.alreadyRegisteredButtons);
+    await sendReplyButtons(phone, messages.vin.alreadyRegistered(description), messages.vin.alreadyRegisteredButtons);
     await saveChosenVehicle(phone, existing.id);
     await markVinDuplicateChoiceShown(phone);
     return;
   }
 
-  await sendWhatsAppMessage(phone, messages.vin.identifying());
+  await sendReply(phone, messages.vin.identifying());
 
   const vehicle = await decodeVIN(vinClean);
 
@@ -454,7 +461,7 @@ export async function processVIN(phone: string, vin: string): Promise<void> {
     // choice (the customer might rather send a photo than retype a VIN); "Manual"
     // proceeds straight to the wizard, carrying the attempted VIN through so it's
     // still recorded on the row (attempted_vin), same as the old auto-fallback did.
-    await sendWhatsAppButtons(phone, messages.vin.decodeFailed(), messages.vin.decodeFailedButtons);
+    await sendReplyButtons(phone, messages.vin.decodeFailed(), messages.vin.decodeFailedButtons);
     await markVinDecodeFailedShown(phone, vinClean);
     return;
   }
@@ -482,7 +489,7 @@ export async function processVIN(phone: string, vin: string): Promise<void> {
     vehicle.vehicle_type ? `${vehicle.vehicle_type}` : null,
   ].filter(Boolean).join(' · ');
 
-  await sendWhatsAppButtons(phone, messages.vin.confirmBody(description), messages.vin.confirmButtons);
+  await sendReplyButtons(phone, messages.vin.confirmBody(description), messages.vin.confirmButtons);
   await markVehicleConfirmShown(phone);
 }
 
@@ -512,18 +519,19 @@ export async function processVinDecodeFailedChoice(phone: string, reply: string)
     // fixed for processVehicleIdOptionChoice's manual branch above).
     await clearVehicleIdChoiceShown(phone);
     await startManualCollection(phone, 'awaiting_make', attemptedVin);
-    await sendWhatsAppMessage(phone, messages.manual.askMakePrompt());
+    await sendReply(phone, messages.manual.askMakePrompt());
     return true;
   }
 
   if (r.includes('tentar') || r.includes('try again') || r.includes('novamente') || r === '1' || r.includes('btn_0')) {
     await clearVinDecodeFailedChoice(phone);
-    await sendWhatsAppButtons(phone, messages.vin.restartChoiceBody(), messages.onboarding.askVehicleIdButtons);
+    await sendReplyButtons(phone, messages.vin.restartChoiceBody(), messages.onboarding.askVehicleIdButtons);
     await markVehicleIdChoiceShown(phone);
     return true;
   }
 
-  await sendWhatsAppButtons(phone, messages.common.notUnderstood(), messages.vin.decodeFailedButtons);
+  const decodeFailedRes = await sendWhatsAppButtons(phone, messages.common.notUnderstood(), messages.vin.decodeFailedButtons);
+  await saveActivePromptId(phone, decodeFailedRes?.messages?.[0]?.id);
   await markVinDecodeFailedShown(phone, attemptedVin); // refresh the TTL, keep the same attempted VIN
   return true;
 }
@@ -537,7 +545,7 @@ export async function processVinDecodeFailedChoice(phone: string, reply: string)
  */
 async function sendRetryOrManualPrompt(phone: string, body: string): Promise<void> {
   const messages = await resolveMessages(phone);
-  await sendWhatsAppButtons(phone, body, messages.document.retryButtons);
+  await sendReplyButtons(phone, body, messages.document.retryButtons);
   await markDocumentRetryChoiceShown(phone);
 }
 
@@ -549,7 +557,7 @@ async function sendRetryOrManualPrompt(phone: string, body: string): Promise<voi
  */
 export async function processVehicleDocument(phone: string, mediaId: string): Promise<void> {
   const messages = await resolveMessages(phone);
-  await sendWhatsAppMessage(phone, messages.document.received());
+  await sendReply(phone, messages.document.received());
 
   const imageBase64 = await downloadWhatsAppMedia(mediaId);
   if (!imageBase64) {
@@ -631,7 +639,7 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
     extracted.chassis_number ? messages.document.chassisLabel(extracted.chassis_number.toUpperCase()) : null,
   ].filter(Boolean).join(' · ');
 
-  await sendWhatsAppButtons(phone, messages.document.confirmBody(description), messages.vin.confirmButtons);
+  await sendReplyButtons(phone, messages.document.confirmBody(description), messages.vin.confirmButtons);
   await markVehicleConfirmShown(phone);
 }
 
@@ -655,7 +663,7 @@ export async function processDocumentRetryChoice(phone: string, reply: string): 
     // linger and interfere with a later message (see whatsapp.controller.ts stage 3.6).
     await clearVehicleIdChoiceShown(phone);
     await startManualCollection(phone, 'awaiting_make');
-    await sendWhatsAppMessage(phone, messages.manual.askMakePrompt());
+    await sendReply(phone, messages.manual.askMakePrompt());
     return true;
   }
 
@@ -663,11 +671,12 @@ export async function processDocumentRetryChoice(phone: string, reply: string): 
     await clearDocumentRetryChoice(phone);
     // Deliberately NOT clearing vehicleIdChoiceShown here — still waiting on a photo,
     // and needsVehicleId alone (still true) keeps stage 5's image routing open regardless.
-    await sendWhatsAppMessage(phone, messages.document.askPhotoPrompt());
+    await sendReply(phone, messages.document.askPhotoPrompt());
     return true;
   }
 
-  await sendWhatsAppButtons(phone, messages.common.notUnderstood(), messages.document.retryButtons);
+  const retryRes = await sendWhatsAppButtons(phone, messages.common.notUnderstood(), messages.document.retryButtons);
+  await saveActivePromptId(phone, retryRes?.messages?.[0]?.id);
   await markDocumentRetryChoiceShown(phone); // refresh the TTL so the choice stays open
   return true;
 }
@@ -696,6 +705,12 @@ export async function processVehicleConfirmation(phone: string, reply: string, c
     const v = await getMostRecentVehicle(phone);
     if (!v) return false;
 
+    // Make this the active vehicle for search right away — without this, a
+    // customer with 2+ vehicles who just added and confirmed a new one kept
+    // getting results for whichever vehicle was chosen earlier (chosenVehicle
+    // has its own 4h TTL and nothing else here ever overwrote it).
+    await saveChosenVehicle(phone, v.id);
+
     // Identification concluded — clear so a later unrelated message (e.g. a part
     // search) doesn't get misrouted into manual collection by the stage-10
     // fallback in whatsapp.controller.ts while this flag's TTL hasn't lapsed yet.
@@ -705,7 +720,7 @@ export async function processVehicleConfirmation(phone: string, reply: string, c
     const summary = `🚗 *${v.make} ${v.model} ${v.year}*`;
     const completedOnboarding = await completeOnboardingIfNeeded(phone, customer, summary);
     if (!completedOnboarding) {
-      await sendWhatsAppButtons(
+      await sendReplyButtons(
         phone,
         messages.vehicleConfirm.confirmedAskPart(v.make, v.model, v.year),
         [messages.vehicleConfirm.addVehicleButton()]
@@ -731,7 +746,7 @@ export async function processVehicleConfirmation(phone: string, reply: string, c
     // combined "make model year" free-text reply, so asking for one led to a wasted
     // round-trip.
     await startManualCollection(phone, 'awaiting_make');
-    await sendWhatsAppMessage(phone, messages.manual.askMakePrompt());
+    await sendReply(phone, messages.manual.askMakePrompt());
     return true;
   }
 
@@ -742,11 +757,12 @@ export async function processVehicleConfirmation(phone: string, reply: string, c
   const pending = await getMostRecentVehicle(phone);
   if (!pending) return false;
   const description = [pending.make, pending.model, pending.year].filter(Boolean).join(' ');
-  await sendWhatsAppButtons(
+  const confirmRetryRes = await sendWhatsAppButtons(
     phone,
     `${messages.common.notUnderstood()}\n\n🚗 *${description}*`,
     messages.vin.confirmButtons
   );
+  await saveActivePromptId(phone, confirmRetryRes?.messages?.[0]?.id);
   await markVehicleConfirmShown(phone); // refresh the TTL so the choice stays open
   return true;
 }

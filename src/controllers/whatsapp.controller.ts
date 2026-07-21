@@ -5,7 +5,8 @@ import * as vehicleService from '../services/vehicle.service.js';
 import * as productService from '../services/product.service.js';
 import * as paymentService from '../services/payment.service.js';
 import * as sessionService from '../services/session.service.js';
-import { sendWhatsAppMessage, sendWhatsAppButtons } from '../services/whatsapp.service.js';
+import { sendReply, sendReplyButtons } from '../services/reply.service.js';
+import { sendWhatsAppButtons } from '../services/whatsapp.service.js';
 import { getAdminByPhone } from '../models/adminUser.model.js';
 import { config } from '../config/config.js';
 import { GREETING_PATTERN, detectMessageLocale } from '../utils/greeting.js';
@@ -57,12 +58,18 @@ export async function receiveWebhookMessage(req: Request, res: Response): Promis
     // confirm/decline buttons encode the order number directly in the id so the
     // reply can be resolved unambiguously regardless of how many are pending.
     const buttonReplyId: string | null = msg.type === 'interactive' ? (msg.interactive?.button_reply?.id || null) : null;
+    // The wamid of the message this interactive reply is answering (Meta attaches
+    // this to button_reply/list_reply webhooks) — compared against the last
+    // interactive message we actually sent this phone to tell a live answer apart
+    // from a stale tap on an old, already-superseded button/list (see the
+    // stale-reply guard below).
+    const contextMessageId: string | null = msg.context?.id || null;
     const mediaType = msg.type; // "image" | "document" | "text" | "interactive" | "button" etc.
     const mediaId = msg.image?.id || msg.document?.id || null;
 
     logger.debug(`[${phone}] Webhook type: ${mediaType}, text: ${customerText}`);
 
-    await processMessageFlow(phone, customerText, mediaType, mediaId, listReplyId, buttonReplyId);
+    await processMessageFlow(phone, customerText, mediaType, mediaId, listReplyId, buttonReplyId, contextMessageId);
   } catch (error: any) {
     logger.error('Error in WhatsApp webhook processing', error);
   }
@@ -77,7 +84,8 @@ async function processMessageFlow(
   mediaType: string,
   mediaId: string | null,
   listReplyId: string | null = null,
-  buttonReplyId: string | null = null
+  buttonReplyId: string | null = null,
+  contextMessageId: string | null = null
 ): Promise<void> {
   // 0. Admin short-circuit: a message from a number in admin_users is never a
   // customer, so this must run before getOrCreateCustomer below — otherwise
@@ -110,6 +118,11 @@ async function processMessageFlow(
   if (customerText) {
     const detected = detectMessageLocale(customerText);
     if (detected) await sessionService.saveLocale(phone, detected);
+    // Stashed for the humanization layer (humanize.service.ts) so a contextual
+    // rewrite can react to what the customer actually wrote. Stored on the
+    // session rather than threaded through every send call site, since each
+    // sender already has the phone number in hand.
+    await sessionService.saveLastMessage(phone, customerText);
   }
 
   // 1.1 Get-or-create customer (handles pre-registration + welcome on first contact)
@@ -148,7 +161,7 @@ async function processMessageFlow(
     // payment-proof photo, which must still reach processPaymentProof below rather
     // than being swallowed by this short-circuit.
     const firstName = customer.name?.split(' ')[0] || 'Cliente';
-    await sendWhatsAppMessage(phone, messages.onboarding.welcomeBack(firstName));
+    await sendReply(phone, messages.onboarding.welcomeBack(firstName), { contextual: true });
     if (!mediaId) {
       const askedPart = await vehicleService.sendAskPartPrompt(phone);
       if (askedPart) return;
@@ -163,13 +176,32 @@ async function processMessageFlow(
     // the customer genuinely has no vehicle on file yet — never reuse askVehicleIdBody here,
     // its "profile created" copy is only accurate right after registration completes.
     const firstName = customer.name?.split(' ')[0] || 'Cliente';
-    await sendWhatsAppButtons(phone, messages.onboarding.resumeVehicleIdBody(firstName), messages.onboarding.askVehicleIdButtons);
+    await sendReplyButtons(phone, messages.onboarding.resumeVehicleIdBody(firstName), messages.onboarding.askVehicleIdButtons);
     return;
   }
 
   if (freshSession && customer.registration_status !== 'complete') {
     await customerService.sendResumeRegistrationPrompt(phone, customer);
     return;
+  }
+
+  // 2.5 PRIORITY: reject a stale interactive reply. WhatsApp never disables an old
+  // button/list message client-side, so a customer can tap one from earlier in the
+  // conversation at any time — including well after that question was answered or
+  // superseded by a newer one. contextMessageId names the exact message the tap is
+  // answering; if it doesn't match the last interactive message we actually sent
+  // this phone (sessionService.saveActivePromptId, written by every customer-facing
+  // button/list send), resolving it against whatever's live now would answer the
+  // WRONG question — e.g. a stale vehicle-confirm "Sim" tap silently read as the
+  // answer to an unrelated waitlist opt-in that became pending afterward. Fails
+  // open: no stored id yet (first-ever interactive reply, or a gap in tracking)
+  // always passes through untouched rather than risk blocking a live answer.
+  if (mediaType === 'interactive' && contextMessageId) {
+    const activePromptId = await sessionService.getActivePromptId(phone);
+    if (activePromptId && activePromptId !== contextMessageId) {
+      await sendReply(phone, messages.common.alreadyAnswered());
+      return;
+    }
   }
 
   // 3. If profile registration (name/NIF/address) is incomplete, process it. Once the
@@ -338,7 +370,7 @@ async function processMessageFlow(
     if (GREETING_PATTERN.test(customerText.trim())) {
       if (needsVehicleId) {
         const firstName = customer.name?.split(' ')[0] || 'Cliente';
-        await sendWhatsAppButtons(phone, messages.onboarding.resumeVehicleIdBody(firstName), messages.onboarding.askVehicleIdButtons);
+        await sendReplyButtons(phone, messages.onboarding.resumeVehicleIdBody(firstName), messages.onboarding.askVehicleIdButtons);
         return;
       }
       await sessionService.clearVehicleIdChoiceShown(phone);
@@ -353,10 +385,18 @@ async function processMessageFlow(
       // specific feedback instead of the generic nudge, since the customer did
       // try to give a VIN, just not a valid one.
       const trimmed = customerText.trim();
-      const body = vehicleService.looksLikeVinAttempt(trimmed)
-        ? messages.vin.invalidLength(trimmed.length)
-        : messages.common.notUnderstood();
-      await sendWhatsAppButtons(phone, body, messages.onboarding.askVehicleIdButtons);
+      if (vehicleService.looksLikeVinAttempt(trimmed)) {
+        await sendReplyButtons(phone, messages.vin.invalidLength(trimmed.length), messages.onboarding.askVehicleIdButtons);
+      } else {
+        // notUnderstood() is deliberately generic so it can pair with whatever
+        // buttons are on screen at each of its call sites — that genericness gives
+        // a rewrite nothing to anchor to, so it goes out verbatim instead of
+        // through humanize (see humanize.service.ts's docstring on the failure
+        // this caused: a rewrite inventing "send me the plate number" here, which
+        // matched none of the actual VIN/photo/manual buttons).
+        const notUnderstoodRes = await sendWhatsAppButtons(phone, messages.common.notUnderstood(), messages.onboarding.askVehicleIdButtons);
+        await sessionService.saveActivePromptId(phone, notUnderstoodRes?.messages?.[0]?.id);
+      }
       await sessionService.markVehicleIdChoiceShown(phone); // refresh the TTL so the choice stays open
       return;
     }
@@ -403,7 +443,7 @@ async function processMessageFlow(
   // conversational AI left to infer this from tone/intent, so it only fires on an
   // exact keyword hit.
   if (HUMAN_HANDOFF_PATTERN.test(customerText)) {
-    await sendWhatsAppMessage(phone, messages.agent.transferToHuman());
+    await sendReply(phone, messages.agent.transferToHuman(), { contextual: true });
     logger.info(`[SUPPORT] Customer ${phone} requested human support.`);
     return;
   }

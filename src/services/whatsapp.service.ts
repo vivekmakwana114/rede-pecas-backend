@@ -3,6 +3,17 @@ import { logger } from '../config/logger.js';
 
 const WHATSAPP_API_URL = `${config.whatsapp.graphApiUrl}/${config.whatsapp.phoneNumberId}/messages`;
 
+// Meta rejects an interactive message whose body exceeds 1024 characters with a
+// generic 400, which surfaces as the customer simply never receiving the reply.
+// Truncating is strictly better than that: the message arrives, just clipped.
+const INTERACTIVE_BODY_LIMIT = 1024;
+
+function clampBody(body: string, context: string): string {
+  if (body.length <= INTERACTIVE_BODY_LIMIT) return body;
+  logger.warn(`${context} body exceeded ${INTERACTIVE_BODY_LIMIT} chars (${body.length}), truncating`);
+  return body.slice(0, INTERACTIVE_BODY_LIMIT - 1) + '…';
+}
+
 /**
  * Sends a standard text message via Meta WhatsApp Business API.
  */
@@ -108,7 +119,7 @@ export async function sendWhatsAppButtons(
     interactive: {
       type: "button",
       ...(header ? { header } : {}),
-      body: { text: body },
+      body: { text: clampBody(body, 'Buttons') },
       action: {
         buttons: buttons.slice(0, 3).map((b, i) => ({
           type: "reply",
@@ -159,7 +170,7 @@ export async function sendWhatsAppList(
     type: "interactive",
     interactive: {
       type: "list",
-      body: { text: body },
+      body: { text: clampBody(body, 'List') },
       action: {
         button: buttonText,
         sections: [{ rows: rows.slice(0, 10) }],

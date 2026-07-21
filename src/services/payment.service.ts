@@ -1,6 +1,7 @@
 import { db } from '../config/db.js';
 import { logger } from '../config/logger.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons, downloadWhatsAppMedia } from './whatsapp.service.js';
+import { sendReply, sendReplyButtons } from './reply.service.js';
 import { generatePrimaveraInvoice, sendFinalInvoiceWhatsApp } from './pdf.service.js';
 import { extractPaymentProofData } from './ai.service.js';
 import { getOrderByNumber, getLatestOrderByStatus, updateOrderStatus } from '../models/order.model.js';
@@ -66,7 +67,7 @@ export async function askPaymentMethod(phone: string, orderNumber: string, amoun
   const messages = await resolveMessages(phone);
   const message = messages.payment.askMethodBody(orderNumber, formatPrice(amount));
 
-  await sendWhatsAppButtons(phone, message, messages.payment.askMethodButtons);
+  await sendReplyButtons(phone, message, messages.payment.askMethodButtons);
 
   await db.query(
     `UPDATE orders SET status = 'awaiting_payment_method' WHERE number = $1`,
@@ -107,7 +108,7 @@ export async function processMethodChoice(phone: string, customerReply: string):
   const reply = customerReply.toLowerCase();
 
   if (reply.includes('transfer') || reply.includes('deposit') || reply.includes('depósito') || reply.includes('banco') || reply.includes('bank') || reply === '1') {
-    await sendWhatsAppButtons(phone, messages.payment.askBankSubtypeBody(), messages.payment.askBankSubtypeButtons);
+    await sendReplyButtons(phone, messages.payment.askBankSubtypeBody(), messages.payment.askBankSubtypeButtons);
     await db.query(
       `UPDATE orders SET status = 'awaiting_bank_subtype' WHERE number = $1`,
       [number]
@@ -164,7 +165,7 @@ export async function processMethodSubtype(phone: string, reply: string): Promis
     return true;
   }
 
-  await sendWhatsAppButtons(phone, messages.payment.askBankSubtypeBody(), messages.payment.askBankSubtypeButtons);
+  await sendReplyButtons(phone, messages.payment.askBankSubtypeBody(), messages.payment.askBankSubtypeButtons);
   return true;
 }
 
@@ -230,14 +231,28 @@ export async function processPaymentProof(
   await updateOrderStatus(number, 'awaiting_proof_verification');
 
   const fileBase64 = await downloadWhatsAppMedia(mediaId);
-  const extracted = fileBase64 ? await extractPaymentProofData(fileBase64, mediaType) : null;
+  let extracted: Awaited<ReturnType<typeof extractPaymentProofData>> = null;
+  if (fileBase64) {
+    try {
+      extracted = await extractPaymentProofData(fileBase64, mediaType);
+    } catch (error: any) {
+      // extractPaymentProofData re-throws on an actual API failure (timeout, rate
+      // limit, outage) rather than returning null — without this catch, that left
+      // the order stuck in 'awaiting_proof_verification' forever and the customer
+      // with no reply at all, unlike processVehicleDocument's equivalent Vision
+      // call, which already falls back to a messages.ts string on this same
+      // failure. Treated the same as an unreadable proof: revert the status and
+      // ask for a resend, rather than leaving both sides hanging.
+      logger.error(`[PAYMENT] Vision error validating proof for order ${number} from ${phone}: ${error.message}`);
+    }
+  }
 
   if (!extracted || extracted.valid === false) {
     logger.info(
       `[PAYMENT] Rejected proof for order ${number} from ${phone}: ${extracted?.reason || 'could not download/read file'}`
     );
     await updateOrderStatus(number, 'awaiting_payment_proof');
-    await sendWhatsAppMessage(phone, messages.payment.proofInvalid());
+    await sendReply(phone, messages.payment.proofInvalid());
     return true;
   }
 
@@ -258,7 +273,7 @@ export async function processPaymentProof(
   const methodName = Object.values(getPaymentMethods(locale))
     .find(m => m.id === payment_method)?.name || payment_method;
 
-  await sendWhatsAppMessage(phone, messages.payment.proofReceivedCustomer(customerName));
+  await sendReply(phone, messages.payment.proofReceivedCustomer(customerName));
 
   await createAlert(
     'payment_proof',
@@ -347,7 +362,7 @@ export async function processAdminPaymentReply(adminPhone: string, buttonReplyId
   } else {
     await updateOrderStatus(orderNumber, 'rejected');
     const customerMessages = await resolveMessages(order.customer_phone);
-    await sendWhatsAppMessage(order.customer_phone, customerMessages.order.rejected(orderNumber));
+    await sendReply(order.customer_phone, customerMessages.order.rejected(orderNumber));
     await sendWhatsAppMessage(adminPhone, t.admin.paymentRejectedAck(orderNumber));
     logger.info(`[ADMIN PAYMENT] Order ${orderNumber} rejected by ${adminPhone} — customer notified`);
   }
