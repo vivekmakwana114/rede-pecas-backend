@@ -128,8 +128,9 @@ const CUSTOMER_STATS_COLUMNS = `c.*, order_stats.orders_count, order_stats.total
 /**
  * Lists active customers for the admin panel, newest-contact-first, with
  * optional pagination and a free-text search over name/phone/nif. Excludes
- * soft-deleted rows (see deactivateCustomer) the same way getAllActiveProducts
- * excludes deactivated products.
+ * soft-deleted rows (see deactivateCustomer) — unlike getAllProducts/
+ * getAllServices, which deliberately keep listing inactive rows so they stay
+ * reachable to reactivate; customers have no such toggle-back UI today.
  */
 export async function getAllCustomers({ page, limit, q }: CustomerListParams): Promise<{ customers: CustomerWithStats[]; total: number }> {
   const offset = (page - 1) * limit;

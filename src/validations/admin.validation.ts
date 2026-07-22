@@ -1,5 +1,6 @@
 import Joi from 'joi';
 import { ValidationSchema } from '../middlewares/validate.js';
+import { SUBCATEGORY_TO_SERVICE_CATEGORY } from '../constants/serviceCategory.js';
 
 export const orderListQuery: ValidationSchema = {
   query: Joi.object().keys({
@@ -87,9 +88,33 @@ export const productUpdate: ValidationSchema = {
       reference: Joi.string(),
       price: Joi.number(),
       quantity: Joi.number().integer().min(0),
-      service_offered: Joi.boolean(),
-      service_name: Joi.string().allow('', null),
-      service_price: Joi.number().allow(null),
+      // Reversible active/inactive toggle — see updateProductHandler/getProductByIdAnyStatus.
+      // Permanent removal (DELETE /admin/products/:id) is gated on this being
+      // false first — see hardDeleteProduct.
+      active: Joi.boolean(),
+      // Catalog fields (see db/schema.sql products table). service_category
+      // is deliberately NOT accepted here — it's always recomputed
+      // server-side from `subcategory` (see updateProductHandler), so the
+      // shared mapping stays the single source of truth.
+      category: Joi.string(),
+      subcategory: Joi.string().valid(...Object.keys(SUBCATEGORY_TO_SERVICE_CATEGORY)),
+      vehicle_make: Joi.string(),
+      vehicle_model: Joi.string().allow('', null),
+      year_start: Joi.number().integer().allow(null),
+      year_end: Joi.number().integer().allow(null),
+      engine: Joi.string().allow('', null),
+      delivery_time: Joi.string(),
+      oem_reference: Joi.string().allow('', null),
+      brand: Joi.string().allow('', null),
+      engine_number: Joi.string().allow('', null),
+      viscosity: Joi.string().allow('', null),
+      engine_type: Joi.string().allow('', null),
+      volume_liters: Joi.number().allow(null),
+      specification: Joi.string().allow('', null),
+      interval_km: Joi.number().integer().allow(null),
+      image_url: Joi.string().allow('', null),
+      synonyms: Joi.string(),
+      description: Joi.string(),
       // Supplier's own fields — edited from a product's own panel since
       // there's no dedicated supplier management screen yet (see
       // resolveSupplierForProductEdit in supplier.model.ts).
@@ -100,10 +125,11 @@ export const productUpdate: ValidationSchema = {
     .min(1),
 };
 
-// Mirrors validateRow's row-level rules in product.service.ts (the
-// file-upload import path) so both entry points into importProductsBatch
-// reject the same bad data — serviceName/servicePrice only become required
-// once serviceOffered is actually true.
+// Mirrors validateRow's row-level rules in product.service.ts for the
+// catalog fields — subcategory must be a known key in
+// SUBCATEGORY_TO_SERVICE_CATEGORY (serviceCategory itself is never accepted
+// from the client; importProductsBatchHandler derives it server-side, same
+// single-source-of-truth rule as updateProductHandler).
 const importItemSchema = Joi.object({
   reference: Joi.string().required(),
   name: Joi.string().required(),
@@ -113,15 +139,25 @@ const importItemSchema = Joi.object({
   supplierName: Joi.string(),
   supplierAddress: Joi.string().allow(''),
   supplierPhone: Joi.string().allow(''),
-  serviceOffered: Joi.boolean(),
-  serviceName: Joi.string().allow(''),
-  servicePrice: Joi.number().min(0),
-}).when('.serviceOffered', {
-  is: true,
-  then: Joi.object({
-    serviceName: Joi.string().min(1).required(),
-    servicePrice: Joi.number().min(0).required(),
-  }),
+  category: Joi.string().required(),
+  subcategory: Joi.string().valid(...Object.keys(SUBCATEGORY_TO_SERVICE_CATEGORY)).required(),
+  vehicleMake: Joi.string().required(),
+  vehicleModel: Joi.string().allow(''),
+  yearStart: Joi.number().integer(),
+  yearEnd: Joi.number().integer(),
+  engine: Joi.string().allow(''),
+  deliveryTime: Joi.string().required(),
+  brand: Joi.string().allow(''),
+  oemReference: Joi.string().allow(''),
+  engineNumber: Joi.string().allow(''),
+  viscosity: Joi.string().allow(''),
+  engineType: Joi.string().allow(''),
+  volumeLiters: Joi.number(),
+  specification: Joi.string().allow(''),
+  intervalKm: Joi.number().integer(),
+  imageUrl: Joi.string().allow(''),
+  synonyms: Joi.string().required(),
+  description: Joi.string().required(),
 });
 
 export const importProductsBatch: ValidationSchema = {

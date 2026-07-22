@@ -15,6 +15,16 @@ import { GREETING_PATTERN, detectMessageLocale } from '../utils/greeting.js';
 // to infer this from tone/intent, so it's a plain keyword match (PT/EN).
 const HUMAN_HANDOFF_PATTERN = /\b(atendente|humano|falar com (algu[eé]m|pessoa)|operador|suporte humano|human|agent|representative)\b/i;
 
+// A message that's ENTIRELY a filler acknowledgment (PT/EN) — "Ok", "thanks",
+// "obrigado", a thumbs-up, etc. — not a message that merely contains one of
+// these words alongside something else ("thanks for the timing belt" must
+// still search). Anchored ^...$ against the trimmed text for exactly that
+// reason. Once wasPartPromptSent is true, every other stage falls through to
+// a real product search (see stage 15) — without this, a stray "Ok" after
+// finishing an earlier search/waitlist flow re-triggers checkingStock()/
+// noStockFound() for "Ok" as if it were a part name.
+const ACKNOWLEDGMENT_PATTERN = /^(ok(ay)?|k+|t[áa]\s*bem|obrigad[oa]s?|valeu|thanks?|thank\s*you|cool|perfeito|beleza|👍+|🙏+|✅+)[.!?\s]*$/i;
+
 // Meta Webhook Verification
 export async function verifyWebhook(req: Request, res: Response): Promise<void> {
   const verifyToken = config.whatsapp.verifyToken;
@@ -321,12 +331,13 @@ async function processMessageFlow(
     if (handled) return;
   }
 
-  // 8.6 PRIORITY: pending service-offer opt-in reply ("sim"/"não" after picking a
-  // product that has an attached service). Same reasoning as 8.5 above — must run
+  // 8.6 PRIORITY: pending service-selection reply (list tap/typed digit/decline
+  // phrase after picking a product that has matching services — see
+  // getMatchingServicesForProduct). Same reasoning as 8.5 above — must run
   // before stage 9's vehicle-confirmation sim/não catch-all would otherwise swallow it.
   const pendingServiceOffer = await sessionService.getPendingServiceOffer(phone);
   if (pendingServiceOffer) {
-    const handled = await productService.processServiceOptIn(phone, customerText, pendingServiceOffer);
+    const handled = await productService.processServiceSelection(phone, customerText, listReplyId, pendingServiceOffer);
     if (handled) return;
   }
 
@@ -445,6 +456,16 @@ async function processMessageFlow(
   if (HUMAN_HANDOFF_PATTERN.test(customerText)) {
     await sendReply(phone, messages.agent.transferToHuman(), { contextual: true });
     logger.info(`[SUPPORT] Customer ${phone} requested human support.`);
+    return;
+  }
+
+  // 14.5 PRIORITY: a bare filler acknowledgment ("Ok", "thanks", "obrigado", 👍) is never
+  // a product search, even once invitedToAskForPart is true — stays silent (no reply
+  // needed for a plain "ok") instead of falling through to stage 15 and searching for
+  // literally "Ok", which would otherwise re-trigger checkingStock()/noStockFound() right
+  // after the customer just finished an earlier search or waitlist flow.
+  if (ACKNOWLEDGMENT_PATTERN.test(customerText.trim())) {
+    logger.debug(`[PRODUCT SEARCH] ${phone} sent a filler acknowledgment ("${customerText}") — not treating it as a search.`);
     return;
   }
 

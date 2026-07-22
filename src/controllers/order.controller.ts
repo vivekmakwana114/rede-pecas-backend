@@ -12,6 +12,7 @@ import {
   getOrderAnalytics,
   AnalyticsPeriod,
   getOrderStats,
+  hideApprovedOrder,
 } from '../models/order.model.js';
 import { approveOrder } from '../services/payment.service.js';
 import { confirmStockAndFinalizeOrder, markStockUnavailableAndOfferAlternative } from '../services/product.service.js';
@@ -175,31 +176,27 @@ export const getOrderHandler = catchAsync(async (req: Request, res: Response) =>
 });
 
 /**
- * Soft-deletes an order by moving it to a 'cancelled' terminal status rather
- * than a hard DELETE — admin_alerts.order_number has a non-cascading FK to
- * orders.number, and an order is a financial/audit record that should stay
- * queryable after the fact. Only allowed from a non-terminal status: an
- * already-approved order represents a completed sale (cancelling that would
- * need a real refund flow, which is out of scope — see CLAUDE.md), and an
- * already-rejected/cancelled order has nothing left to cancel.
+ * Removes an order from the admin panel's Approved grid — purely a display
+ * concern (sets admin_hidden), not a real cancellation: it never touches
+ * `status`, never notifies the customer, and doesn't affect their actual
+ * order in any way (see hideApprovedOrder). Only allowed once an order is
+ * already 'approved' — a still-pending order can't be hidden this way (there
+ * is no real cancel-the-customer's-order action in this system at all; a
+ * pending order can only be approved or rejected through the normal review
+ * flow).
  */
 export const deleteOrderHandler = catchAsync(async (req: Request, res: Response) => {
   const { number } = req.params;
-  const order = await getOrderByNumber(number);
-  if (!order) throw new ApiError(404, `Order ${number} not found`);
+  const result = await hideApprovedOrder(number);
 
-  if (order.status === 'approved') {
-    throw new ApiError(409, `Order ${number} is already approved and cannot be cancelled`);
+  if (result === 'not_found') throw new ApiError(404, `Order ${number} not found`);
+  if (result === 'not_approved') {
+    throw new ApiError(409, `Order ${number} is not approved yet — only approved orders can be removed from the grid.`);
   }
-  if (order.status === 'rejected' || order.status === 'cancelled') {
-    throw new ApiError(409, `Order ${number} is already ${order.status}`);
-  }
-
-  await updateOrderStatus(number, 'cancelled');
 
   res.status(200).json({
     success: true,
-    message: `Order ${number} cancelled.`,
+    message: `Order ${number} removed from the grid.`,
     code: 200,
     data: null,
     meta: { timestamp: new Date().toISOString() },

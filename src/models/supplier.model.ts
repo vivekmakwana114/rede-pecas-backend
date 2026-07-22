@@ -17,13 +17,29 @@ export interface ImportItem {
   supplierName?: string;
   supplierAddress?: string;
   supplierPhone?: string;
-  // Optional attached service (e.g. installation) offered as a WhatsApp
-  // follow-up when a customer picks this product. serviceOffered is only
-  // ever true when serviceName/servicePrice both parsed successfully — see
-  // normalizeRow in product.service.ts.
-  serviceOffered?: boolean;
-  serviceName?: string;
-  servicePrice?: number;
+  // Catalog fields from the products CSV (see db/schema.sql products table).
+  // serviceCategory is derived upstream (validateRow, via
+  // SUBCATEGORY_TO_SERVICE_CATEGORY) and simply carried through here.
+  category: string;
+  subcategory: string;
+  serviceCategory: string;
+  vehicleMake: string;
+  vehicleModel?: string;
+  yearStart?: number;
+  yearEnd?: number;
+  engine?: string;
+  deliveryTime: string;
+  brand?: string;
+  oemReference?: string;
+  engineNumber?: string;
+  viscosity?: string;
+  engineType?: string;
+  volumeLiters?: number;
+  specification?: string;
+  intervalKm?: number;
+  imageUrl?: string;
+  synonyms: string;
+  description: string;
 }
 
 /**
@@ -92,16 +108,38 @@ export async function importProductsBatch(
           `WITH prev AS (
              SELECT quantity FROM products WHERE supplier_id = $1 AND reference = $2
            )
-           INSERT INTO products (supplier_id, reference, name, price, quantity, service_offered, service_name, service_price, active, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NOW())
+           INSERT INTO products (
+             supplier_id, reference, name, price, quantity,
+             category, subcategory, service_category, vehicle_make, vehicle_model, year_start, year_end, engine,
+             delivery_time, brand, oem_reference, engine_number, viscosity, engine_type, volume_liters,
+             specification, interval_km, image_url, synonyms, description, active, updated_at
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, true, NOW())
            ON CONFLICT (supplier_id, reference)
            DO UPDATE SET
              name = EXCLUDED.name,
              price = EXCLUDED.price,
              quantity = EXCLUDED.quantity,
-             service_offered = EXCLUDED.service_offered,
-             service_name = EXCLUDED.service_name,
-             service_price = EXCLUDED.service_price,
+             category = EXCLUDED.category,
+             subcategory = EXCLUDED.subcategory,
+             service_category = EXCLUDED.service_category,
+             vehicle_make = EXCLUDED.vehicle_make,
+             vehicle_model = EXCLUDED.vehicle_model,
+             year_start = EXCLUDED.year_start,
+             year_end = EXCLUDED.year_end,
+             engine = EXCLUDED.engine,
+             delivery_time = EXCLUDED.delivery_time,
+             brand = EXCLUDED.brand,
+             oem_reference = EXCLUDED.oem_reference,
+             engine_number = EXCLUDED.engine_number,
+             viscosity = EXCLUDED.viscosity,
+             engine_type = EXCLUDED.engine_type,
+             volume_liters = EXCLUDED.volume_liters,
+             specification = EXCLUDED.specification,
+             interval_km = EXCLUDED.interval_km,
+             image_url = EXCLUDED.image_url,
+             synonyms = EXCLUDED.synonyms,
+             description = EXCLUDED.description,
              active = true,
              updated_at = NOW()
            RETURNING
@@ -114,9 +152,26 @@ export async function importProductsBatch(
             item.name,
             item.price,
             item.quantity,
-            item.serviceOffered ?? false,
-            item.serviceName ?? null,
-            item.servicePrice ?? null,
+            item.category,
+            item.subcategory,
+            item.serviceCategory,
+            item.vehicleMake,
+            item.vehicleModel ?? null,
+            item.yearStart ?? null,
+            item.yearEnd ?? null,
+            item.engine ?? null,
+            item.deliveryTime,
+            item.brand ?? null,
+            item.oemReference ?? null,
+            item.engineNumber ?? null,
+            item.viscosity ?? null,
+            item.engineType ?? null,
+            item.volumeLiters ?? null,
+            item.specification ?? null,
+            item.intervalKm ?? null,
+            item.imageUrl ?? null,
+            item.synonyms,
+            item.description,
           ]
         );
 

@@ -72,23 +72,46 @@ CREATE TABLE IF NOT EXISTS products (
 
   -- Identification
   name             TEXT NOT NULL,               -- e.g. "Filtro de óleo Mann W712/75"
-  brand            TEXT,                        -- e.g. "Mann", "Bosch", "Original"
+  brand            TEXT,                        -- e.g. "Mann", "Bosch", "Original" — also holds the catalog CSV's part_brand
   reference        TEXT NOT NULL,               -- e.g. "W712/75"
   oem_reference    TEXT,                        -- original manufacturer reference
-  synonyms         TEXT,                        -- e.g. "filtro oleo, oil filter"
+  synonyms         TEXT NOT NULL,                -- e.g. "filtro oleo, oil filter"
   category_keywords TEXT,                       -- free text for search
-  description      TEXT,
+  description      TEXT NOT NULL,
+
+  -- Catalog classification. `subcategory` is the fine-grained catalog value
+  -- (Brakes, Engine, Filtration, Mechanical, Steering, Suspension,
+  -- Transmission, Engine Oil); `service_category` is a derived grouping
+  -- (maintenance | general_mechanics | diagnostics, see
+  -- SUBCATEGORY_TO_SERVICE_CATEGORY in src/constants/serviceCategory.ts) that
+  -- is the literal join key against services.service_category — "which
+  -- services are relevant to this product" is a plain equality match on it.
+  category         TEXT NOT NULL,               -- 'part' | 'lubricant'
+  subcategory      TEXT NOT NULL,
+  service_category TEXT NOT NULL,
+
+  -- Vehicle fit
+  vehicle_make     TEXT NOT NULL,
+  vehicle_model    TEXT,
+  year_start       INT,
+  year_end         INT,
+  engine           TEXT,                        -- engine this part fits, e.g. "2.5L" (not the customer's vehicle — see vehicles.engine_number)
+  engine_number    TEXT,
+
+  -- Lubricant-only specs (populated only when category = 'lubricant')
+  viscosity        TEXT,
+  engine_type      TEXT,
+  volume_liters    NUMERIC(5,2),
+
+  specification    TEXT,
+  interval_km      INT,
+  image_url        TEXT,
+  delivery_time    TEXT NOT NULL,
 
   -- Price and stock
   price            NUMERIC(12,2) NOT NULL,      -- in Kwanzas (AOA)
   quantity         INT NOT NULL DEFAULT 0,
   unit             TEXT DEFAULT 'unidade',
-
-  -- Optional attached service (e.g. installation), offered as a follow-up
-  -- when a customer picks this product — see CLAUDE.md message pipeline.
-  service_offered  BOOLEAN DEFAULT false,
-  service_name     TEXT,
-  service_price    NUMERIC(12,2),
 
   -- Control
   active           BOOLEAN DEFAULT true,
@@ -117,13 +140,60 @@ ALTER TABLE products DROP COLUMN IF EXISTS category_id;
 -- Replaced by the waitlist_requests table below — a real table records who
 -- joined and when, which an opaque array column couldn't.
 ALTER TABLE products DROP COLUMN IF EXISTS waitlist_phones;
--- Never surfaced to the customer in the WhatsApp search results (the search-
--- result description now shows only ref/price/supplier) and had no admin
--- panel field either — dropped rather than kept as unused dead weight.
-ALTER TABLE products DROP COLUMN IF EXISTS delivery_time;
-ALTER TABLE products ADD COLUMN IF NOT EXISTS service_offered BOOLEAN DEFAULT false;
-ALTER TABLE products ADD COLUMN IF NOT EXISTS service_name TEXT;
-ALTER TABLE products ADD COLUMN IF NOT EXISTS service_price NUMERIC(12,2);
+-- Retired as of the services-domain matching feature: a product's "attached
+-- service" is no longer a static per-product field — it's now whichever
+-- services table row(s) share this product's service_category (see the
+-- services table below). orders.service_name/service_price (the accepted-
+-- service snapshot on a placed order) are untouched — unrelated concept.
+ALTER TABLE products DROP COLUMN IF EXISTS service_offered;
+ALTER TABLE products DROP COLUMN IF EXISTS service_name;
+ALTER TABLE products DROP COLUMN IF EXISTS service_price;
+
+-- Catalog columns from the 2026-07 products CSV import (category, subcategory,
+-- vehicle fit, lubricant specs, delivery_time — see the products table
+-- comment above). Re-added nullable here (delivery_time previously had a
+-- DROP COLUMN IF EXISTS above, removed as of this change — do not re-add
+-- that DROP, it would silently wipe this column again on every migrate run)
+-- so an existing database can be backfilled before the NOT NULL constraints
+-- below are applied.
+ALTER TABLE products ADD COLUMN IF NOT EXISTS category TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS subcategory TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS service_category TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS vehicle_make TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS vehicle_model TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS year_start INT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS year_end INT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS engine TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS engine_number TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS viscosity TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS engine_type TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS volume_liters NUMERIC(5,2);
+ALTER TABLE products ADD COLUMN IF NOT EXISTS specification TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS interval_km INT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS delivery_time TEXT;
+
+-- Backfill placeholders for rows inserted before this migration (the CSV
+-- importer always supplies real values for these — this only covers
+-- pre-existing seed/manual rows so the SET NOT NULL below doesn't fail).
+UPDATE products SET
+  category         = COALESCE(category, 'part'),
+  subcategory      = COALESCE(subcategory, 'Mechanical'),
+  service_category = COALESCE(service_category, 'general_mechanics'),
+  vehicle_make     = COALESCE(vehicle_make, 'Unknown'),
+  delivery_time    = COALESCE(delivery_time, 'Unknown'),
+  synonyms         = COALESCE(synonyms, ''),
+  description      = COALESCE(description, name)
+WHERE category IS NULL OR subcategory IS NULL OR service_category IS NULL
+   OR vehicle_make IS NULL OR delivery_time IS NULL OR synonyms IS NULL OR description IS NULL;
+
+ALTER TABLE products ALTER COLUMN category SET NOT NULL;
+ALTER TABLE products ALTER COLUMN subcategory SET NOT NULL;
+ALTER TABLE products ALTER COLUMN service_category SET NOT NULL;
+ALTER TABLE products ALTER COLUMN vehicle_make SET NOT NULL;
+ALTER TABLE products ALTER COLUMN delivery_time SET NOT NULL;
+ALTER TABLE products ALTER COLUMN synonyms SET NOT NULL;
+ALTER TABLE products ALTER COLUMN description SET NOT NULL;
 
 -- A generated column's expression can't be changed via ALTER COLUMN, so an
 -- existing database (created before the 'portuguese' -> 'english' switch
@@ -158,8 +228,115 @@ CREATE INDEX IF NOT EXISTS idx_products_fts ON products USING GIN (search_vector
 CREATE INDEX IF NOT EXISTS idx_products_supplier ON products (supplier_id);
 CREATE INDEX IF NOT EXISTS idx_products_price ON products (price);
 CREATE INDEX IF NOT EXISTS idx_products_active ON products (active) WHERE active = true;
+CREATE INDEX IF NOT EXISTS idx_products_service_category ON products (service_category);
+
+-- ============================================================
+-- DATA FIX (2026-07-22): produtos_rede_pecas_via_pecas_v3_EN.csv has ~90 rows
+-- (mostly branded filters/brakes/shocks — NGK, KYB, Ashika, Blue Print, SAS,
+-- Hi-Q, FMSI, CTR, GMB, Klaxcar, KBS, Blackstorm, Venol — plus all 47 "Yato"
+-- rows, which are power tools, not vehicle parts at all) where a parts-brand
+-- name landed in vehicle_make instead of brand, bumping the real vehicle make
+-- down into vehicle_model and the real model down into engine. This silently
+-- broke the vehicle hard-filter in searchProductsInInventory
+-- (product.model.ts) — e.g. an "Ashika" oil filter that actually fits
+-- Hyundai/Kia never matched a registered Hyundai/Kia customer, since
+-- vehicle_make held "Ashika" instead of "Hyundai/Kia". One-time correction,
+-- idempotent — each WHERE vehicle_make = '<brand>' stops matching anything
+-- once corrected, so a second run is a no-op.
+-- ============================================================
+
+-- Yato: a power-tools brand, not vehicle-specific — a wrench or drill fits
+-- any vehicle job, so these become a wildcard fit rather than a swapped
+-- make/model (their "vehicle_model" was actually a product-type placeholder —
+-- Tool/Equipment/Electric/Consumable/EPI — not a real vehicle model at all).
+UPDATE products SET
+  brand = 'Yato', vehicle_make = 'Various', vehicle_model = NULL, engine = NULL
+WHERE vehicle_make = 'Yato';
+
+-- Generic swap for the branded-parts rows: real make was in vehicle_model,
+-- real model (when present) was in engine. Rows whose vehicle_model was
+-- 'Various' had no real make/model recorded at all (a generic part), so they
+-- collapse to a wildcard fit instead of a swap.
+UPDATE products SET
+  brand = vehicle_make, vehicle_make = 'Various', vehicle_model = NULL, engine = NULL
+WHERE vehicle_make IN ('SAS','NGK','Blue Print','KYB','Ashika','Hi-Q (Sangsin)','Hi-Q','FMSI','CTR','Blackstorm','Venol','Klaxcar','KBS','GMB')
+  AND vehicle_model = 'Various';
+
+UPDATE products SET
+  brand = vehicle_make, vehicle_make = vehicle_model, vehicle_model = NULLIF(engine, 'Various'), engine = NULL
+WHERE vehicle_make IN ('SAS','NGK','Blue Print','KYB','Ashika','Hi-Q (Sangsin)','Hi-Q','FMSI','CTR','Blackstorm','Venol','Klaxcar','KBS','GMB')
+  AND vehicle_model <> 'Various';
+
+-- AMG (Mercedes' performance division) and Baldwin/Mercedes (a filter brand)
+-- both implied a Mercedes fit that was never actually recorded as such.
+UPDATE products SET brand = 'AMG', vehicle_make = 'Mercedes', vehicle_model = NULL
+WHERE vehicle_make = 'AMG';
+
+UPDATE products SET brand = 'Baldwin', vehicle_make = 'Mercedes', vehicle_model = NULL
+WHERE vehicle_make = 'Baldwin/Mercedes';
+
+-- Motorcraft/Ford: vehicle_model ("F-150/Mustang") and engine ("V8") were
+-- already correct — only vehicle_make conflated the brand with the real make.
+UPDATE products SET brand = 'Motorcraft', vehicle_make = 'Ford'
+WHERE vehicle_make = 'Motorcraft/Ford';
+
+-- Plain typo in the source file (also fixed in product.service.ts's
+-- vehicleFieldMatches wildcard list going forward, but existing rows still
+-- need this one-time correction).
+UPDATE products SET vehicle_make = 'Aftermarket' WHERE vehicle_make = 'AftermarkeDt';
 
 DROP TABLE IF EXISTS categories;
+
+-- ============================================================
+-- SERVICE_PROVIDERS — separate from `suppliers` (parts suppliers): a
+-- provider offers home-visit repair/maintenance/diagnostic *services*, not
+-- parts stock, and carries fields (specialties, response_time) with no
+-- parts-supplier equivalent. Mirrors suppliers' shape/soft-delete pattern.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS service_providers (
+  id             SERIAL PRIMARY KEY,
+  name           TEXT NOT NULL,
+  address        TEXT,
+  province       TEXT,
+  phone          TEXT,
+  specialties    TEXT,
+  rating         NUMERIC(2,1) DEFAULT 5.0,
+  response_time  TEXT,
+  active         BOOLEAN DEFAULT true,
+  created_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_service_providers_active ON service_providers (active) WHERE active = true;
+
+-- ============================================================
+-- SERVICES — a provider's individual bookable services. service_category is
+-- the literal join key against products.service_category above — "find
+-- services relevant to this product" is
+-- `WHERE services.service_category = products.service_category`. Not the
+-- same concept as products.service_offered/service_name/service_price (the
+-- existing *attached, product-bundled* installation-style service) — these
+-- are standalone bookable services from a real provider catalog.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS services (
+  id                    SERIAL PRIMARY KEY,
+  provider_id           INT NOT NULL REFERENCES service_providers(id),
+  service_name          TEXT NOT NULL,
+  service_category      TEXT NOT NULL,          -- maintenance | general_mechanics | diagnostics
+  service_base_price    NUMERIC(12,2) NOT NULL,
+  service_duration_h    NUMERIC(4,2) NOT NULL,
+  available_at_home     BOOLEAN NOT NULL DEFAULT false,
+  base_travel_fee       NUMERIC(12,2),
+  logistics_fee_notes   TEXT,
+  active                BOOLEAN DEFAULT true,
+  created_at            TIMESTAMPTZ DEFAULT NOW(),
+  updated_at            TIMESTAMPTZ DEFAULT NOW(),
+
+  UNIQUE (provider_id, service_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_services_provider ON services (provider_id);
+CREATE INDEX IF NOT EXISTS idx_services_category ON services (service_category);
+CREATE INDEX IF NOT EXISTS idx_services_active ON services (active) WHERE active = true;
 
 -- ============================================================
 -- ORDERS
@@ -196,9 +373,11 @@ CREATE TABLE IF NOT EXISTS orders (
   -- awaiting_agent_confirmation, reviewed by the admin directly (approved |
   -- rejected) once payment is physically confirmed, instead of going through
   -- the proof-upload/verification path above.
-  -- cancelled is a separate terminal status set by the admin panel's DELETE
-  -- /orders/:number (order.controller.ts) — only reachable from a non-terminal
-  -- status (an approved/rejected/already-cancelled order can't be cancelled).
+  -- 'cancelled' is a legacy terminal status — no longer set by any code path
+  -- (DELETE /orders/:number used to move an order here; as of 2026-07 that
+  -- endpoint no longer touches status at all, see admin_hidden below). Kept
+  -- in the exclusion list in getOrderAnalytics purely for any pre-existing
+  -- rows, not because anything can produce a new one.
   status                  TEXT DEFAULT 'awaiting_payment',
   payment_method          TEXT,
   approved_by             TEXT,
@@ -208,10 +387,11 @@ CREATE TABLE IF NOT EXISTS orders (
   -- always a strict 1:1 with the order, so no benefit to a separate table)
   payment_proof_media_id  TEXT,
   payment_proof_media_type TEXT,
-  -- Snapshot of the attached service accepted on this order (see
-  -- products.service_offered) — copied at accept-time, same idiom as
-  -- unit_price, so a later catalog price change never alters a placed order.
-  -- NULL means no service was offered or the customer declined it.
+  -- Snapshot of the matched service the customer accepted on this order (see
+  -- services table — matched to the product via service_category) — copied
+  -- at accept-time, same idiom as unit_price, so a later catalog price
+  -- change never alters a placed order. NULL means no matching service
+  -- existed, or the customer declined every one offered.
   service_name            TEXT,
   service_price           NUMERIC(12,2),
   -- Set once the 20-minute "still confirming with the supplier" courtesy
@@ -220,6 +400,12 @@ CREATE TABLE IF NOT EXISTS orders (
   -- Set once the 15-minute admin-reminder WhatsApp nudge has gone out for this
   -- order, so the sweep in product.service.ts never resends it.
   stock_confirmation_admin_reminder_sent BOOLEAN DEFAULT false,
+  -- Purely an admin-panel display concern — hides an approved order from the
+  -- admin grid (DELETE /admin/orders/:number, only ever allowed on an already-
+  -- 'approved' order) without touching status, the customer's order, or
+  -- sending any notification. The real order is untouched and still exists;
+  -- this never gets set back to false from the UI today (no "restore" action).
+  admin_hidden            BOOLEAN DEFAULT false,
   created_at              TIMESTAMPTZ DEFAULT NOW(),
   updated_at              TIMESTAMPTZ DEFAULT NOW()
 );
@@ -228,6 +414,7 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_proof_media_id TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_proof_media_type TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS service_name TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS service_price NUMERIC(12,2);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS admin_hidden BOOLEAN DEFAULT false;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS stock_confirmation_courtesy_sent BOOLEAN DEFAULT false;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS stock_confirmation_admin_reminder_sent BOOLEAN DEFAULT false;
 

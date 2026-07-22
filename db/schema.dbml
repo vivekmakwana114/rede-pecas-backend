@@ -24,18 +24,31 @@ Table products {
   id serial [pk]
   supplier_id int [not null, ref: > suppliers.id]
   name text [not null]
-  brand text
+  brand text [note: 'also holds the catalog CSV part_brand']
   reference text [not null]
   oem_reference text
-  synonyms text
+  synonyms text [not null]
   category_keywords text [note: 'free text for search']
-  description text
+  description text [not null]
+  category text [not null, note: 'part | lubricant']
+  subcategory text [not null, note: 'Brakes, Engine, Filtration, Mechanical, Steering, Suspension, Transmission, Engine Oil']
+  service_category text [not null, note: 'derived from subcategory via SUBCATEGORY_TO_SERVICE_CATEGORY; join key against services.service_category']
+  vehicle_make text [not null]
+  vehicle_model text
+  year_start int
+  year_end int
+  engine text [note: 'engine this part fits, not the customer vehicle (see vehicles.engine_number)']
+  engine_number text
+  viscosity text [note: 'lubricant-only']
+  engine_type text [note: 'lubricant-only']
+  volume_liters numeric(5,2) [note: 'lubricant-only']
+  specification text
+  interval_km int
+  image_url text
+  delivery_time text [not null]
   price numeric(12,2) [not null, note: 'Kwanzas (AOA)']
   quantity int [not null, default: 0]
   unit text [default: 'unidade']
-  service_offered boolean [default: false, note: 'optional attached service, e.g. installation']
-  service_name text
-  service_price numeric(12,2)
   active boolean [default: true]
   created_at timestamptz [default: `NOW()`]
   updated_at timestamptz [default: `NOW()`]
@@ -44,7 +57,46 @@ Table products {
   indexes {
     (supplier_id, reference) [unique, note: 'batch-import upsert target']
     price
+    service_category
   }
+}
+
+Table service_providers {
+  id serial [pk]
+  name text [not null]
+  address text
+  province text
+  phone text
+  specialties text
+  rating numeric(2,1) [default: 5.0]
+  response_time text
+  active boolean [default: true]
+  created_at timestamptz [default: `NOW()`]
+
+  Note: 'Separate from suppliers (parts suppliers) — home-visit service providers'
+}
+
+Table services {
+  id serial [pk]
+  provider_id int [not null, ref: > service_providers.id]
+  service_name text [not null]
+  service_category text [not null, note: 'maintenance | general_mechanics | diagnostics']
+  service_base_price numeric(12,2) [not null]
+  service_duration_h numeric(4,2) [not null]
+  available_at_home boolean [not null, default: false]
+  base_travel_fee numeric(12,2)
+  logistics_fee_notes text
+  active boolean [default: true]
+  created_at timestamptz [default: `NOW()`]
+  updated_at timestamptz [default: `NOW()`]
+
+  indexes {
+    provider_id
+    service_category
+    (provider_id, service_name) [unique, note: 'upsert target']
+  }
+
+  Note: 'service_category is the join key against products.service_category'
 }
 
 Table waitlist_requests {
@@ -69,17 +121,18 @@ Table orders {
   supplier_id int [ref: > suppliers.id]
   quantity int [default: 1]
   unit_price numeric(12,2)
-  status text [default: 'awaiting_payment', note: 'awaiting_payment (placeholder while service decision pending) → awaiting_stock_confirmation (admin panel) → stock_unavailable (terminal) | awaiting_payment_method → awaiting_bank_subtype (transfer/deposit only) → awaiting_payment_proof | awaiting_agent_confirmation → payment_proof_received → approved | rejected. cancelled: separate terminal status, admin-only, only from a non-terminal status']
+  status text [default: 'awaiting_payment', note: 'awaiting_payment (placeholder while service decision pending) → awaiting_stock_confirmation (admin panel) → stock_unavailable (terminal) | awaiting_payment_method → awaiting_bank_subtype (transfer/deposit only) → awaiting_payment_proof | awaiting_agent_confirmation → payment_proof_received → approved | rejected. cancelled: legacy value, no longer set by any code path — see admin_hidden']
   payment_method text [note: 'bank_transfer | bank_deposit | multicaixa_express | mobile_pos']
   approved_by text
   approved_at timestamptz
   customer_engine_number text
   payment_proof_media_id text [note: 'WhatsApp media id; folded in from the former payment_proofs table (strict 1:1 with the order)']
   payment_proof_media_type text
-  service_name text [note: 'snapshot of the accepted product service, if any — copied at accept-time like unit_price']
+  service_name text [note: 'snapshot of the accepted matched service (from services table, chosen via product.service_category), if any — copied at accept-time like unit_price']
   service_price numeric(12,2)
   stock_confirmation_courtesy_sent boolean [default: false, note: '20-min "still confirming" courtesy message sent once']
   stock_confirmation_admin_reminder_sent boolean [default: false, note: '15-min admin-reminder WhatsApp nudge sent once']
+  admin_hidden boolean [default: false, note: 'admin-grid-only soft delete, approved orders only (DELETE /admin/orders/:number) — never touches the real order/customer, no notification sent']
   created_at timestamptz [default: `NOW()`]
   updated_at timestamptz [default: `NOW()`]
 
