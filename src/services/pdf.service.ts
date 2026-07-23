@@ -204,82 +204,6 @@ export async function sendProformaWhatsApp(
 }
 
 /**
- * Generates the official tax invoice via Primavera API (certified by AGT Angola).
- */
-export async function generatePrimaveraInvoice(order: any, locale: 'pt' | 'en' = DEFAULT_LOCALE): Promise<string> {
-  const primaveraUrl = config.primavera.apiUrl;
-  const primaveraToken = config.primavera.token;
-
-  // Mock implementation if token is missing
-  if (!primaveraToken || primaveraToken === 'TOKEN_DO_PRIMAVERA_AQUI') {
-    logger.warn('PRIMAVERA_API_TOKEN is missing or is placeholder. Generating mock invoice PDF.');
-    return generateMockInvoicePDF(order, locale);
-  }
-
-  try {
-    const res = await fetch(`${primaveraUrl}/api/facturas`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${primaveraToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        // Payload field names are defined by the Primavera API (Portuguese)
-        tipoDocumento: 'FA', // Factura
-        serie: 'A',
-        cliente: order.customer_phone,
-        linhas: [
-          {
-            artigo: order.reference || 'PEC-GEN',
-            descricao: order.product_name || 'Peça Automóvel',
-            quantidade: order.quantity || 1,
-            precoUnitario: order.unit_price,
-            iva: 14, // VAT in Angola (14%)
-          },
-          ...(order.service_price ? [{
-            artigo: 'SERVICO',
-            descricao: order.service_name || 'Serviço',
-            quantidade: 1,
-            precoUnitario: order.service_price,
-            iva: 14,
-          }] : []),
-        ],
-        referencia: order.number,
-      }),
-    });
-
-    if (!res.ok) {
-      const errDetail = await res.json();
-      logger.error('Primavera invoice generation API error', errDetail);
-      throw new Error(`Primavera invoice creation failed with status ${res.status}`);
-    }
-
-    const invoice = await res.json() as any;
-
-    // Fetch the invoice PDF binary from Primavera
-    const pdfRes = await fetch(`${primaveraUrl}/api/facturas/${invoice.id}/pdf`, {
-      headers: { Authorization: `Bearer ${primaveraToken}` },
-    });
-
-    if (!pdfRes.ok) {
-      throw new Error(`Failed to retrieve invoice PDF from Primavera: ${pdfRes.status}`);
-    }
-
-    const tempDir = path.join(__dirname, '../../temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-    const pdfPath = path.join(tempDir, `FACTURA_${order.number}.pdf`);
-    fs.writeFileSync(pdfPath, Buffer.from(await pdfRes.arrayBuffer()));
-
-    return pdfPath;
-  } catch (error: any) {
-    logger.error(`Error generating Primavera invoice, falling back to mock: ${error.message}`);
-    return generateMockInvoicePDF(order, locale);
-  }
-}
-
-/**
  * Sends the finalized official tax invoice PDF via WhatsApp.
  */
 export async function sendFinalInvoiceWhatsApp(
@@ -355,9 +279,9 @@ export async function sendFinalInvoiceWhatsApp(
 }
 
 /**
- * Generates a mock invoice PDF when Primavera ERP is not connected.
+ * Generates the final tax invoice PDF (Rede Peças' own format, no external ERP).
  */
-async function generateMockInvoicePDF(order: any, locale: 'pt' | 'en' = DEFAULT_LOCALE): Promise<string> {
+export async function generateInvoicePDF(order: any, locale: 'pt' | 'en' = DEFAULT_LOCALE): Promise<string> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
     const tempDir = path.join(__dirname, '../../temp');
@@ -368,7 +292,7 @@ async function generateMockInvoicePDF(order: any, locale: 'pt' | 'en' = DEFAULT_
     const stream = fs.createWriteStream(filePath);
     doc.pipe(stream);
 
-    const mc = getMessages(locale).pdf.mockInvoice;
+    const mc = getMessages(locale).pdf.invoice;
 
     // Header
     doc.fontSize(22).fillColor('#2E7D32').font('Helvetica-Bold').text(mc.headerTitle, 50, 50);

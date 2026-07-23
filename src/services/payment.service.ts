@@ -2,7 +2,7 @@ import { db } from '../config/db.js';
 import { logger } from '../config/logger.js';
 import { sendWhatsAppMessage, sendWhatsAppButtons, downloadWhatsAppMedia } from './whatsapp.service.js';
 import { sendReply, sendReplyButtons } from './reply.service.js';
-import { generatePrimaveraInvoice, sendFinalInvoiceWhatsApp } from './pdf.service.js';
+import { generateInvoicePDF, sendFinalInvoiceWhatsApp } from './pdf.service.js';
 import { extractPaymentProofData } from './ai.service.js';
 import { getOrderByNumber, getLatestOrderByStatus, updateOrderStatus } from '../models/order.model.js';
 import { getSupplierPhoneById } from '../models/supplier.model.js';
@@ -392,7 +392,7 @@ export async function approveOrder(orderNumber: string, employeeId: number): Pro
   const locale = await resolveLocale(order.customer_phone);
 
   // Generate tax invoice PDF
-  const invoicePDF = await generatePrimaveraInvoice(fullOrder, locale);
+  const invoicePDF = await generateInvoicePDF(fullOrder, locale);
 
   // Send the final PDF invoice to the customer
   await sendFinalInvoiceWhatsApp(order.customer_phone, invoicePDF, orderNumber, firstName, locale);

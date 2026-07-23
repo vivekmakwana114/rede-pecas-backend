@@ -166,7 +166,7 @@ interface Messages {
       notification: (customerName: string) => string;
       documentCaption: (orderNumber: string) => string;
     };
-    mockInvoice: {
+    invoice: {
       headerTitle: string;
       tagline: string;
       nifLine: string;
@@ -546,7 +546,7 @@ const pt: Messages = {
         `Esperamos ver-te em breve! 🙏 🚗`,
       documentCaption: (orderNumber) => `Factura Comercial Nº ${orderNumber} — Rede Peças`,
     },
-    mockInvoice: {
+    invoice: {
       headerTitle: 'REDE PEÇAS - FACTURA',
       tagline: 'Marketplace Automotivo de Angola',
       nifLine: 'NIF: 5001234567 (Certificado AGT)',
@@ -937,7 +937,7 @@ const en: Messages = {
         `We hope to see you again soon! 🙏 🚗`,
       documentCaption: (orderNumber) => `Commercial Invoice No. ${orderNumber} — Rede Peças`,
     },
-    mockInvoice: {
+    invoice: {
       headerTitle: 'REDE PEÇAS - INVOICE',
       tagline: "Angola's Auto Parts Marketplace",
       nifLine: 'NIF: 5001234567 (AGT Certified)',
