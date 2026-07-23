@@ -6,6 +6,7 @@ import {
   Customer
 } from '../models/customer.model.js';
 import { sendReply, sendReplyButtons } from './reply.service.js';
+import { sendWhatsAppMessage } from './whatsapp.service.js';
 import {
   markSessionActive,
   markPartPromptSent,
@@ -67,7 +68,15 @@ export async function getOrCreateCustomer(phone: string): Promise<Customer | nul
   // registration" resume-prompt instead of being captured — corrupting every
   // registration field one step downstream from there.
   await markSessionActive(phone);
-  await sendReply(phone, (await resolveMessages(phone)).onboarding.welcome(), { contextual: true });
+  // sendWhatsAppMessage (bypassing reply.service.ts/humanize.service.ts) — this
+  // is the very first thing a new customer sees, deliberately written to name
+  // the four categories and the value prop in a specific order; an AI rewrite
+  // (even a "validated" one — humanize's length-ratio guard lets a ~55-60%
+  // rewrite through, which is enough to drop the category list/value-prop line
+  // without tripping it) reliably compresses it into a generic one-liner.
+  // Same "which import IS the allowlist" pattern reply.service.ts already uses
+  // for the payment-instruction block and admin pushes.
+  await sendWhatsAppMessage(phone, (await resolveMessages(phone)).onboarding.welcome());
   return null;
 }
 

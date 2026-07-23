@@ -102,8 +102,9 @@ interface Messages {
     searchListBodyForVehicle: (count: number, part: string, make: string, model: string, year: string, name: string) => string;
     searchListButton: () => string;
     productSelected: (productName: string, price: string) => string;
-    serviceOfferBody: (serviceName: string, price: string) => string;
-    serviceOfferButtons: [string, string];
+    serviceListBody: (count: number) => string;
+    serviceListButton: () => string;
+    serviceSkipOption: () => string;
     serviceAdded: (serviceName: string, newTotal: string) => string;
     serviceDeclined: () => string;
     confirmingAvailability: () => string;
@@ -391,9 +392,10 @@ const pt: Messages = {
     restockNotificationButtons: ['✅ Pedir agora', '❌ Agora não'],
     productSelected: (productName, price) =>
       `Escolheste *${productName}* — ${price}.`,
-    serviceOfferBody: (serviceName, price) =>
-      `Este produto tem um serviço disponível: *${serviceName}* por ${price}. Queres adicionar?`,
-    serviceOfferButtons: ['✅ Sim', '❌ Não'],
+    serviceListBody: (count) =>
+      `Este produto tem ${count} serviço(s) relacionado(s) disponíveis. Escolhe um abaixo para adicionar, ou continua só com o produto 👇`,
+    serviceListButton: () => 'Ver serviços',
+    serviceSkipOption: () => '❌ Não, obrigado',
     serviceAdded: (serviceName, newTotal) =>
       `✅ *${serviceName}* adicionado ao teu pedido. Novo total: *${newTotal}*.`,
     serviceDeclined: () => `Sem problema! 👍`,
@@ -781,9 +783,10 @@ const en: Messages = {
     restockNotificationButtons: ['✅ Order now', '❌ Not right now'],
     productSelected: (productName, price) =>
       `You picked *${productName}* — ${price}.`,
-    serviceOfferBody: (serviceName, price) =>
-      `This product has an available service: *${serviceName}* for ${price}. Want to add it?`,
-    serviceOfferButtons: ['✅ Yes', '❌ No'],
+    serviceListBody: (count) =>
+      `This product has ${count} related service(s) available. Pick one below to add it, or continue with just the product 👇`,
+    serviceListButton: () => 'View services',
+    serviceSkipOption: () => '❌ No, thanks',
     serviceAdded: (serviceName, newTotal) =>
       `✅ *${serviceName}* added to your order. New total: *${newTotal}*.`,
     serviceDeclined: () => `No problem! 👍`,

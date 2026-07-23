@@ -107,6 +107,29 @@ export async function updateOrderStatus(orderNumber: string, status: string, add
   );
 }
 
+export type HideOrderResult = 'hidden' | 'not_found' | 'not_approved';
+
+/**
+ * Hides an order from the admin panel's Approved grid — backs DELETE
+ * /admin/orders/:number. Purely a display concern: sets admin_hidden, never
+ * touches status, sends no WhatsApp notification, and doesn't affect the
+ * customer's actual order in any way. Only allowed on an already-'approved'
+ * order (enforced here via the WHERE clause, not just the controller) — a
+ * still-pending order can't be hidden this way, matching how hardDeleteProduct
+ * gates on the row already being inactive.
+ */
+export async function hideApprovedOrder(orderNumber: string): Promise<HideOrderResult> {
+  const { rows } = await db.query('SELECT status FROM orders WHERE number = $1', [orderNumber]);
+  if (!rows.length) return 'not_found';
+  if (rows[0].status !== 'approved') return 'not_approved';
+
+  await db.query(
+    `UPDATE orders SET admin_hidden = true, updated_at = NOW() WHERE number = $1`,
+    [orderNumber]
+  );
+  return 'hidden';
+}
+
 /**
  * Registers customer payment proof metadata on the order.
  */
@@ -270,6 +293,7 @@ export async function getOrdersApproved(range: 'today' | 'all' = 'all'): Promise
     FROM orders o
     JOIN products p ON p.id = o.product_id
     WHERE o.status = 'approved'
+      AND o.admin_hidden = false
       ${range === 'today' ? "AND o.approved_at::date = CURRENT_DATE" : ''}
     ORDER BY o.approved_at DESC
   `);

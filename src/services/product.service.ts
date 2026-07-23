@@ -2,13 +2,16 @@ import * as XLSX from 'xlsx';
 import fs from 'fs';
 import { logger } from '../config/logger.js';
 import { ApiError } from '../utils/ApiError.js';
+import { SUBCATEGORY_TO_SERVICE_CATEGORY } from '../constants/serviceCategory.js';
 import {
   searchProductsInInventory,
   addToProductWaitlist,
   findZeroQuantityProductMatch,
   getProductById,
+  getMatchingServicesForProduct,
   Product
 } from '../models/product.model.js';
+import { Service } from '../models/service.model.js';
 import {
   importProductsBatch,
   ImportItem,
@@ -68,8 +71,10 @@ async function resolveSearchVehicle(phone: string) {
 
 /**
  * Searches inventory for the customer's raw message (deterministic full-text
- * match against name/brand/reference/synonyms — no AI involved) and either
- * sends a tappable list of the up-to-3 cheapest matches, or — on no stock —
+ * match against name/brand/reference/synonyms — no AI involved), hard-filtered
+ * to products compatible with the customer's registered vehicle (see
+ * searchProductsInInventory's vehicle param), and either sends a tappable
+ * list of the up-to-3 cheapest compatible matches, or — on no matches —
  * offers to waitlist the customer against the closest out-of-stock match.
  */
 export async function searchAndRespond(phone: string, customerText: string, customerName: string): Promise<void> {
@@ -77,7 +82,8 @@ export async function searchAndRespond(phone: string, customerText: string, cust
   logger.info(`[PRODUCT SEARCH] ${phone} searching for: "${customerText}"`);
   await sendReply(phone, messages.agent.checkingStock());
 
-  const options = await searchProductsInInventory({ part: customerText });
+  const vehicle = await resolveSearchVehicle(phone);
+  const options = await searchProductsInInventory({ part: customerText, vehicle });
 
   if (!options || options.length === 0) {
     logger.info(`[PRODUCT SEARCH] ${phone} no matches for "${customerText}"`);
@@ -89,7 +95,7 @@ export async function searchAndRespond(phone: string, customerText: string, cust
       // wait on would be a dead end.
       logger.info(`[PRODUCT SEARCH] ${phone} offering waitlist for out-of-stock match: ${candidate.name}`);
       await sendReplyButtons(phone, messages.agent.noStockFound(), messages.agent.noStockFoundButtons);
-      await savePendingWaitlistOffer(phone, { productId: candidate.id, productName: candidate.name });
+      await savePendingWaitlistOffer(phone, { productId: candidate.id, productName: candidate.name, query: customerText });
     } else {
       // Not contextual: noStockFound() is a fixed "no stock, want the waitlist?"
       // notice that doesn't need to react to what the customer searched for — and
@@ -108,7 +114,6 @@ export async function searchAndRespond(phone: string, customerText: string, cust
   // Persist results so the customer's list tap / typed digit in the next message can resolve them
   await savePendingOptions(phone, options);
 
-  const vehicle = await resolveSearchVehicle(phone);
   const body = vehicle
     ? messages.agent.searchListBodyForVehicle(options.length, customerText, vehicle.make, vehicle.model, vehicle.year, customerName)
     : messages.agent.searchListBody(options.length, customerText, customerName);
@@ -144,6 +149,61 @@ function resolveOptionIndex(customerText: string | null, listReplyId: string | n
 
   const digitMatch = customerText?.trim().match(/^(\d+)$/);
   if (digitMatch) return parseInt(digitMatch[1], 10) - 1;
+
+  return null;
+}
+
+/**
+ * Builds the tappable list rows for the services matched to a product (see
+ * getMatchingServicesForProduct — same service_category join key as
+ * products.service_category), cheapest first, plus one extra "no thanks" row
+ * appended at the end so declining is a normal list selection rather than a
+ * separate yes/no gate.
+ */
+function buildServiceListRows(
+  services: Service[],
+  skipLabel: string
+): { id: string; title: string; description: string }[] {
+  const rows = services.map((s, i) => ({
+    id: `service_option_${i + 1}`,
+    title: truncate(s.service_name, 24),
+    description: truncate(
+      `${formatPrice(s.service_base_price)}${s.provider_name ? ` • ${s.provider_name}` : ''}`,
+      72
+    ),
+  }));
+  rows.push({ id: `service_option_${services.length + 1}`, title: truncate(skipLabel, 24), description: '' });
+  return rows;
+}
+
+/**
+ * Resolves a reply against a just-shown service list to either a services[]
+ * index, 'skip' (explicit decline — the appended last row, or a typed
+ * "não"/"no" phrase regardless of row position), or null when the reply
+ * isn't shaped like a selection at all (letting the pipeline fall through —
+ * this is one of the 4 "pending offer" prompts documented in CLAUDE.md that
+ * deliberately keep that fall-through behavior instead of re-asking).
+ */
+function resolveServiceSelection(
+  customerText: string | null,
+  listReplyId: string | null,
+  serviceCount: number
+): number | 'skip' | null {
+  const r = customerText?.trim().toLowerCase() ?? '';
+  if (r.includes('não') || r.includes('nao') || r.includes('no thanks') || r === 'no' || r.includes('❌')) return 'skip';
+
+  const idMatch = listReplyId?.match(/^service_option_(\d+)$/);
+  if (idMatch) {
+    const idx = parseInt(idMatch[1], 10) - 1;
+    return idx === serviceCount ? 'skip' : idx;
+  }
+
+  const digitMatch = r.match(/^(\d+)$/);
+  if (digitMatch) {
+    const idx = parseInt(digitMatch[1], 10) - 1;
+    if (idx === serviceCount) return 'skip';
+    if (idx >= 0 && idx < serviceCount) return idx;
+  }
 
   return null;
 }
@@ -281,6 +341,43 @@ export async function markStockUnavailableAndOfferAlternative(orderNumber: strin
   });
 }
 
+// Generic affirmative/negative wording (PT + EN), shared by every "pending
+// offer" yes/no reply below (stock-unavailable alternatives, waitlist notify,
+// restock re-order). A customer very often doesn't tap the button and just
+// types a natural reply instead — relying on the bare button text alone
+// ('sim'/'yes'/'1'/✅/btn_0) missed common phrasings like "add me to the
+// waitlist" or "yes please", silently falling through to a fresh
+// (nonsensical) product search instead of being recognized as an answer to
+// the offer. Each call site passes its own extra phrases on top of this,
+// since the same word can mean opposite things in different offers — e.g.
+// "waitlist" is the YES answer to "want to be notified?"
+// (processWaitlistOptIn) but the NO answer to "alternatives, or join the
+// waitlist?" (processStockUnavailableChoice) — so it's never folded into
+// this shared generic set.
+const GENERIC_YES_PATTERN = /\b(sim|yes|yeah|yep|yup|sure|ok(ay)?|certo|pode|podes|quero|aceito|est[áa]\s*bem)\b/i;
+const GENERIC_NO_PATTERN = /\b(n[ãa]o|no|nope|not\s*(interested|now)|dispensa)\b/i;
+
+function isAffirmativeReply(reply: string, extra?: RegExp): boolean {
+  const r = reply.toLowerCase().trim();
+  if (r === '1' || r.includes('✅') || r.includes('btn_0')) return true;
+  if (GENERIC_YES_PATTERN.test(r)) return true;
+  return extra ? extra.test(r) : false;
+}
+
+function isNegativeReply(reply: string, extra?: RegExp): boolean {
+  const r = reply.toLowerCase().trim();
+  if (r === '2' || r.includes('❌') || r.includes('btn_1')) return true;
+  if (GENERIC_NO_PATTERN.test(r)) return true;
+  return extra ? extra.test(r) : false;
+}
+
+// stockUnavailableButtons: ['✅ Alternatives'/'Alternativas', '❌ Join
+// waitlist'/'Lista de espera'] — "waitlist" here means NO (decline
+// alternatives, wait for this exact product instead), the opposite of its
+// meaning in processWaitlistOptIn below.
+const STOCK_UNAVAILABLE_YES_EXTRA = /\b(alternative|alternativa|other\s*option|outra\s*op[çc][ãa]o)\b/i;
+const STOCK_UNAVAILABLE_NO_EXTRA = /\b(wait\s*list|waitlist|join\s*(the\s*)?waitlist|lista\s*de\s*espera)\b/i;
+
 /**
  * Handles the customer's yes/no reply to a pending "stock unavailable — want
  * alternatives or the waitlist?" offer. Yes re-runs the search for the same
@@ -294,13 +391,13 @@ export async function processStockUnavailableChoice(
   customerName: string
 ): Promise<boolean> {
   const messages = await resolveMessages(phone);
-  const r = reply.toLowerCase();
-  const isYes = r.includes('sim') || r.includes('yes') || r === '1' || r.includes('✅') || r.includes('btn_0');
-  const isNo = r.includes('não') || r.includes('nao') || r === '2' || r.includes('❌') || r.includes('btn_1');
+  const isYes = isAffirmativeReply(reply, STOCK_UNAVAILABLE_YES_EXTRA);
+  const isNo = isNegativeReply(reply, STOCK_UNAVAILABLE_NO_EXTRA);
 
   if (isYes) {
     await clearPendingStockUnavailableOffer(phone);
-    const options = await searchProductsInInventory({ part: offer.productName, excludeProductId: offer.productId });
+    const vehicle = await resolveSearchVehicle(phone);
+    const options = await searchProductsInInventory({ part: offer.productName, vehicle, excludeProductId: offer.productId });
     if (!options.length) {
       // No alternatives either — offer to waitlist them for the exact product
       // that was just declined, same as the main no-stock-found path.
@@ -417,10 +514,14 @@ export async function sendStockConfirmationAdminReminders(): Promise<void> {
 }
 
 /**
- * Creates an order for a specific, already-resolved product and either offers
- * its attached service as a sequential follow-up (leaving the proforma/payment
- * for processServiceOptIn to finish once they answer) or, when there's no
- * service to offer, hands it straight to requestStockConfirmation. Shared by
+ * Creates an order for a specific, already-resolved product, then looks up
+ * the services that share this product's service_category (see
+ * getMatchingServicesForProduct — products.service_category = the derived
+ * subcategory grouping, services.service_category = the CSV's own value;
+ * db/schema.sql). When there's at least one match, offers them as a tappable
+ * list (leaving the proforma/payment for processServiceSelection to finish
+ * once the customer picks one or declines) — otherwise hands the order
+ * straight to requestStockConfirmation with just the product. Shared by
  * processProductSelection (customer picked from a search list) and
  * processRestockOrderChoice (customer tapped "Order now" on a restock alert) —
  * both know exactly which product they mean, just via different paths.
@@ -430,18 +531,17 @@ async function startOrderForProduct(phone: string, product: Product): Promise<vo
   const orderNumber = await generateOrderNumber();
   await createOrder(orderNumber, phone, product);
 
-  if (product.service_offered && product.service_name && product.service_price) {
+  const matchingServices = product.id ? await getMatchingServicesForProduct(product.id) : [];
+  const offeredServices = matchingServices.slice(0, 3);
+
+  if (offeredServices.length > 0) {
     await sendReply(phone, messages.agent.productSelected(product.name, formatPrice(product.price)));
-    await savePendingServiceOffer(phone, {
-      orderNumber,
-      product,
-      serviceName: product.service_name,
-      servicePrice: product.service_price,
-    });
-    await sendReplyButtons(
+    await savePendingServiceOffer(phone, { orderNumber, product, services: offeredServices });
+    await sendReplyList(
       phone,
-      messages.agent.serviceOfferBody(product.service_name, formatPrice(product.service_price)),
-      messages.agent.serviceOfferButtons
+      messages.agent.serviceListBody(offeredServices.length),
+      messages.agent.serviceListButton(),
+      buildServiceListRows(offeredServices, messages.agent.serviceSkipOption())
     );
     return;
   }
@@ -480,42 +580,52 @@ export async function processProductSelection(
 }
 
 /**
- * Handles the customer's yes/no reply to a pending "want to add this
- * service to your order?" offer — adds the service to the order (or not),
- * then either way hands the now-final order off for stock confirmation
- * (see requestStockConfirmation), same yes/no detection as
- * processWaitlistOptIn below.
+ * Handles the customer's reply to a pending "here are the services related
+ * to your product — want to add one?" list — adds the picked service to the
+ * order (or not, if they picked the appended "no thanks" row / typed a
+ * decline), then either way hands the now-final order off for stock
+ * confirmation (see requestStockConfirmation). Returns false (leaving the
+ * offer pending) when the reply doesn't resolve to a selection at all — this
+ * is one of the 4 "pending offer" prompts (CLAUDE.md) that deliberately keep
+ * that fall-through behavior instead of re-asking, since an unmatched reply
+ * here is more likely a genuinely new request than a misunderstood answer.
  */
-export async function processServiceOptIn(
+export async function processServiceSelection(
   phone: string,
-  reply: string,
+  customerText: string | null,
+  listReplyId: string | null,
   offer: PendingServiceOffer
 ): Promise<boolean> {
   const messages = await resolveMessages(phone);
-  const r = reply.toLowerCase();
-  const isYes = r.includes('sim') || r.includes('yes') || r === '1' || r.includes('✅') || r.includes('btn_0');
-  const isNo = r.includes('não') || r.includes('nao') || r === '2' || r.includes('❌') || r.includes('btn_1');
+  const selection = resolveServiceSelection(customerText, listReplyId, offer.services.length);
+  if (selection === null) return false;
 
-  if (isYes) {
-    await addServiceToOrder(offer.orderNumber, offer.serviceName, offer.servicePrice);
-    await clearPendingServiceOffer(phone);
-    // Both sides come straight from a NUMERIC DB column via pg, which returns
-    // those as strings, not numbers — "+" on two strings concatenates
-    // ("15650.00" + "5000.00" -> "15650.005000.00") instead of summing, and
-    // formatPrice's Number() coercion then fails to parse that as NaN.
-    const total = Number(offer.product.price) + Number(offer.servicePrice);
-    await sendReply(phone, messages.agent.serviceAdded(offer.serviceName, formatPrice(total)));
-    await requestStockConfirmation(phone, offer.orderNumber);
-    return true;
-  }
-  if (isNo) {
-    await clearPendingServiceOffer(phone);
+  await clearPendingServiceOffer(phone);
+
+  if (selection === 'skip') {
     await sendReply(phone, messages.agent.serviceDeclined());
     await requestStockConfirmation(phone, offer.orderNumber);
     return true;
   }
-  return false; // leave the offer pending; let the message fall through to normal processing
+
+  const chosen = offer.services[selection];
+  await addServiceToOrder(offer.orderNumber, chosen.service_name, chosen.service_base_price);
+  // Both sides come straight from a NUMERIC DB column via pg, which returns
+  // those as strings, not numbers — "+" on two strings concatenates
+  // ("15650.00" + "5000.00" -> "15650.005000.00") instead of summing, and
+  // formatPrice's Number() coercion then fails to parse that as NaN.
+  const total = Number(offer.product.price) + Number(chosen.service_base_price);
+  await sendReply(phone, messages.agent.serviceAdded(chosen.service_name, formatPrice(total)));
+  await requestStockConfirmation(phone, offer.orderNumber);
+  return true;
 }
+
+// noStockFoundButtons: ['✅ Yes, notify me'/'Sim, avisa-me', '❌ No,
+// thanks'/'Não, obrigado'] — "waitlist" here means YES (they want to be
+// notified), the opposite of its meaning in processStockUnavailableChoice
+// above. This is the exact phrasing a customer typing instead of tapping the
+// button reaches for ("add me to the waitlist", "notify me").
+const WAITLIST_YES_EXTRA = /\b(add\s*me|notify\s*me|wait\s*list|waitlist|join\s*(the\s*)?waitlist|avisa[- ]?me|lista\s*de\s*espera)\b/i;
 
 /**
  * Handles the customer's yes/no reply to a pending "want me to notify you
@@ -524,17 +634,23 @@ export async function processServiceOptIn(
 export async function processWaitlistOptIn(
   phone: string,
   reply: string,
-  offer: { productId: number; productName: string }
+  offer: { productId: number; productName: string; query?: string }
 ): Promise<boolean> {
   const messages = await resolveMessages(phone);
-  const r = reply.toLowerCase();
-  const isYes = r.includes('sim') || r.includes('yes') || r === '1' || r.includes('✅') || r.includes('btn_0');
-  const isNo = r.includes('não') || r.includes('nao') || r === '2' || r.includes('❌') || r.includes('btn_1');
+  const isYes = isAffirmativeReply(reply, WAITLIST_YES_EXTRA);
+  const isNo = isNegativeReply(reply);
 
   if (isYes) {
     await addToProductWaitlist(offer.productId, phone);
     await clearPendingWaitlistOffer(phone);
-    await sendReply(phone, messages.agent.waitlistConfirmed(offer.productName));
+    // Echoes the customer's own search text when this offer came from a free-
+    // text search (query set — see searchAndRespond), rather than the
+    // specific resolved product's real name, which can read as a mismatch
+    // when their query was vague. Falls back to productName for the other
+    // two callers (declined-stock alternatives, restock re-offer), which
+    // never set query since they already know the exact product from a list
+    // tap, not free text.
+    await sendReply(phone, messages.agent.waitlistConfirmed(offer.query ?? offer.productName));
     return true;
   }
   if (isNo) {
@@ -578,6 +694,11 @@ export async function notifyWaitlistedCustomers(restockNotifications: RestockNot
   }
 }
 
+// restockNotificationButtons: ['✅ Order now'/'Pedir agora', '❌ Not right
+// now'/'Agora não'].
+const RESTOCK_YES_EXTRA = /\b(order\s*now|order\s*it|pedir\s*agora|quero\s*encomendar|comprar)\b/i;
+const RESTOCK_NO_EXTRA = /\b(not\s*now|maybe\s*later|agora\s*n[ãa]o)\b/i;
+
 /**
  * Handles the customer's yes/no reply to a "your waitlisted product is back
  * in stock — order now?" offer. Yes re-fetches the product fresh (it may have
@@ -590,9 +711,8 @@ export async function processRestockOrderChoice(
   offer: { productId: number; productName: string }
 ): Promise<boolean> {
   const messages = await resolveMessages(phone);
-  const r = reply.toLowerCase();
-  const isYes = r.includes('sim') || r.includes('yes') || r === '1' || r.includes('✅') || r.includes('btn_0');
-  const isNo = r.includes('não') || r.includes('nao') || r === '2' || r.includes('❌') || r.includes('btn_1');
+  const isYes = isAffirmativeReply(reply, RESTOCK_YES_EXTRA);
+  const isNo = isNegativeReply(reply, RESTOCK_NO_EXTRA);
 
   if (isYes) {
     await clearPendingRestockOrderOffer(phone);
@@ -621,6 +741,11 @@ export interface InventoryImportResult {
   inserted: number;
   updated: number;
   restockNotifications: RestockNotification[];
+  // Rows the file-upload importer (importInventoryFromFile) skipped rather
+  // than rejecting the whole file for — see validateRow. Always empty for the
+  // JSON-body batch endpoint (importInventoryBatch), whose items are already
+  // validated by Joi before this function ever sees them.
+  skipped?: { row: number; reasons: string[] }[];
 }
 
 /**
@@ -640,7 +765,7 @@ export async function importInventoryBatch(
 
 const HEADER_ALIASES: Record<string, string[]> = {
   reference: ['sku', 'reference', 'referencia', 'ref'],
-  name: ['product', 'produto', 'name', 'nome', 'descricao', 'description', 'descrição'],
+  name: ['product', 'produto', 'name', 'nome'],
   price: ['price', 'preco', 'preço'],
   quantity: ['quantity', 'quantidade', 'qty', 'stock'],
   supplierName: ['supplier name', 'supplier', 'supplier_name', 'fornecedor', 'nome_fornecedor'],
@@ -649,23 +774,43 @@ const HEADER_ALIASES: Record<string, string[]> = {
   // and there's no separate address column (a deliberate choice, not a gap).
   supplierAddress: ['supplier address', 'supplier_address', 'endereco_fornecedor', 'supplier_province', 'provincia_fornecedor'],
   supplierPhone: ['supplier phone', 'supplier_phone', 'telefone_fornecedor'],
-  service: ['service', 'servico', 'serviço'],
-  serviceName: ['service name', 'service_name', 'nome_servico', 'nome_serviço'],
-  servicePrice: ['service price', 'service_price', 'preco_servico', 'preço_serviço'],
+  // Catalog fields from the products CSV (produtos_rede_pecas_via_pecas_v3_EN.csv)
+  category: ['category', 'categoria'],
+  subcategory: ['subcategory', 'subcategoria'],
+  vehicleMake: ['vehicle_make', 'vehicle make', 'marca_veiculo'],
+  vehicleModel: ['vehicle_model', 'vehicle model', 'modelo_veiculo'],
+  yearStart: ['year_start', 'year start', 'ano_inicio'],
+  yearEnd: ['year_end', 'year end', 'ano_fim'],
+  engine: ['engine', 'motor'],
+  deliveryTime: ['delivery_time', 'delivery time', 'prazo_entrega'],
+  brand: ['part_brand', 'brand', 'marca'],
+  oemReference: ['oem_reference', 'oem reference', 'referencia_oem'],
+  engineNumber: ['engine_number', 'engine number', 'numero_motor'],
+  viscosity: ['viscosity', 'viscosidade'],
+  engineType: ['engine_type', 'engine type', 'tipo_motor'],
+  volumeLiters: ['volume_liters', 'volume liters', 'volume_litros'],
+  specification: ['specification', 'especificacao'],
+  intervalKm: ['interval_km', 'interval km', 'intervalo_km'],
+  imageUrl: ['image_url', 'image url', 'url_imagem'],
+  synonyms: ['synonyms', 'sinonimos'],
+  description: ['description', 'descricao', 'descrição'],
 };
-
-// Values a CSV/XLSX author would plausibly type in the "service: yes/no" column.
-const YES_VALUES = new Set(['yes', 'sim', 'true', '1']);
 
 // Column presence is checked against the header row before any row is read —
 // every one of these must have at least one alias in the file, or the whole
 // upload is rejected up front (see getMissingRequiredColumns).
-const REQUIRED_COLUMNS: { field: 'reference' | 'name' | 'price' | 'quantity' | 'supplierName'; label: string }[] = [
+const REQUIRED_COLUMNS: { field: keyof typeof HEADER_ALIASES; label: string }[] = [
   { field: 'reference', label: 'SKU' },
   { field: 'name', label: 'Product' },
   { field: 'price', label: 'Price' },
   { field: 'quantity', label: 'Quantity' },
   { field: 'supplierName', label: 'Supplier Name' },
+  { field: 'category', label: 'Category' },
+  { field: 'subcategory', label: 'Subcategory' },
+  { field: 'vehicleMake', label: 'Vehicle Make' },
+  { field: 'deliveryTime', label: 'Delivery Time' },
+  { field: 'synonyms', label: 'Synonyms' },
+  { field: 'description', label: 'Description' },
 ];
 
 /**
@@ -684,13 +829,14 @@ function getMissingRequiredColumns(headerRow: unknown[]): string[] {
 
 /**
  * Validates one spreadsheet row and either returns the item ready to import
- * or the list of problems found. Reference, Name, Price, Quantity and
- * Supplier are always required; Service Name/Price are only required when
- * Service is "yes" — a row that sets Service = yes but leaves the price out
- * is an error, not a silently-dropped service (see importInventoryFromFile:
- * any row error rejects the whole file, nothing is written until it's clean).
+ * or the list of reasons this specific row can't be imported. Unlike the
+ * file-level column check (getMissingRequiredColumns), a row-level problem no
+ * longer blocks the whole file — importInventoryFromFile imports every valid
+ * row and reports the rest as skipped, since the real catalog data
+ * legitimately has some incomplete rows (missing price/description on a
+ * handful of the ~700 rows) that shouldn't hold the other ~670 hostage.
  */
-function validateRow(row: Record<string, any>, rowNumber: number): { item: ImportItem } | { errors: string[] } {
+function validateRow(row: Record<string, any>, rowNumber: number): { item: ImportItem } | { reasons: string[] } {
   const lowerRow = Object.fromEntries(Object.entries(row).map(([k, v]) => [k.trim().toLowerCase(), v]));
   const pick = (field: string) => {
     for (const alias of HEADER_ALIASES[field]) {
@@ -698,42 +844,70 @@ function validateRow(row: Record<string, any>, rowNumber: number): { item: Impor
     }
     return undefined;
   };
+  const pickStr = (field: string) => {
+    const v = pick(field);
+    return v !== undefined ? String(v) : undefined;
+  };
+  const pickNum = (field: string) => {
+    const v = pick(field);
+    if (v === undefined) return undefined;
+    const n = Number(v);
+    return Number.isNaN(n) ? undefined : n;
+  };
+  // year_start/year_end/interval_km are INT columns — the real catalog has a
+  // handful of rows with shifted/malformed data where these fields hold
+  // stray non-integer text ("2.5", "Various", "1KD/2KD"). Since these fields
+  // are optional, unparseable-as-integer values are dropped to null instead
+  // of either crashing on the DB insert or invalidating an otherwise-good row.
+  const pickInt = (field: string) => {
+    const n = pickNum(field);
+    return n !== undefined && Number.isInteger(n) ? n : undefined;
+  };
 
-  const errors: string[] = [];
+  const reasons: string[] = [];
 
   const reference = pick('reference');
-  if (!reference) errors.push(`Row ${rowNumber}: Reference is required.`);
+  if (!reference) reasons.push('Reference is required.');
 
   const name = pick('name');
-  if (!name) errors.push(`Row ${rowNumber}: Name is required.`);
+  if (!name) reasons.push('Name is required.');
 
   const priceRaw = pick('price');
   const price = Number(priceRaw);
   if (priceRaw === undefined || Number.isNaN(price) || price < 0) {
-    errors.push(`Row ${rowNumber}: Price is required and must be a non-negative number.`);
+    reasons.push('Price is required and must be a non-negative number.');
   }
 
   const quantityRaw = pick('quantity');
   const quantity = Number(quantityRaw);
   if (quantityRaw === undefined || !Number.isInteger(quantity) || quantity < 0) {
-    errors.push(`Row ${rowNumber}: Quantity is required and must be a non-negative whole number.`);
+    reasons.push('Quantity is required and must be a non-negative whole number.');
   }
 
   const supplierName = pick('supplierName');
-  if (!supplierName) errors.push(`Row ${rowNumber}: Supplier is required.`);
+  if (!supplierName) reasons.push('Supplier is required.');
 
-  const wantsService = YES_VALUES.has(String(pick('service') ?? '').trim().toLowerCase());
-  const serviceName = pick('serviceName');
-  const servicePriceRaw = pick('servicePrice');
-  const servicePrice = Number(servicePriceRaw);
-  if (wantsService && !serviceName) {
-    errors.push(`Row ${rowNumber}: Service Name is required when Service is "yes".`);
-  }
-  if (wantsService && (servicePriceRaw === undefined || Number.isNaN(servicePrice) || servicePrice < 0)) {
-    errors.push(`Row ${rowNumber}: Service Price is required and must be a non-negative number when Service is "yes".`);
-  }
+  const category = pick('category');
+  if (!category) reasons.push('Category is required.');
 
-  if (errors.length) return { errors };
+  const subcategory = pick('subcategory');
+  const serviceCategory = subcategory ? SUBCATEGORY_TO_SERVICE_CATEGORY[String(subcategory)] : undefined;
+  if (!subcategory) reasons.push('Subcategory is required.');
+  else if (!serviceCategory) reasons.push(`Unknown subcategory "${subcategory}" — no service_category mapping exists for it.`);
+
+  const vehicleMake = pick('vehicleMake');
+  if (!vehicleMake) reasons.push('Vehicle Make is required.');
+
+  const deliveryTime = pick('deliveryTime');
+  if (!deliveryTime) reasons.push('Delivery Time is required.');
+
+  const synonyms = pick('synonyms');
+  if (!synonyms) reasons.push('Synonyms is required.');
+
+  const description = pick('description');
+  if (!description) reasons.push('Description is required.');
+
+  if (reasons.length) return { reasons: reasons.map((r) => `Row ${rowNumber}: ${r}`) };
 
   return {
     item: {
@@ -742,31 +916,44 @@ function validateRow(row: Record<string, any>, rowNumber: number): { item: Impor
       price,
       quantity,
       supplierName: String(supplierName),
-      supplierAddress: pick('supplierAddress') ? String(pick('supplierAddress')) : undefined,
-      supplierPhone: pick('supplierPhone') ? String(pick('supplierPhone')) : undefined,
-      serviceOffered: wantsService,
-      serviceName: wantsService ? String(serviceName) : undefined,
-      servicePrice: wantsService ? servicePrice : undefined,
+      supplierAddress: pickStr('supplierAddress'),
+      supplierPhone: pickStr('supplierPhone'),
+      category: String(category),
+      subcategory: String(subcategory),
+      serviceCategory: serviceCategory!,
+      vehicleMake: String(vehicleMake),
+      vehicleModel: pickStr('vehicleModel'),
+      yearStart: pickInt('yearStart'),
+      yearEnd: pickInt('yearEnd'),
+      engine: pickStr('engine'),
+      deliveryTime: String(deliveryTime),
+      brand: pickStr('brand'),
+      oemReference: pickStr('oemReference'),
+      engineNumber: pickStr('engineNumber'),
+      viscosity: pickStr('viscosity'),
+      engineType: pickStr('engineType'),
+      volumeLiters: pickNum('volumeLiters'),
+      specification: pickStr('specification'),
+      intervalKm: pickInt('intervalKm'),
+      imageUrl: pickStr('imageUrl'),
+      synonyms: String(synonyms),
+      description: String(description),
     },
   };
 }
 
-// Caps how many row errors get spelled out in the 400 response — a
-// 500-row file with a header typo would otherwise repeat the same five
-// errors 500 times over.
-const MAX_ROW_ERRORS_SHOWN = 20;
-
 /**
- * Parses a single uploaded CSV/XLSX file and imports every row, each row
- * naming its own supplier (created on the fly by name if it doesn't exist
- * yet). Columns are SKU, Product, Price, Quantity, Supplier Name, Supplier
- * Address, Supplier Phone, Service, Service Name, Service Price — headers
- * map via HEADER_ALIASES so PT/EN variants and the older snake_case column
- * names both still work. Validates in two passes before writing anything:
- * first the header row against REQUIRED_COLUMNS (missing columns reject the
- * file immediately, naming them), then every data row (bad/missing price,
- * quantity, supplier, or an incomplete service) — any row problem rejects
- * the whole file with every problem listed, so nothing partially imports.
+ * Parses a single uploaded CSV/XLSX file and imports every valid row, each
+ * row naming its own supplier (created on the fly by name if it doesn't
+ * exist yet). Headers map via HEADER_ALIASES so PT/EN variants and older
+ * column names both still work. Two validation passes: first the header row
+ * against REQUIRED_COLUMNS — a column missing entirely is a structural
+ * problem and rejects the file immediately, naming what's missing. Then each
+ * data row is validated independently (validateRow) — a row with a real
+ * problem (missing price/description, unknown subcategory, etc.) is skipped
+ * rather than blocking the rest of the file, and reported back in
+ * `skipped` so the admin can see exactly what didn't import and why, without
+ * every other valid row waiting on it being hand-fixed first.
  */
 export async function importInventoryFromFile(fileBuffer: Buffer): Promise<InventoryImportResult> {
   const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
@@ -784,21 +971,17 @@ export async function importInventoryFromFile(fileBuffer: Buffer): Promise<Inven
   }
 
   const items: ImportItem[] = [];
-  const rowErrors: string[] = [];
+  const skipped: { row: number; reasons: string[] }[] = [];
   rawRows.forEach((row, i) => {
     // +2: the header is row 1 in the spreadsheet, so the first data row is row 2.
-    const result = validateRow(row, i + 2);
-    if ('errors' in result) rowErrors.push(...result.errors);
+    const rowNumber = i + 2;
+    const result = validateRow(row, rowNumber);
+    if ('reasons' in result) skipped.push({ row: rowNumber, reasons: result.reasons });
     else items.push(result.item);
   });
 
-  if (rowErrors.length) {
-    const shown = rowErrors.slice(0, MAX_ROW_ERRORS_SHOWN).join(' ');
-    const suffix = rowErrors.length > MAX_ROW_ERRORS_SHOWN ? ` (+${rowErrors.length - MAX_ROW_ERRORS_SHOWN} more)` : '';
-    throw new ApiError(400, `${shown}${suffix}`);
-  }
-
-  return importInventoryBatch(items, null);
+  const result = await importInventoryBatch(items, null);
+  return { ...result, skipped };
 }
 
 // Column order matches the primary alias for each HEADER_ALIASES field (and
@@ -813,9 +996,25 @@ const TEMPLATE_HEADER_ROW = [
   'Supplier Name',
   'Supplier Address',
   'Supplier Phone',
-  'Service',
-  'Service Name',
-  'Service Price',
+  'Category',
+  'Subcategory',
+  'Vehicle Make',
+  'Vehicle Model',
+  'Year Start',
+  'Year End',
+  'Engine',
+  'Delivery Time',
+  'Brand',
+  'OEM Reference',
+  'Engine Number',
+  'Viscosity',
+  'Engine Type',
+  'Volume Liters',
+  'Specification',
+  'Interval Km',
+  'Image Url',
+  'Synonyms',
+  'Description',
 ];
 
 /**

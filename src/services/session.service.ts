@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { config } from '../config/config.js';
 import { logger } from '../config/logger.js';
 import { Product } from '../models/product.model.js';
+import { Service } from '../models/service.model.js';
 
 let redisClient: any = null;
 let useMemoryFallback = false;
@@ -329,13 +330,21 @@ export async function clearVehicleIdChoiceShown(phone: string): Promise<void> {
  * Tracks a pending "want me to notify you when this product is back in
  * stock?" offer awaiting the customer's yes/no reply. Uses a dedicated map
  * (not the options `memoryCache`) since a single offer object is a
- * different shape than the array-of-options it stores.
+ * different shape than the array-of-options it stores. `query` — the
+ * customer's own raw search text, only set when this offer came from a free-
+ * text search (searchAndRespond) — lets the confirmation echo back what they
+ * actually typed instead of the specific resolved product's real name, which
+ * can read as a mismatch when their query was vague (e.g. "brake pds"
+ * matching "TRW Brake Pads"). Left unset for the other two callers
+ * (declined-stock alternatives, restock re-offer), which already know the
+ * exact product from a list tap rather than free text, so productName is the
+ * right thing to echo there.
  */
-const waitlistOfferCache = new Map<string, { productId: number; productName: string }>();
+const waitlistOfferCache = new Map<string, { productId: number; productName: string; query?: string }>();
 
 export async function savePendingWaitlistOffer(
   phone: string,
-  offer: { productId: number; productName: string }
+  offer: { productId: number; productName: string; query?: string }
 ): Promise<void> {
   const key = `waitlist:${phone}`;
   waitlistOfferCache.set(key, offer);
@@ -351,7 +360,7 @@ export async function savePendingWaitlistOffer(
   }
 }
 
-export async function getPendingWaitlistOffer(phone: string): Promise<{ productId: number; productName: string } | null> {
+export async function getPendingWaitlistOffer(phone: string): Promise<{ productId: number; productName: string; query?: string } | null> {
   const key = `waitlist:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
     return waitlistOfferCache.get(key) || null;
@@ -439,18 +448,20 @@ export async function clearPendingRestockOrderOffer(phone: string): Promise<void
 }
 
 /**
- * Tracks a pending "want to add this service to your order?" offer awaiting
- * the customer's yes/no reply — same shape/lifecycle as
+ * Tracks a pending "here are the services related to your product — want to
+ * add one?" list awaiting the customer's selection — same shape/lifecycle as
  * savePendingWaitlistOffer above, just a distinct offer payload/key since a
  * customer could in principle have both pending at slightly different points.
  * Carries the full selected product (not just its name) so the proforma can
- * be generated once the offer resolves, without a re-fetch.
+ * be generated once the offer resolves, without a re-fetch. `services` is
+ * the set of services matched by service_category (see
+ * getMatchingServicesForProduct in product.model.ts) that were actually
+ * offered — not the full match set, if that was ever capped.
  */
 export interface PendingServiceOffer {
   orderNumber: string;
   product: Product;
-  serviceName: string;
-  servicePrice: number;
+  services: Service[];
 }
 
 const serviceOfferCache = new Map<string, PendingServiceOffer>();

@@ -76,6 +76,7 @@ Pipeline order:
 12. Part-search gate: free text is only ever treated as a product search once the customer has actually been asked "what part do you need" this session (`sessionService.wasPartPromptSent`) — otherwise (or on a bare greeting, PT/EN, matched via `GREETING_PATTERN` — this always wins even if already invited) the bot (re-)sends that deterministic prompt instead
 13. Reply to a just-shown product search-results list (row tap or typed digit, `sessionService.getPendingOptions` + `productService.processProductSelection`) — not selection-shaped (e.g. a new part name typed instead) falls through to a fresh search below rather than a dead end
 14. Explicit request to talk to a human — deterministic keyword match (`HUMAN_HANDOFF_PATTERN` in `whatsapp.controller.ts`), no AI judgment call
+14.5. A bare filler acknowledgment ("Ok", "thanks", "obrigado", a thumbs-up — `ACKNOWLEDGMENT_PATTERN`, anchored so it only matches when the *whole* message is filler) is silently dropped (no reply) rather than falling through to 15 — added 2026-07-22 because once `wasPartPromptSent` is true, a stray "Ok" sent after finishing an earlier search/waitlist flow would otherwise be searched as if it were a part name, re-triggering `checkingStock()`/`noStockFound()` for literally "Ok"
 15. Fallback: deterministic product search (`productService.searchAndRespond`) — full-text match against the inventory DB, no AI involved
 
 New message-handling behavior must slot into this chain deliberately — position determines what can intercept what.

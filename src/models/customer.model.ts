@@ -90,9 +90,10 @@ export interface CustomerVehicleSummary {
 
 export interface CustomerWithStats extends Customer {
   orders_count: number;
-  // Sum of unit_price for this customer's approved orders only — matches the
-  // "Revenue (Approved)" convention used elsewhere (StatsGrid, order
-  // analytics): pending/rejected/cancelled orders never resulted in an
+  // Sum of unit_price + service_price for this customer's approved orders
+  // only — matches the order-total convention used everywhere else a price
+  // is shown (OrderInfo.price, getOrderAnalytics, getOrderStats.
+  // approvedRevenue): pending/rejected/cancelled orders never resulted in an
   // actual payment, so they don't count as money spent.
   total_spent: string;
   // Only confirmed vehicles (vehicles.status NULL/'complete') — an
@@ -110,7 +111,7 @@ const CUSTOMER_STATS_JOIN = `
   LEFT JOIN LATERAL (
     SELECT
       COUNT(*)::int AS orders_count,
-      COALESCE(SUM(unit_price) FILTER (WHERE status = 'approved'), 0) AS total_spent
+      COALESCE(SUM(unit_price + COALESCE(service_price, 0)) FILTER (WHERE status = 'approved'), 0) AS total_spent
     FROM orders o
     WHERE o.customer_phone = c.phone
   ) order_stats ON true
@@ -128,8 +129,9 @@ const CUSTOMER_STATS_COLUMNS = `c.*, order_stats.orders_count, order_stats.total
 /**
  * Lists active customers for the admin panel, newest-contact-first, with
  * optional pagination and a free-text search over name/phone/nif. Excludes
- * soft-deleted rows (see deactivateCustomer) the same way getAllActiveProducts
- * excludes deactivated products.
+ * soft-deleted rows (see deactivateCustomer) — unlike getAllProducts/
+ * getAllServices, which deliberately keep listing inactive rows so they stay
+ * reachable to reactivate; customers have no such toggle-back UI today.
  */
 export async function getAllCustomers({ page, limit, q }: CustomerListParams): Promise<{ customers: CustomerWithStats[]; total: number }> {
   const offset = (page - 1) * limit;
