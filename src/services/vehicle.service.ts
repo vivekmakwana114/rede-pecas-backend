@@ -37,22 +37,12 @@ import {
   saveActivePromptId,
 } from './session.service.js';
 
-// Pure pass-through so the controller never imports vehicle.model.js directly
 export { getActiveManualCollection, startManualCollection };
 
 /**
- * Sends the deterministic "what part do you need" prompt for a customer whose
- * vehicle(s) are already confirmed — reused for returning customers so a bare
- * greeting doesn't need an AI call. With one vehicle on file, asks directly; with
- * several, asks which one first (see resolvePendingVehicleChoice) before inviting
- * a part search — ai.service.ts picks up the resolved choice via getChosenVehicle.
- *
- * `greeting` is set when this fires in response to a bare "Hi"/"Hey" mid-conversation
- * (whatsapp.controller.ts stage 12) rather than right after confirming a vehicle —
- * the doc gives that case its own warmer, name-personalized wording (confirmedAskPart's
- * optional greetingName param) instead of its default "Perfect! Now tell me..." tone,
- * which reads oddly as a response to a stray greeting since nothing was actually just
- * confirmed.
+ * Sends the "what part do you need" prompt for a customer with a
+ * confirmed vehicle on file — directly if they have one vehicle, or first
+ * asking which vehicle it's for when they have several.
  */
 export async function sendAskPartPrompt(phone: string, greeting?: { name: string }): Promise<boolean> {
   const messages = await resolveMessages(phone);
@@ -74,10 +64,8 @@ export async function sendAskPartPrompt(phone: string, greeting?: { name: string
 }
 
 /**
- * Resolves a reply to the "which vehicle is this for?" picker shown by
- * sendAskPartPrompt when the customer has 2+ vehicles. Records the choice for
- * ai.service.ts to use as this invitation's vehicle context, then sends the
- * normal "what part do you need" prompt for that specific vehicle.
+ * Resolves a customer's reply to the "which vehicle is this for?" prompt,
+ * remembering the chosen vehicle and moving on to the part-search prompt.
  */
 export async function resolvePendingVehicleChoice(phone: string, reply: string): Promise<boolean> {
   const messages = await resolveMessages(phone);
@@ -103,9 +91,7 @@ export async function resolvePendingVehicleChoice(phone: string, reply: string):
 }
 
 /**
- * Whether this customer has at least one confirmed vehicle on file (registration
- * and vehicle ID are independent — this is the sole gate for whether the
- * vehicle-ID flow is needed).
+ * Reports whether a customer has at least one confirmed vehicle on file.
  */
 export async function hasVehicleOnFile(phone: string): Promise<boolean> {
   return (await getCustomerVehicles(phone)).length > 0;
@@ -114,9 +100,8 @@ export async function hasVehicleOnFile(phone: string): Promise<boolean> {
 const ADD_VEHICLE_TRIGGERS = ['outro carro', 'add vehicle', 'novo carro', 'adicionar carro'];
 
 /**
- * Whether this reply is the customer asking to identify an additional vehicle
- * (the "➕ Outro carro"/"➕ Add vehicle" button always offered alongside the
- * ask-part prompt, or the same phrase typed free-text).
+ * Checks whether a free-text message is a customer asking to add another
+ * vehicle to their account.
  */
 export function isAddVehicleRequest(text: string): boolean {
   const r = text.trim().toLowerCase();
@@ -124,11 +109,8 @@ export function isAddVehicleRequest(text: string): boolean {
 }
 
 /**
- * Starts identifying an additional vehicle — the same VIN/photo/manual choice
- * shown during onboarding, but for a customer who already has one or more
- * vehicles on file. Nothing about the identification flow itself needs to
- * change: saveVehicleSession always inserts a new row unless given a specific
- * in-progress row's id, so the existing vehicle(s) are untouched either way.
+ * Re-shows the vehicle-ID entry option buttons (VIN/photo/manual) for a
+ * customer adding another vehicle to their account.
  */
 export async function startAddVehicleFlow(phone: string): Promise<void> {
   const messages = await resolveMessages(phone);
@@ -141,11 +123,6 @@ const NHTSA_URL = config.nhtsa.apiUrl;
 export interface VINInfo {
   vin: string;
   make: string;
-  // Nullable — NHTSA sometimes confidently resolves make/year for a VIN but
-  // leaves model unresolved (a check-digit-ambiguous VIN with an incomplete
-  // manufacturer submission — see scripts/vin-decode-compare.js). Callers
-  // that get a null model should use whatever make/year data IS here rather
-  // than discarding the whole decode.
   model: string | null;
   year: string;
   vehicle_type?: string | null;
@@ -155,7 +132,8 @@ export interface VINInfo {
 }
 
 /**
- * Checks if a text string matches the 17-character alphanumeric VIN format (excluding letters I, O, Q).
+ * Checks whether a string is a syntactically valid 17-character VIN
+ * (excluding the letters I, O, and Q).
  */
 export function isVIN(text: string): boolean {
   const vin = text.trim().toUpperCase();
@@ -163,20 +141,18 @@ export function isVIN(text: string): boolean {
 }
 
 /**
- * Whether this text is shaped like a VIN attempt that just has the wrong
- * length (a dropped/extra character from a typo or copy-paste) — a single
- * alphanumeric token in VIN's ballpark, but not itself isVIN()-valid (the
- * caller already checked that first). Used by the whatsapp.controller.ts
- * vehicle-ID catch-all to give specific "that's not 17 characters" feedback
- * instead of the generic "didn't catch that, pick a button" nudge, since a
- * near-miss VIN is a meaningfully different mistake than free-text chat.
+ * Loosely checks whether a string looks like an attempted VIN (10-20
+ * alphanumeric characters), used to decide whether a failed strict VIN match
+ * still deserves VIN-specific handling.
  */
 export function looksLikeVinAttempt(text: string): boolean {
   return /^[A-Za-z0-9]{10,20}$/.test(text.trim());
 }
 
 /**
- * Calls the public NHTSA API to decode the 17-character VIN.
+ * Resolves a VIN to vehicle details, serving a cached NHTSA lookup when
+ * available or querying the NHTSA decode API and caching a successful
+ * result, returning null if the VIN can't be decoded.
  */
 export async function decodeVIN(vin: string): Promise<VINInfo | null> {
   const vinClean = vin.toUpperCase();
@@ -199,7 +175,7 @@ export async function decodeVIN(vin: string): Promise<VINInfo | null> {
   try {
     const res = await fetch(
       `${NHTSA_URL}/${vinClean}?format=json`,
-      { signal: AbortSignal.timeout(8000) } // Timeout after 8 seconds
+      { signal: AbortSignal.timeout(8000) }
     );
 
     const data = await res.json() as any;
@@ -217,15 +193,6 @@ export async function decodeVIN(vin: string): Promise<VINInfo | null> {
     const country = extract("Plant Country");
     const errors = extract("Error Text");
 
-    // Make and year are the load-bearing fields — a VIN NHTSA can't place at
-    // all (no make/year, or an explicit "No candidates" error) is a genuine
-    // decode failure. Model is deliberately NOT required here: NHTSA can
-    // confidently resolve make/year for a VIN it still flags as ambiguous
-    // (Error Code — unresolved character positions vs. the manufacturer's
-    // submission) while leaving model null. Treating that as a total failure
-    // discarded data NHTSA was actually confident about — see processVIN,
-    // which shows the confirm screen with make+year and a "model not
-    // identified" note instead of starting the manual wizard over.
     if (!make || !year || errors?.includes("No candidates")) {
       logger.warn(`[NHTSA] No match for VIN ${vin}${errors ? `: ${errors}` : ''}`);
       return null;
@@ -244,11 +211,6 @@ export async function decodeVIN(vin: string): Promise<VINInfo | null> {
       manufacture_country: country || null,
     };
 
-    // Only cache confident, complete decodes — nhtsa_vehicles.model is
-    // NOT NULL, and more importantly a partial/ambiguous decode is exactly
-    // the kind of result that's worth re-fetching fresh next time rather than
-    // freezing forever (NHTSA's own answer for these can change as
-    // manufacturers resubmit data).
     if (result.model) {
       await saveNhtsaVehicle(result.vin, result as { model: string } & VINInfo);
     }
@@ -262,8 +224,8 @@ export async function decodeVIN(vin: string): Promise<VINInfo | null> {
 }
 
 /**
- * Translates primary fuel type responses to Portuguese equivalents
- * (fuel type is shown to the customer, so the value stays Portuguese).
+ * Translates an NHTSA fuel-type string into its Portuguese equivalent,
+ * leaving unrecognized values unchanged.
  */
 function translateFuelType(fuelType: string | null): string | null {
   if (!fuelType) return null;
@@ -279,11 +241,8 @@ function translateFuelType(fuelType: string | null): string | null {
 }
 
 /**
- * Handles the customer's tap on one of the 3 vehicle-ID option buttons
- * (VIN / document photo / manual entry) sent right after registration completes.
- * VIN and photo just prompt what to send next — the following message/image is
- * picked up by the existing VIN-detection and image-routing stages. Manual entry
- * starts the step machine directly since there's nothing further to wait for.
+ * Handles a customer's tap on the vehicle-ID entry option buttons,
+ * routing them into the VIN prompt, photo prompt, or manual-collection wizard.
  */
 export async function processVehicleIdOptionChoice(phone: string, reply: string): Promise<boolean> {
   const messages = await resolveMessages(phone);
@@ -300,11 +259,6 @@ export async function processVehicleIdOptionChoice(phone: string, reply: string)
   }
 
   if (r.includes('manual')) {
-    // Handing off to manual collection now — its own DB-backed status drives
-    // stage 7 from here, this flag would otherwise linger for its full TTL and
-    // (now that unmatched replies re-ask instead of falling through) wrongly
-    // intercept the customer's actual make/model/year answers as if they were
-    // still choosing between VIN/photo/manual.
     await clearVehicleIdChoiceShown(phone);
     await startManualCollection(phone, 'awaiting_make');
     await sendReply(phone, messages.manual.askMakePrompt());
@@ -315,12 +269,9 @@ export async function processVehicleIdOptionChoice(phone: string, reply: string)
 }
 
 /**
- * Handles the customer's reply to the "this vehicle is already in your
- * profile — search for a part, or add a different vehicle?" choice shown by
- * the VIN dedup check in processVIN. Only fires when that choice was just
- * shown (wasVinDuplicateChoiceShown gate in the pipeline) so it doesn't
- * misfire on unrelated free text — which also makes it safe to re-ask on a
- * mismatch instead of falling through to the stage-10 catch-all.
+ * Handles a customer's reply to the "this VIN is already registered"
+ * prompt, routing them to a part search or into adding a different vehicle,
+ * or re-asking if the reply doesn't match either option.
  */
 export async function processVinDuplicateChoice(phone: string, reply: string): Promise<boolean> {
   const messages = await resolveMessages(phone);
@@ -328,9 +279,6 @@ export async function processVinDuplicateChoice(phone: string, reply: string): P
 
   if (r.includes('procurar') || r.includes('search') || r.includes('peça') || r.includes('part') || r === '1' || r.includes('btn_0')) {
     await clearVinDuplicateChoice(phone);
-    // Vehicle interaction concluded without touching manual collection — clear so a
-    // later part-search message isn't misrouted by the stage-10 fallback while this
-    // flag (set by the earlier VIN-choice tap) hasn't expired yet.
     await clearVehicleIdChoiceShown(phone);
     await sendAskPartPrompt(phone);
     return true;
@@ -342,18 +290,16 @@ export async function processVinDuplicateChoice(phone: string, reply: string): P
     return true;
   }
 
-  // Sent verbatim, not through sendReplyButtons — notUnderstood() is generic by
-  // design so it can pair with any button set (see whatsapp.controller.ts's
-  // comment on this same pattern), which gives a humanize rewrite nothing to
-  // anchor to and lets it invent an instruction that doesn't match these buttons.
   const alreadyRegisteredRes = await sendWhatsAppButtons(phone, messages.common.notUnderstood(), messages.vin.alreadyRegisteredButtons);
   await saveActivePromptId(phone, alreadyRegisteredRes?.messages?.[0]?.id);
-  await markVinDuplicateChoiceShown(phone); // refresh the TTL so the choice stays open
+  await markVinDuplicateChoiceShown(phone);
   return true;
 }
 
 /**
- * Handles manual vehicle information inputs.
+ * Advances the manual vehicle-entry step machine one step (make → model →
+ * year → engine number) based on the collection's current status, saving the
+ * vehicle and completing onboarding once all steps are done.
  */
 export async function processManualCollectionStep(
   phone: string,
@@ -399,8 +345,6 @@ export async function processManualCollectionStep(
       ? null
       : r.toUpperCase();
 
-    // Completes this specific in-progress row (sets status='complete' on it) —
-    // does not touch any other vehicles this customer already has on file.
     await saveVehicleSession(phone, {
       make: collection.make,
       model: collection.model,
@@ -413,8 +357,6 @@ export async function processManualCollectionStep(
       engineNumber ? messages.manual.engineLabel(engineNumber) : null,
     ].filter(Boolean).join('\n');
 
-    // Identification concluded via the manual wizard — same reasoning as the VIN
-    // confirm branches above.
     await clearVehicleIdChoiceShown(phone);
 
     const completedOnboarding = await completeOnboardingIfNeeded(phone, customer, summary);
@@ -429,14 +371,15 @@ export async function processManualCollectionStep(
 }
 
 /**
- * Handles incoming VIN number parsing.
+ * Handles a detected 17-character VIN: short-circuits to the
+ * already-registered flow if it matches an existing vehicle, otherwise decodes
+ * it via NHTSA and either asks the customer to confirm the result or offers
+ * the decode-failed fallback.
  */
 export async function processVIN(phone: string, vin: string): Promise<void> {
   const messages = await resolveMessages(phone);
   const vinClean = vin.trim().toUpperCase();
 
-  // Dedup check first — a VIN already confirmed on this customer's profile skips
-  // the NHTSA round-trip entirely and offers to just search for a part instead.
   const existing = (await getCustomerVehicles(phone)).find((v) => v.vin === vinClean);
   if (existing) {
     const description = [
@@ -456,20 +399,11 @@ export async function processVIN(phone: string, vin: string): Promise<void> {
   const vehicle = await decodeVIN(vinClean);
 
   if (!vehicle) {
-    // NHTSA lookup failed — ask before doing anything else instead of silently
-    // starting manual collection. "Try again" restarts the full VIN/photo/manual
-    // choice (the customer might rather send a photo than retype a VIN); "Manual"
-    // proceeds straight to the wizard, carrying the attempted VIN through so it's
-    // still recorded on the row (attempted_vin), same as the old auto-fallback did.
     await sendReplyButtons(phone, messages.vin.decodeFailed(), messages.vin.decodeFailedButtons);
     await markVinDecodeFailedShown(phone, vinClean);
     return;
   }
 
-  // Save parsed chassis data in database cache and session. vehicle.model can
-  // be null here (NHTSA confidently resolved make/year but not model for an
-  // ambiguous VIN — see decodeVIN's comment above); saved and shown as-is
-  // rather than discarding the make/year NHTSA did confirm.
   await saveVehicleSession(phone, {
     vin: vinClean,
     make: vehicle.make,
@@ -494,14 +428,9 @@ export async function processVIN(phone: string, vin: string): Promise<void> {
 }
 
 /**
- * Handles the customer's reply to the "Try again" / "Manual entry" choice shown
- * after a VIN failed to decode (processVIN, NHTSA lookup came back empty). "Try
- * again" restarts the full VIN/photo/manual choice rather than narrowly
- * re-prompting for another VIN — the customer might rather switch to a photo.
- * "Manual" proceeds straight to the wizard, carrying the attempted VIN through.
- * Only fires when that choice was just shown (wasVinDecodeFailedShown gate in
- * the pipeline), so it doesn't misfire on unrelated free text — which also
- * makes it safe to re-ask on a mismatch instead of falling through.
+ * Handles a customer's reply to the VIN-decode-failed prompt, routing
+ * them into manual collection or back to the vehicle-ID choice buttons, or
+ * re-asking if the reply doesn't match either option.
  */
 export async function processVinDecodeFailedChoice(phone: string, reply: string): Promise<boolean> {
   const attemptedVin = await getVinDecodeFailedVin(phone);
@@ -512,11 +441,6 @@ export async function processVinDecodeFailedChoice(phone: string, reply: string)
 
   if (r.includes('manual') || r === '2' || r.includes('btn_1')) {
     await clearVinDecodeFailedChoice(phone);
-    // Handing off to manual collection now — its own DB-backed status drives
-    // stage 7 from here, this flag would otherwise linger for its full TTL
-    // and wrongly intercept the customer's actual make/model/year answers as
-    // if they were still choosing between VIN/photo/manual (same bug already
-    // fixed for processVehicleIdOptionChoice's manual branch above).
     await clearVehicleIdChoiceShown(phone);
     await startManualCollection(phone, 'awaiting_make', attemptedVin);
     await sendReply(phone, messages.manual.askMakePrompt());
@@ -532,16 +456,13 @@ export async function processVinDecodeFailedChoice(phone: string, reply: string)
 
   const decodeFailedRes = await sendWhatsAppButtons(phone, messages.common.notUnderstood(), messages.vin.decodeFailedButtons);
   await saveActivePromptId(phone, decodeFailedRes?.messages?.[0]?.id);
-  await markVinDecodeFailedShown(phone, attemptedVin); // refresh the TTL, keep the same attempted VIN
+  await markVinDecodeFailedShown(phone, attemptedVin);
   return true;
 }
 
 /**
- * Sends a document-processing failure message with "Try again" / "Manual entry"
- * buttons attached (shared by every failure branch in processVehicleDocument
- * below), and marks the choice shown so the customer's reply resolves via
- * processDocumentRetryChoice instead of falling through to the generic
- * manual-collection catch-all.
+ * Sends a document-processing failure message along with retry/manual
+ * buttons and marks that choice as shown.
  */
 async function sendRetryOrManualPrompt(phone: string, body: string): Promise<void> {
   const messages = await resolveMessages(phone);
@@ -550,10 +471,9 @@ async function sendRetryOrManualPrompt(phone: string, body: string): Promise<voi
 }
 
 /**
- * Handles a photo of the vehicle's registration document (livrete / Título do Veículo)
- * sent while a vehicle ID is pending. Extracts data via Claude Vision, cross-checks any
- * legible VIN against the free NHTSA API (more authoritative than OCR when available),
- * and hands off to the same Sim/Não confirmation flow processVIN uses.
+ * Downloads a vehicle document/VIN photo and runs it through Claude
+ * Vision, cross-checking any extracted VIN against NHTSA, then either bounces
+ * back a retry/manual prompt on failure or asks the customer to confirm the extracted vehicle.
  */
 export async function processVehicleDocument(phone: string, mediaId: string): Promise<void> {
   const messages = await resolveMessages(phone);
@@ -579,13 +499,6 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
     return;
   }
 
-  // Even when Claude flags low confidence (valid: false — e.g. handwritten or
-  // rotated text), still attempt to cross-check any chassis_number it extracted
-  // against NHTSA before giving up: NHTSA is an independent, authoritative signal
-  // a plain OCR self-assessment isn't — a genuinely wrong/garbled read simply fails
-  // the NHTSA lookup (a safe failure that falls through to the retry/manual prompt
-  // below), so trusting a confirmed NHTSA match never risks saving bad data even
-  // when Claude itself wasn't fully confident in the read.
   let make = extracted.make || null;
   let model = extracted.model || null;
   let year = extracted.year || null;
@@ -606,10 +519,6 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
   }
 
   if (!extracted.valid && !nhtsaConfirmed) {
-    // Claude's `reason` is logged for debugging only — it's a verbose, technical
-    // explanation (e.g. "text orientation is diagonal and legibility is compromised")
-    // never meant for the customer to see; the doc's fallback message is a clean,
-    // generic "I had trouble reading that image" with no exposed AI reasoning.
     logger.info(`[VISION] Document extraction invalid for ${phone}: ${extracted.reason || 'no reason given'}`);
     await sendRetryOrManualPrompt(phone, messages.document.invalid());
     return;
@@ -644,14 +553,9 @@ export async function processVehicleDocument(phone: string, mediaId: string): Pr
 }
 
 /**
- * Handles the customer's reply to the "Try again" / "Manual entry" choice shown
- * by sendRetryOrManualPrompt after a document-processing failure. "Try again"
- * just re-prompts for a fresh photo — the next image is picked up by the
- * existing state-aware image routing, no extra state needed. Only fires when
- * that choice was just shown (wasDocumentRetryChoiceShown gate in the
- * pipeline), so it doesn't misfire on unrelated free text — which also makes
- * it safe to re-ask on a mismatch instead of falling through to the stage-10
- * catch-all (which used to silently start manual collection instead).
+ * Handles a customer's reply to the document-processing retry prompt,
+ * routing them into manual collection or back to the photo-upload prompt, or
+ * re-asking if the reply doesn't match either option.
  */
 export async function processDocumentRetryChoice(phone: string, reply: string): Promise<boolean> {
   const messages = await resolveMessages(phone);
@@ -659,8 +563,6 @@ export async function processDocumentRetryChoice(phone: string, reply: string): 
 
   if (r.includes('manual') || r === '2' || r.includes('btn_1')) {
     await clearDocumentRetryChoice(phone);
-    // The original VIN/photo/manual choice is resolved now too — clear it so it can't
-    // linger and interfere with a later message (see whatsapp.controller.ts stage 3.6).
     await clearVehicleIdChoiceShown(phone);
     await startManualCollection(phone, 'awaiting_make');
     await sendReply(phone, messages.manual.askMakePrompt());
@@ -669,28 +571,21 @@ export async function processDocumentRetryChoice(phone: string, reply: string): 
 
   if (r.includes('tentar') || r.includes('try again') || r.includes('novamente') || r === '1' || r.includes('btn_0')) {
     await clearDocumentRetryChoice(phone);
-    // Deliberately NOT clearing vehicleIdChoiceShown here — still waiting on a photo,
-    // and needsVehicleId alone (still true) keeps stage 5's image routing open regardless.
     await sendReply(phone, messages.document.askPhotoPrompt());
     return true;
   }
 
   const retryRes = await sendWhatsAppButtons(phone, messages.common.notUnderstood(), messages.document.retryButtons);
   await saveActivePromptId(phone, retryRes?.messages?.[0]?.id);
-  await markDocumentRetryChoiceShown(phone); // refresh the TTL so the choice stays open
+  await markDocumentRetryChoiceShown(phone);
   return true;
 }
 
 /**
- * Processes vehicle quick confirmation buttons. Gated on wasVehicleConfirmShown
- * (set by processVIN/processVehicleDocument right after the confirm buttons go
- * out) — without that gate, this used to regex-match sim/não against every
- * message that reached this stage regardless of whether a vehicle was actually
- * pending confirmation, which made it unsafe to re-ask on a mismatch (it could
- * misfire on unrelated chat). With the gate, a mismatch is unambiguous — the
- * customer really was asked to confirm a vehicle — so it re-sends the same
- * confirm buttons instead of falling through to the stage-10 catch-all, which
- * used to silently start manual collection and discard the pending vehicle.
+ * Handles a customer's Sim/Não reply confirming a decoded/extracted
+ * vehicle: on yes, saves the vehicle as chosen and completes onboarding or
+ * moves to the part-search prompt; on no, deletes only that rejected vehicle
+ * and restarts manual collection; otherwise re-asks the same confirmation.
  */
 export async function processVehicleConfirmation(phone: string, reply: string, customer: Customer): Promise<boolean> {
   if (!(await wasVehicleConfirmShown(phone))) return false;
@@ -699,21 +594,11 @@ export async function processVehicleConfirmation(phone: string, reply: string, c
   const r = reply.toLowerCase();
 
   if (r.includes('sim') || r.includes('yes') || r.includes('✅') || r === '1' || r.includes('btn_0')) {
-    // The vehicle we just decoded/saved is unambiguously the most recently updated
-    // row — nothing else touches this customer's vehicles between the save and this
-    // reply, even if they already have other confirmed vehicles on file.
     const v = await getMostRecentVehicle(phone);
     if (!v) return false;
 
-    // Make this the active vehicle for search right away — without this, a
-    // customer with 2+ vehicles who just added and confirmed a new one kept
-    // getting results for whichever vehicle was chosen earlier (chosenVehicle
-    // has its own 4h TTL and nothing else here ever overwrote it).
     await saveChosenVehicle(phone, v.id);
 
-    // Identification concluded — clear so a later unrelated message (e.g. a part
-    // search) doesn't get misrouted into manual collection by the stage-10
-    // fallback in whatsapp.controller.ts while this flag's TTL hasn't lapsed yet.
     await clearVehicleIdChoiceShown(phone);
     await clearVehicleConfirmShown(phone);
 
@@ -731,29 +616,17 @@ export async function processVehicleConfirmation(phone: string, reply: string, c
   }
 
   if (r.includes('não') || r.includes('nao') || r.includes('❌') || r === '2' || r.includes('btn_1')) {
-    // Delete only the just-rejected attempt (by id) — never all of this customer's
-    // vehicles, since they may already have others confirmed.
     const rejected = await getMostRecentVehicle(phone);
     if (rejected) await clearVehicleSession(rejected.id);
 
-    // Handing off to manual collection now — its own DB-backed status drives stage 7
-    // from here, this flag is no longer needed (and shouldn't linger to interfere later).
     await clearVehicleIdChoiceShown(phone);
     await clearVehicleConfirmShown(phone);
 
-    // Same step-by-step wizard regardless of whether this is the customer's first
-    // vehicle or a returning customer re-identifying — nothing downstream parses a
-    // combined "make model year" free-text reply, so asking for one led to a wasted
-    // round-trip.
     await startManualCollection(phone, 'awaiting_make');
     await sendReply(phone, messages.manual.askMakePrompt());
     return true;
   }
 
-  // A vehicle really is pending confirmation and this reply didn't match either
-  // option — re-ask instead of silently discarding it. Rebuilds the same confirm
-  // body from the still-unconfirmed row rather than assuming the customer
-  // remembers what was decoded a message or two ago.
   const pending = await getMostRecentVehicle(phone);
   if (!pending) return false;
   const description = [pending.make, pending.model, pending.year].filter(Boolean).join(' ');
@@ -763,6 +636,6 @@ export async function processVehicleConfirmation(phone: string, reply: string, c
     messages.vin.confirmButtons
   );
   await saveActivePromptId(phone, confirmRetryRes?.messages?.[0]?.id);
-  await markVehicleConfirmShown(phone); // refresh the TTL so the choice stays open
+  await markVehicleConfirmShown(phone);
   return true;
 }

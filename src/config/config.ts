@@ -5,7 +5,6 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load .env from project root
 dotenv.config({ path: path.join(__dirname, '../../.env') });
 
 const requiredEnvVars = [
@@ -17,7 +16,6 @@ const requiredEnvVars = [
   'JWT_SECRET'
 ];
 
-// Simple validation
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
     throw new Error(`Config validation error: environment variable ${envVar} is missing.`);
@@ -38,20 +36,12 @@ export const config = {
     apiKey: process.env.ANTHROPIC_API_KEY
   },
   claudeMessage: {
-    // Kill switch for the Claude rewrite layer that makes canned replies from
-    // src/i18n/messages.ts sound less scripted (see humanize.service.ts).
-    // Defaults to OFF: with this unset the bot sends the exact deterministic
-    // strings it always has, so the layer can be disabled in production
-    // without a revert if the persona misbehaves.
     enabled: process.env.CLAUDE_MESSAGE_ENABLED === 'true'
   },
   whatsapp: {
     token: process.env.WHATSAPP_TOKEN,
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
     verifyToken: process.env.WHATSAPP_VERIFY_TOKEN,
-    // Meta Graph API base URL, version included — bumping the API version
-    // (Meta deprecates old ones periodically) is then a config change, not a
-    // code change across every call site.
     graphApiUrl: process.env.WHATSAPP_GRAPH_API_URL || 'https://graph.facebook.com/v19.0'
   },
   jwt: {

@@ -12,15 +12,18 @@ export interface AdminUser {
   updated_at: Date;
 }
 
+/**
+ * Looks up a single row in `admin_users` by exact email match, used for the
+ * admin login flow. Returns null if no matching account exists.
+ */
 export async function getAdminByEmail(email: string): Promise<AdminUser | null> {
   const { rows } = await db.query('SELECT * FROM admin_users WHERE email = $1', [email]);
   return rows.length ? rows[0] : null;
 }
 
 /**
- * Every admin_users row — used to fan out WhatsApp notifications (stock
- * confirmation needed, SLA reminders) to all admins, not just one hardcoded
- * number.
+ * Returns every row in `admin_users`, used to fan out WhatsApp admin-notification
+ * pushes (stock confirmation, payment proof, in-person payment) to all staff accounts.
  */
 export async function getAllAdmins(): Promise<AdminUser[]> {
   const { rows } = await db.query('SELECT * FROM admin_users');
@@ -28,9 +31,8 @@ export async function getAllAdmins(): Promise<AdminUser[]> {
 }
 
 /**
- * Looks up an admin by phone, ignoring formatting (admin phone numbers are
- * entered by hand and may include spaces/parens/dashes — compares digits only
- * on both sides so the caller doesn't need to normalize before querying).
+ * Looks up a row in `admin_users` by phone, comparing digits-only so formatting
+ * differences don't matter — used to detect inbound WhatsApp messages from staff and for the phone-based password-reset flow.
  */
 export async function getAdminByPhone(phone: string): Promise<AdminUser | null> {
   const digitsOnly = phone.replace(/\D/g, '');
@@ -41,11 +43,19 @@ export async function getAdminByPhone(phone: string): Promise<AdminUser | null> 
   return rows.length ? rows[0] : null;
 }
 
+/**
+ * Looks up a single row in `admin_users` by primary key id, used to resolve the
+ * authenticated admin from a JWT payload.
+ */
 export async function getAdminById(id: number): Promise<AdminUser | null> {
   const { rows } = await db.query('SELECT * FROM admin_users WHERE id = $1', [id]);
   return rows.length ? rows[0] : null;
 }
 
+/**
+ * Dynamically updates whichever of `name`/`email` are present in `fields` on the
+ * `admin_users` row for the given id, stamping `updated_at`. No-ops if `fields` is empty.
+ */
 export async function updateAdminProfile(id: number, fields: Partial<Pick<AdminUser, 'name' | 'email'>>): Promise<void> {
   const keys = Object.keys(fields);
   if (!keys.length) return;
@@ -60,9 +70,8 @@ export async function updateAdminProfile(id: number, fields: Partial<Pick<AdminU
 }
 
 /**
- * Updates the password and clears any pending reset code — a successful
- * password change (via change-password or reset-password) invalidates
- * whatever reset code might still be outstanding.
+ * Sets a new `password_hash` on the `admin_users` row for the given id and
+ * clears any pending reset code, used by both change-password and reset-password flows.
  */
 export async function updateAdminPassword(id: number, passwordHash: string): Promise<void> {
   await db.query(
@@ -73,6 +82,10 @@ export async function updateAdminPassword(id: number, passwordHash: string): Pro
   );
 }
 
+/**
+ * Stores the hashed password-reset code and its expiry on the `admin_users` row
+ * for the given id, part of the forgot-password WhatsApp flow.
+ */
 export async function setResetCode(id: number, codeHash: string, expiresAt: Date): Promise<void> {
   await db.query(
     `UPDATE admin_users SET reset_code_hash = $2, reset_code_expires_at = $3 WHERE id = $1`,
@@ -80,6 +93,10 @@ export async function setResetCode(id: number, codeHash: string, expiresAt: Date
   );
 }
 
+/**
+ * Clears any pending reset code/expiry on the `admin_users` row for the given
+ * id, e.g. after a successful or abandoned password reset.
+ */
 export async function clearResetCode(id: number): Promise<void> {
   await db.query(
     `UPDATE admin_users SET reset_code_hash = NULL, reset_code_expires_at = NULL WHERE id = $1`,

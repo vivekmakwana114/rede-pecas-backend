@@ -51,10 +51,8 @@ export interface ImportServiceItem {
 }
 
 /**
- * Finds a service provider by name, or creates one if it doesn't exist yet.
- * Mirrors getOrCreateSupplierByName in supplier.model.ts — plain
- * check-then-insert (no unique constraint on service_providers.name),
- * acceptable for low-concurrency admin-triggered import usage.
+ * Finds an existing `service_providers` row by case-insensitive name match, or
+ * inserts a new one with the given details if none exists. Returns the provider id either way.
  */
 export async function getOrCreateServiceProviderByName(
   name: string,
@@ -77,11 +75,8 @@ export async function getOrCreateServiceProviderByName(
 }
 
 /**
- * Resolves the provider a service's edited Name/Address/Province/Phone
- * fields should point to — mirrors resolveSupplierForProductEdit in
- * supplier.model.ts. Never mutates the current provider row in place (it may
- * be shared by other services from the same provider); either repoints to an
- * existing different provider with that name, or creates a new one.
+ * Finds an existing `service_providers` row by name (excluding the service's
+ * current provider), or inserts a new one, used when an admin edit changes a service's provider details.
  */
 export async function resolveServiceProviderForEdit(
   name: string,
@@ -104,11 +99,9 @@ export async function resolveServiceProviderForEdit(
 }
 
 /**
- * Batch upserts already-validated service items, grouping by resolved
- * provider (same shape as importProductsBatch in supplier.model.ts). Rows
- * missing a service name/category are defensively skipped — the real
- * validation (skip-with-reason reporting) happens upstream in
- * service.service.ts's validateServiceRow.
+ * Bulk-upserts a batch of service items into `services` (grouped by resolved
+ * provider, creating providers as needed via `getOrCreateServiceProviderByName`), all inside one transaction.
+ * Returns counts of inserted vs. updated rows.
  */
 export async function importServicesBatch(
   items: ImportServiceItem[],
@@ -143,7 +136,7 @@ export async function importServicesBatch(
     }
 
     if (!providerId) providerId = defaultProviderId;
-    if (!providerId) continue; // no way to resolve a provider for this row — skip it
+    if (!providerId) continue;
 
     const group = byProvider.get(providerId) || [];
     group.push(item);
@@ -221,12 +214,8 @@ const SERVICE_SELECT = `
 `;
 
 /**
- * Fetches every service (active and inactive), joined with its provider —
- * backs the admin panel's services grid (GET /admin/services), mirroring
- * getAllProducts. Includes inactive rows (unlike getMatchingServicesByCategory
- * below, which is customer-facing-adjacent and must stay active-only) so the
- * admin can find and reactivate a deactivated service — see updateService's
- * `active` field.
+ * Returns every `services` row joined with its provider's details, newest-
+ * updated first, for the admin service list.
  */
 export async function getAllServices(): Promise<Service[]> {
   const { rows } = await db.query(`${SERVICE_SELECT} ORDER BY sv.updated_at DESC`);
@@ -234,9 +223,7 @@ export async function getAllServices(): Promise<Service[]> {
 }
 
 /**
- * Fetches a single service by id regardless of active status — backs
- * GET/PATCH /admin/services/:id, the only current caller, so a deactivated
- * service can still be viewed and re-activated.
+ * Looks up a single `services` row by id, joined with its provider's details.
  */
 export async function getServiceById(id: number): Promise<Service | null> {
   const { rows } = await db.query(`${SERVICE_SELECT} WHERE sv.id = $1`, [id]);
@@ -244,10 +231,8 @@ export async function getServiceById(id: number): Promise<Service | null> {
 }
 
 /**
- * Admin edits to a service's own fields — backs PATCH /admin/services/:id.
- * provider_id is intentionally not editable here, same rationale as
- * updateProduct: reassigning it would change the row's
- * UNIQUE (provider_id, service_name) identity.
+ * Dynamically updates whichever `Service` fields are present in `fields` on
+ * the `services` row for the given id, stamping `updated_at`. No-ops if `fields` is empty.
  */
 export async function updateService(id: number, fields: Partial<Service>): Promise<void> {
   const keys = Object.keys(fields);
@@ -262,12 +247,8 @@ export async function updateService(id: number, fields: Partial<Service>): Promi
 export type HardDeleteResult = 'deleted' | 'not_found' | 'still_active';
 
 /**
- * Permanently removes a service — backs DELETE /admin/services/:id. Only
- * allowed once the service is already inactive (deactivate it first via
- * PATCH .../:id { active: false }, see updateService) — same two-step delete
- * as hardDeleteProduct in product.model.ts. Unlike products, no table
- * currently has a foreign key into services, so this never risks a
- * constraint-violation error the way a still-referenced product would.
+ * Permanently deletes a `services` row by id, refusing to do so while the
+ * service is still active. Returns 'not_found'/'still_active' instead of deleting when the row doesn't qualify.
  */
 export async function hardDeleteService(id: number): Promise<HardDeleteResult> {
   const { rows } = await db.query('SELECT active FROM services WHERE id = $1', [id]);
@@ -279,8 +260,8 @@ export async function hardDeleteService(id: number): Promise<HardDeleteResult> {
 }
 
 /**
- * Finds active services matching a given service_category — the join-key
- * lookup behind getMatchingServicesForProduct in product.model.ts.
+ * Returns active `services` rows in the given category, cheapest first, joined
+ * with provider details — used to offer a related service for a matched product.
  */
 export async function getMatchingServicesByCategory(serviceCategory: string): Promise<Service[]> {
   const { rows } = await db.query(

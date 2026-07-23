@@ -9,8 +9,6 @@ export interface ServiceImportResult {
   skipped: { row: number; reasons: string[] }[];
 }
 
-// Values a CSV/XLSX author would plausibly type in a yes/no column — same
-// set as product.service.ts's YES_VALUES.
 const YES_VALUES = new Set(['yes', 'sim', 'true', '1']);
 
 const HEADER_ALIASES: Record<string, string[]> = {
@@ -38,6 +36,10 @@ const REQUIRED_COLUMNS: { field: keyof typeof HEADER_ALIASES; label: string }[] 
   { field: 'serviceDurationH', label: 'Service Duration H' },
 ];
 
+/**
+ * Checks an uploaded services spreadsheet's header row against the
+ * required columns (accepting any known alias) and returns the labels of any that are missing.
+ */
 function getMissingRequiredColumns(headerRow: unknown[]): string[] {
   const headerSet = new Set(headerRow.map((h) => String(h ?? '').trim().toLowerCase()));
   return REQUIRED_COLUMNS.filter(({ field }) => !HEADER_ALIASES[field].some((alias) => headerSet.has(alias))).map(
@@ -46,10 +48,9 @@ function getMissingRequiredColumns(headerRow: unknown[]): string[] {
 }
 
 /**
- * Validates one spreadsheet row and either returns the item ready to import
- * or the reasons this row is being skipped — same skip-not-reject contract
- * as validateRow in product.service.ts (a bad row doesn't block the rest of
- * the file).
+ * Validates and normalizes a single services-spreadsheet row into an
+ * ImportServiceItem, resolving header aliases and checking the service
+ * category against the known list, or returns the validation failure reasons.
  */
 function validateServiceRow(row: Record<string, any>, rowNumber: number): { item: ImportServiceItem } | { reasons: string[] } {
   const lowerRow = Object.fromEntries(Object.entries(row).map(([k, v]) => [k.trim().toLowerCase(), v]));
@@ -121,10 +122,9 @@ function validateServiceRow(row: Record<string, any>, rowNumber: number): { item
 }
 
 /**
- * Parses a single uploaded CSV/XLSX services file and imports every valid
- * row, mirroring importInventoryFromFile in product.service.ts — a missing
- * header column rejects the whole file, but a row-level problem only skips
- * that row (reported in `skipped`).
+ * Parses an uploaded Excel services file, validates its header and every
+ * data row, then imports the valid rows and returns the import result
+ * alongside any rows that had to be skipped.
  */
 export async function importServicesFromFile(fileBuffer: Buffer): Promise<ServiceImportResult> {
   const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
@@ -172,9 +172,8 @@ const TEMPLATE_HEADER_ROW = [
 ];
 
 /**
- * Builds a blank XLSX workbook containing only the header row expected by
- * importServicesFromFile — mirrors generateInventoryTemplateFile in
- * product.service.ts.
+ * Generates a blank Excel workbook containing only the expected services
+ * import header row, for staff to download as a starting template.
  */
 export function generateServicesTemplateFile(): Buffer {
   const worksheet = XLSX.utils.aoa_to_sheet([TEMPLATE_HEADER_ROW]);

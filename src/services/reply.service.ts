@@ -3,27 +3,13 @@ import { humanize, HumanizeOptions, INTERACTIVE_BODY_LIMIT, TEXT_BODY_LIMIT } fr
 import { sendWhatsAppMessage, sendWhatsAppButtons, sendWhatsAppList } from './whatsapp.service.js';
 import { saveActivePromptId } from './session.service.js';
 
-/**
- * Customer-facing send layer: identical in shape to whatsapp.service.ts, but
- * runs the message BODY through the Xico Peças rewrite (humanize.service.ts)
- * first. Buttons, button ids, list rows and the list button label are passed
- * through completely untouched.
- *
- * That distinction is load-bearing, not stylistic. processMessageFlow resolves
- * most button taps by matching the reply's TITLE TEXT against the label it sent
- * (whatsapp.controller.ts, `msg.interactive.button_reply.title`) — a rewritten
- * label would break the flow silently, with no error anywhere. List rows are
- * likewise bound by Meta's 24/72-char caps and resolved by their option_N ids.
- *
- * Which module a file imports IS the allowlist. Anything that must go out
- * verbatim — admin pushes (t.admin.*), password-reset codes, the supplier
- * delivery notice, and above all the payment instruction block with the IBAN,
- * amount and reference — keeps importing whatsapp.service.js directly. Both
- * imports side by side in one file is expected and intended.
- */
 
 export type ReplyOptions = Omit<HumanizeOptions, 'locale' | 'phone' | 'maxLength'>;
 
+/**
+ * Resolves the customer's locale and runs a canned message body through
+ * the humanize layer with the given body-size limit before it's sent.
+ */
 async function rewrite(
   phone: string,
   body: string,
@@ -38,10 +24,18 @@ async function rewrite(
   });
 }
 
+/**
+ * Sends a plain text WhatsApp message to a customer, humanizing the body
+ * text first.
+ */
 export async function sendReply(phone: string, text: string, opts?: ReplyOptions): Promise<any> {
   return sendWhatsAppMessage(phone, await rewrite(phone, text, TEXT_BODY_LIMIT, opts));
 }
 
+/**
+ * Sends a WhatsApp interactive button message to a customer, humanizing
+ * the body first, and remembers the sent message's id as the active prompt for this phone.
+ */
 export async function sendReplyButtons(
   phone: string,
   body: string,
@@ -54,6 +48,10 @@ export async function sendReplyButtons(
   return res;
 }
 
+/**
+ * Sends a WhatsApp List Message to a customer, humanizing the body first,
+ * and remembers the sent message's id as the active prompt for this phone.
+ */
 export async function sendReplyList(
   phone: string,
   body: string,

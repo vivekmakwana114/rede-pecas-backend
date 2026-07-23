@@ -1,5 +1,6 @@
 /**
- * Formats a numeric price value into Kwanzas (AOA) formatting.
+ * Formats a numeric value as an Angolan Kwanza currency string with no
+ * decimal places.
  */
 export function formatPrice(value: number): string {
   return new Intl.NumberFormat("pt-AO", {
@@ -10,7 +11,8 @@ export function formatPrice(value: number): string {
 }
 
 /**
- * Capitalizes every word in a text string.
+ * Title-cases each word of the given text, lower-casing the rest of each
+ * word first.
  */
 export function capitalize(text: string): string {
   if (!text) return text;
@@ -22,19 +24,15 @@ export function capitalize(text: string): string {
 }
 
 /**
- * Delays execution for a given number of milliseconds.
+ * Returns a promise that resolves after the given number of milliseconds.
  */
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * Formats a timestamp as `dd/mm/yyyy HH:mm` in Angola local time
- * (Africa/Luanda, UTC+1, no DST) — fixed to that zone rather than the
- * server's own TZ env so the output doesn't shift depending on where the
- * process happens to be deployed. Returns null for a null/invalid input so
- * callers can pass through nullable DB timestamp columns (e.g. registered_at)
- * unchanged.
+ * Formats a date or date string as a "dd/mm/yyyy hh:mm" string in the
+ * Africa/Luanda timezone, returning null for a missing or invalid input.
  */
 export function formatDateTime(value: Date | string | null): string | null {
   if (!value) return null;

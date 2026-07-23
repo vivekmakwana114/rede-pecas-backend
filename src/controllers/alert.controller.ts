@@ -4,12 +4,8 @@ import { formatDateTime } from '../utils/helpers.js';
 import { getAlerts, markAlertRead } from '../models/alert.model.js';
 
 /**
- * Returns the admin notification feed (payment-proof-received, in-person-payment-
- * requested) — replaces the old WhatsApp pushes to the admin's own phone.
- * created_at/read_at are rendered as `dd/mm/yyyy HH:mm` here, same convention
- * as every other admin detail/list endpoint that displays a timestamp — the
- * admin panel shows whatever the backend sends verbatim, no client-side
- * reformatting.
+ * Backs `GET /v1/admin/alerts` — returns the newest 100 rows from `admin_alerts`
+ * (payment-proof-received, stock-confirmation-needed, etc.), with timestamps formatted for display.
  */
 export const getAlertsHandler = catchAsync(async (req: Request, res: Response) => {
   const alerts = await getAlerts();
@@ -27,6 +23,10 @@ export const getAlertsHandler = catchAsync(async (req: Request, res: Response) =
   });
 });
 
+/**
+ * Backs `POST /v1/admin/alerts/:id/read` — stamps `read_at` on the given `admin_alerts`
+ * row so the panel can dismiss it from the feed.
+ */
 export const markAlertReadHandler = catchAsync(async (req: Request, res: Response) => {
   const { id } = req.params;
   await markAlertRead(Number(id));

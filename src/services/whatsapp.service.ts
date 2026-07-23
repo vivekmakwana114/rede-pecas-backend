@@ -3,11 +3,12 @@ import { logger } from '../config/logger.js';
 
 const WHATSAPP_API_URL = `${config.whatsapp.graphApiUrl}/${config.whatsapp.phoneNumberId}/messages`;
 
-// Meta rejects an interactive message whose body exceeds 1024 characters with a
-// generic 400, which surfaces as the customer simply never receiving the reply.
-// Truncating is strictly better than that: the message arrives, just clipped.
 const INTERACTIVE_BODY_LIMIT = 1024;
 
+/**
+ * Truncates an interactive message body to WhatsApp's 1024-character
+ * limit, logging a warning when truncation was needed.
+ */
 function clampBody(body: string, context: string): string {
   if (body.length <= INTERACTIVE_BODY_LIMIT) return body;
   logger.warn(`${context} body exceeded ${INTERACTIVE_BODY_LIMIT} chars (${body.length}), truncating`);
@@ -15,7 +16,7 @@ function clampBody(body: string, context: string): string {
 }
 
 /**
- * Sends a standard text message via Meta WhatsApp Business API.
+ * Sends a plain text message to a phone number via the WhatsApp Cloud API.
  */
 export async function sendWhatsAppMessage(phone: string, text: string): Promise<any> {
   logger.debug(`[TEST-CAPTURE] text -> ${phone}: ${text}`);
@@ -48,9 +49,37 @@ export async function sendWhatsAppMessage(phone: string, text: string): Promise<
 }
 
 /**
- * Downloads a media attachment from the Meta Graph API and returns it base64-encoded.
- * Two-step lookup: resolve the media URL by ID, then fetch the bytes (both require
- * the same bearer token — the URL alone is not publicly fetchable).
+ * Marks an inbound WhatsApp message as read and shows the typing
+ * indicator to the customer while a reply is being prepared.
+ */
+export async function sendTypingIndicator(messageId: string): Promise<void> {
+  try {
+    const response = await fetch(WHATSAPP_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.whatsapp.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: messageId,
+        typing_indicator: { type: "text" },
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      logger.error('WhatsApp API typing-indicator error', error);
+    }
+  } catch (error: any) {
+    logger.error(`Error sending typing indicator: ${error.message}`);
+  }
+}
+
+/**
+ * Resolves a WhatsApp media id to its download URL via the Graph API,
+ * downloads the file, and returns it as a base64 string, or null on any failure.
  */
 export async function downloadWhatsAppMedia(mediaId: string): Promise<string | null> {
   try {
@@ -81,23 +110,8 @@ export async function downloadWhatsAppMedia(mediaId: string): Promise<string | n
 }
 
 /**
- * Sends an interactive message containing up to 3 quick-reply buttons, and
- * optionally an image/document header — used to relay a customer's
- * payment-proof photo/PDF straight to an admin's WhatsApp with Approve/Reject
- * buttons attached directly to it (see notifyAdminsPaymentProofReceived in
- * payment.service.ts), reusing the media id Meta already issued for the
- * incoming proof rather than re-uploading it (media ids stay valid for
- * outbound sends within the same WhatsApp Business Account that received
- * them — contrast with pdf.service.ts's sendProformaWhatsApp, which uploads a
- * server-generated file it doesn't have a media id for yet). Button reply ids
- * default to the positional btn_0/btn_1/btn_2 scheme every existing
- * button-only caller relies on (title-matched, not id-matched); pass `ids` to
- * give each button a stable, semantic id instead (e.g. encoding an order
- * number) when the reply needs to be resolved reliably rather than by fuzzy
- * title text — see processAdminStockReply in product.service.ts.
- *
- * Meta caps quick-reply button titles at 20 characters — callers must keep
- * `buttons` within that, spelling out anything longer in `body` instead.
+ * Sends a WhatsApp interactive reply-button message (up to 3 buttons),
+ * optionally with an image/document header, via the Cloud API.
  */
 export async function sendWhatsAppButtons(
   phone: string,
@@ -154,9 +168,7 @@ export async function sendWhatsAppButtons(
 }
 
 /**
- * Sends an interactive list message (up to 10 tappable rows in one section).
- * Meta enforces row title <= 24 chars and description <= 72 chars — callers
- * must pre-truncate, this function does not.
+ * Sends a WhatsApp interactive List Message (up to 10 rows) via the Cloud API.
  */
 export async function sendWhatsAppList(
   phone: string,

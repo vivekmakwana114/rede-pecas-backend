@@ -11,15 +11,10 @@ export interface ImportItem {
   name: string;
   price: number;
   quantity: number;
-  // Per-row supplier — falls back to the request-level default supplier (the
-  // original one-supplier-per-file behavior) when none of these are given.
   supplierId?: number;
   supplierName?: string;
   supplierAddress?: string;
   supplierPhone?: string;
-  // Catalog fields from the products CSV (see db/schema.sql products table).
-  // serviceCategory is derived upstream (validateRow, via
-  // SUBCATEGORY_TO_SERVICE_CATEGORY) and simply carried through here.
   category: string;
   subcategory: string;
   serviceCategory: string;
@@ -43,17 +38,9 @@ export interface ImportItem {
 }
 
 /**
- * Core operation: batch updates of parsed CSV/XLSX rows, each optionally
- * carrying its own supplier — a single file can mix products from several
- * suppliers. Rows without per-row supplier info fall back to
- * `defaultSupplierId` (the original single-supplier-per-file behavior).
- * Rows that resolve to no supplier at all are skipped, same as rows missing
- * a reference/name.
- *
- * Purely incremental — insert/update only the rows actually in `items`.
- * Products belonging to the same supplier that this batch doesn't mention
- * are left untouched (an admin uploading a 2-row correction file must not
- * wipe out the rest of that supplier's catalog).
+ * Bulk-upserts a batch of inventory items into `products` (grouped by resolved
+ * supplier, creating suppliers as needed), all inside one transaction, logging each supplier's insert/update counts
+ * to `sync_logs` and collecting restock notifications for waitlisted customers when a zero-quantity item is restocked.
  */
 export async function importProductsBatch(
   items: ImportItem[],
@@ -63,10 +50,6 @@ export async function importProductsBatch(
   let updated = 0;
   const restockNotifications: RestockNotification[] = [];
 
-  // Resolve each row's supplier id up front — cached by name so the same new
-  // supplier name repeated across many rows only gets created once — then
-  // group rows by resolved supplier so the sync_logs entry below is per
-  // supplier actually present in this file.
   const supplierCache = new Map<string, number>();
   const bySupplier = new Map<number, ImportItem[]>();
 
@@ -85,7 +68,7 @@ export async function importProductsBatch(
     }
 
     if (!supplierId) supplierId = defaultSupplierId;
-    if (!supplierId) continue; // no way to resolve a supplier for this row — skip it
+    if (!supplierId) continue;
 
     const group = bySupplier.get(supplierId) || [];
     group.push(item);
@@ -101,9 +84,6 @@ export async function importProductsBatch(
       let groupUpdated = 0;
 
       for (const item of supplierItems) {
-        // The "prev" CTE captures the pre-statement row state (before this
-        // INSERT/UPDATE mutates it), letting us detect a quantity 0→positive
-        // restock transition atomically, without a separate SELECT round trip.
         const result = await client.query(
           `WITH prev AS (
              SELECT quantity FROM products WHERE supplier_id = $1 AND reference = $2
@@ -182,9 +162,6 @@ export async function importProductsBatch(
           groupUpdated++;
 
           if (row.previous_quantity === 0 && item.quantity > 0) {
-            // Marks every still-unnotified waitlist_requests row for this product as
-            // notified in the same statement that reads the phones to message —
-            // a re-run of this import can't double-notify the same request.
             const waitlisted = await client.query(
               `UPDATE waitlist_requests
                SET notified_at = NOW()
@@ -200,7 +177,6 @@ export async function importProductsBatch(
         }
       }
 
-      // Log the synchronization event
       await client.query(
         `INSERT INTO sync_logs (supplier_id, inserted_count, updated_count, created_at)
          VALUES ($1, $2, $3, NOW())`,
@@ -223,7 +199,8 @@ export async function importProductsBatch(
 }
 
 /**
- * Fetches a supplier's WhatsApp phone number for delivery notifications.
+ * Looks up a single supplier's phone number from `suppliers` by id, used to
+ * send the supplier a delivery notice.
  */
 export async function getSupplierPhoneById(supplierId: number): Promise<string | null> {
   const { rows } = await db.query(
@@ -234,14 +211,8 @@ export async function getSupplierPhoneById(supplierId: number): Promise<string |
 }
 
 /**
- * Finds a supplier by name, or creates one if it doesn't exist yet.
- * Used by the CSV/XLSX file-upload endpoint when the admin (or a row within
- * the file) references a supplier by name instead of an existing id. No
- * unique constraint exists on suppliers.name — this is a plain
- * check-then-insert, acceptable for low-concurrency admin-triggered usage.
- * address/phone only seed a brand-new supplier row — an existing supplier's
- * address/phone is left as-is by an import (see resolveSupplierForProductEdit
- * for editing it after the fact from the product panel).
+ * Finds an existing `suppliers` row by case-insensitive name match, or inserts
+ * a new one with the given address/phone if none exists. Returns the supplier id either way.
  */
 export async function getOrCreateSupplierByName(
   name: string,
@@ -262,24 +233,8 @@ export async function getOrCreateSupplierByName(
 }
 
 /**
- * Resolves the supplier a product's edited Name/Address/Phone fields should
- * point to — backs the Supplier section of the product detail panel
- * (rede-pecas-admin), the only place an admin can touch supplier data today
- * since there's no dedicated supplier management screen.
- *
- * Deliberately does NOT update the product's current supplier row in place —
- * that row is shared by every other product from the same supplier (see
- * getOrCreateSupplierByName above), so mutating it in place would silently
- * change every other product's listed supplier too, even though the edit
- * form looks like it belongs to just one product. Instead:
- *  - if another *different* supplier already has this exact name, this
- *    product is repointed to that existing row (its address/phone/rating
- *    take over — you're telling the system "this is actually that same
- *    real supplier", the same dedup rule importProductsBatch uses)
- *  - otherwise a brand-new supplier row is created with the submitted
- *    name/address/phone and this product is repointed to it
- * Either way, only the one product being edited is repointed — every other
- * product still on the original supplier row is untouched.
+ * Finds an existing `suppliers` row by name (excluding the product's current
+ * supplier), or inserts a new one, used when an admin edit changes a product's supplier details.
  */
 export async function resolveSupplierForProductEdit(
   name: string,

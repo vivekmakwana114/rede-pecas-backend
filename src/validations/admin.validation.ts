@@ -88,14 +88,7 @@ export const productUpdate: ValidationSchema = {
       reference: Joi.string(),
       price: Joi.number(),
       quantity: Joi.number().integer().min(0),
-      // Reversible active/inactive toggle — see updateProductHandler/getProductByIdAnyStatus.
-      // Permanent removal (DELETE /admin/products/:id) is gated on this being
-      // false first — see hardDeleteProduct.
       active: Joi.boolean(),
-      // Catalog fields (see db/schema.sql products table). service_category
-      // is deliberately NOT accepted here — it's always recomputed
-      // server-side from `subcategory` (see updateProductHandler), so the
-      // shared mapping stays the single source of truth.
       category: Joi.string(),
       subcategory: Joi.string().valid(...Object.keys(SUBCATEGORY_TO_SERVICE_CATEGORY)),
       vehicle_make: Joi.string(),
@@ -115,9 +108,6 @@ export const productUpdate: ValidationSchema = {
       image_url: Joi.string().allow('', null),
       synonyms: Joi.string(),
       description: Joi.string(),
-      // Supplier's own fields — edited from a product's own panel since
-      // there's no dedicated supplier management screen yet (see
-      // resolveSupplierForProductEdit in supplier.model.ts).
       supplierName: Joi.string(),
       supplierAddress: Joi.string().allow('', null),
       supplierPhone: Joi.string().allow('', null),
@@ -125,11 +115,6 @@ export const productUpdate: ValidationSchema = {
     .min(1),
 };
 
-// Mirrors validateRow's row-level rules in product.service.ts for the
-// catalog fields — subcategory must be a known key in
-// SUBCATEGORY_TO_SERVICE_CATEGORY (serviceCategory itself is never accepted
-// from the client; importProductsBatchHandler derives it server-side, same
-// single-source-of-truth rule as updateProductHandler).
 const importItemSchema = Joi.object({
   reference: Joi.string().required(),
   name: Joi.string().required(),
@@ -162,8 +147,6 @@ const importItemSchema = Joi.object({
 
 export const importProductsBatch: ValidationSchema = {
   body: Joi.object().keys({
-    // Fallback supplier for any item that doesn't specify its own — optional
-    // since every item can instead carry its own supplierId/supplierName.
     supplierId: Joi.number().integer(),
     items: Joi.array().items(importItemSchema).required(),
   }),

@@ -7,13 +7,8 @@ import { resolveSupplierForProductEdit } from '../models/supplier.model.js';
 import { SUBCATEGORY_TO_SERVICE_CATEGORY } from '../constants/serviceCategory.js';
 
 /**
- * Lists every product, active and inactive (joined with its supplier), for
- * the admin panel's inventory grid — unfiltered, unpaginated, matching the
- * current catalog size (low hundreds of rows). Revisit with
- * pagination/filtering if the catalog grows enough to make that a problem.
- * Inactive products stay listed (with an `active: false` flag for the UI to
- * badge/toggle) rather than disappearing, so deactivating one is reversible
- * from the grid instead of a dead end.
+ * Backs the admin product-list endpoint — returns every product row (any
+ * active/inactive status), newest-updated first, with supplier details joined in.
  */
 export const getProductsHandler = catchAsync(async (req: Request, res: Response) => {
   const products = await getAllProducts();
@@ -27,6 +22,10 @@ export const getProductsHandler = catchAsync(async (req: Request, res: Response)
   });
 });
 
+/**
+ * Backs the admin single-product endpoint — looks up one product by id
+ * regardless of active status, 404ing if it doesn't exist.
+ */
 export const getProductHandler = catchAsync(async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const product = await getProductByIdAnyStatus(id);
@@ -42,15 +41,9 @@ export const getProductHandler = catchAsync(async (req: Request, res: Response) 
 });
 
 /**
- * Admin edits to a product's catalog/stock fields, plus its supplier's
- * contact/display fields (name, address, phone). Editing this product's
- * supplier fields never mutates the supplier row it currently points to —
- * that row is shared by every other product from the same supplier. Instead
- * it resolves (via resolveSupplierForProductEdit) which supplier row this
- * product *should* point to given the submitted name/address/phone, and only
- * repoints this one product's supplier_id — every other product stays on
- * whatever it already pointed to. There's no dedicated supplier management
- * screen yet, so this panel doubles as it.
+ * Backs the admin product-update endpoint — applies whichever product fields
+ * were supplied to the `products` row, resolving/creating a new supplier row via
+ * `resolveSupplierForProductEdit` when the supplier name/address/phone changed, then returns the refreshed product.
  */
 export const updateProductHandler = catchAsync(async (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -94,10 +87,6 @@ export const updateProductHandler = catchAsync(async (req: Request, res: Respons
   if (active !== undefined) fields.active = active;
   if (category !== undefined) fields.category = category;
   if (subcategory !== undefined) {
-    // service_category is never client-settable directly — it's always
-    // recomputed from subcategory via the shared mapping, so the two columns
-    // (and the products/services matching join built on service_category)
-    // never drift out of sync.
     const mapped = SUBCATEGORY_TO_SERVICE_CATEGORY[subcategory];
     if (!mapped) throw new ApiError(400, `Unknown subcategory "${subcategory}" — no service_category mapping exists for it.`);
     fields.subcategory = subcategory;
@@ -149,13 +138,8 @@ export const updateProductHandler = catchAsync(async (req: Request, res: Respons
 });
 
 /**
- * Permanently deletes the product — only allowed once it's already inactive
- * (deactivate it first via PATCH /admin/products/:id { active: false }; see
- * updateProductHandler above). A product still referenced by an existing
- * order or waitlist_requests row (both have a plain FK into products, no
- * cascade) can't be deleted at all — Postgres rejects the DELETE with a
- * foreign-key-violation (23503), caught here and turned into a clear 409
- * instead of a raw 500.
+ * Backs the admin product-delete endpoint — hard-deletes a `products` row,
+ * refusing (409) if it's still active or still referenced by orders/waitlist requests, and 404ing if it doesn't exist.
  */
 export const deleteProductHandler = catchAsync(async (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -185,9 +169,8 @@ export const deleteProductHandler = catchAsync(async (req: Request, res: Respons
 });
 
 /**
- * Bulk imports spreadsheet rows mapped to supplier items. `supplierId` is the
- * fallback for any item that doesn't carry its own supplierId — a single
- * request can mix products from several suppliers by setting it per item.
+ * Backs `POST /v1/admin/inventory/upload` — maps each item's subcategory to its
+ * service category, then upserts the batch (JSON body of items) into `products` via `importInventoryBatch`.
  */
 export const importProductsBatchHandler = catchAsync(async (req: Request, res: Response) => {
   const { supplierId, items } = req.body;
@@ -196,9 +179,6 @@ export const importProductsBatchHandler = catchAsync(async (req: Request, res: R
     throw new ApiError(400, 'Invalid parameters. items is required.');
   }
 
-  // serviceCategory is derived server-side from subcategory (never accepted
-  // from the client — see importItemSchema/updateProductHandler) so it can
-  // never drift from the shared SUBCATEGORY_TO_SERVICE_CATEGORY mapping.
   const itemsWithServiceCategory = items.map((item: any) => {
     const serviceCategory = SUBCATEGORY_TO_SERVICE_CATEGORY[item.subcategory];
     if (!serviceCategory) {
@@ -219,12 +199,8 @@ export const importProductsBatchHandler = catchAsync(async (req: Request, res: R
 });
 
 /**
- * Bulk imports products from a single uploaded CSV/XLSX file, parsed
- * server-side. A column missing entirely from the header row rejects the
- * whole file (structural problem, named in the error). A row-level problem
- * (bad/missing price, description, unknown subcategory, etc.) does NOT
- * reject the file — that row is skipped and reported back in
- * `data.skipped`, while every other valid row still imports.
+ * Backs `POST /v1/admin/inventory/import` — parses an uploaded inventory
+ * spreadsheet file and imports its rows into `products`, requiring the `file` field to be present.
  */
 export const importProductsFileHandler = catchAsync(async (req: Request, res: Response) => {
   if (!req.file) {
@@ -243,9 +219,8 @@ export const importProductsFileHandler = catchAsync(async (req: Request, res: Re
 });
 
 /**
- * Streams a blank XLSX with just the columns importInventoryFromFile expects
- * — binary response, not the standard JSON envelope (same exception as the
- * payment-proof download route).
+ * Backs `GET /v1/admin/inventory/template` — generates and streams the blank
+ * inventory-import spreadsheet template (.xlsx) for staff to fill in.
  */
 export const downloadInventoryTemplateHandler = catchAsync(async (req: Request, res: Response) => {
   const file = productService.generateInventoryTemplateFile();

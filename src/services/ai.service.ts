@@ -4,10 +4,6 @@ import { logger } from "../config/logger.js";
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 
-// The only AI calls left anywhere in this system: both are Vision extraction
-// on customer-uploaded images (vehicle document, payment proof), never on
-// conversational chat text — that conversational agent was removed in favor
-// of deterministic DB search + rule-based routing (see whatsapp.controller.ts).
 const VISION_MODEL = "claude-haiku-4-5-20251001";
 
 export interface VisionData {
@@ -27,7 +23,9 @@ export interface VisionData {
 }
 
 /**
- * Sends a base64 encoded document image to Claude Vision to extract vehicle metadata.
+ * Sends a vehicle document/VIN photo to Claude Vision and parses back the
+ * extracted vehicle fields (make, model, chassis number, etc), returning null
+ * if the image contains no vehicle identification at all.
  */
 export async function extractDataWithClaudeVision(imageBase64: string): Promise<VisionData | null> {
   try {
@@ -123,12 +121,8 @@ export interface PaymentProofData {
 }
 
 /**
- * Sends a base64 encoded payment proof (photo or PDF) to Claude Vision to
- * validate it actually looks like a payment receipt (bank transfer, deposit,
- * Multicaixa Express, mobile payment confirmation) and extract what it can for
- * the audit trail. Gates processPaymentProof in payment.service.ts — an
- * invalid result asks the customer to re-upload instead of advancing the order
- * status. Both media types are examined here; neither bypasses this check.
+ * Sends a customer's payment-proof photo or PDF to Claude Vision and parses
+ * back whether it looks like a genuine payment proof, plus any amount/date/reference visible on it.
  */
 export async function extractPaymentProofData(
   fileBase64: string,

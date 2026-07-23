@@ -7,11 +7,14 @@ import { isTokenRevoked } from '../services/session.service.js';
 
 export interface AuthenticatedRequest extends Request {
   user?: any;
-  // The raw bearer token, once verified — POST /admin/logout (auth.controller.ts)
-  // needs the exact token string to blacklist it, not just its decoded payload.
   token?: string;
 }
 
+/**
+ * Verifies the bearer JWT on an incoming request, rejecting missing, malformed,
+ * expired, refresh-typed, or revoked tokens, and attaches the decoded payload
+ * and raw token to the request when valid.
+ */
 async function verifyToken(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers['authorization'];
   if (!authHeader) {
@@ -30,15 +33,10 @@ async function verifyToken(req: AuthenticatedRequest, res: Response, next: NextF
     return next(new ApiError(401, 'Unauthorized. Invalid or expired token.'));
   }
 
-  // Refresh tokens are only valid at POST /admin/refresh — never as a general
-  // bearer token, so a leaked one can't be used to access protected routes directly.
   if (decoded.type === 'refresh') {
     return next(new ApiError(401, 'Unauthorized. Invalid token type.'));
   }
 
-  // This JWT setup is otherwise fully stateless — without this check, a token
-  // stayed valid right up to its own expiry even after the admin explicitly
-  // logged out (see session.service.ts's revokeToken, written by POST /admin/logout).
   if (await isTokenRevoked(token)) {
     return next(new ApiError(401, 'Unauthorized. Token has been revoked.'));
   }
@@ -48,8 +46,4 @@ async function verifyToken(req: AuthenticatedRequest, res: Response, next: NextF
   next();
 }
 
-// Wrapped in catchAsync (not just an async function) because this middleware runs
-// on Express 4, which doesn't forward a rejected promise from a middleware to the
-// error handler on its own — without this, a Redis error thrown inside
-// isTokenRevoked would crash the request instead of reaching errorHandler.
 export const authMiddleware = catchAsync(verifyToken);

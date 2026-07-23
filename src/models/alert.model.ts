@@ -10,12 +10,8 @@ export interface AdminAlert {
 }
 
 /**
- * Records an admin-panel notification for payment-proof-received and
- * in-person-payment-requested events — the admin panel polls getAlerts()
- * for these. Replaced the old single-number "push a WhatsApp message to
- * config.admin.staffPhone" pattern; payment.service.ts separately pushes a
- * WhatsApp message to every row in admin_users for these same two events, so
- * neither surface depends on the other.
+ * Inserts a new row into `admin_alerts` for the in-panel notification feed —
+ * called on payment-proof-received and in-person-payment-requested events.
  */
 export async function createAlert(type: string, orderNumber: string, message: string): Promise<void> {
   await db.query(
@@ -25,8 +21,8 @@ export async function createAlert(type: string, orderNumber: string, message: st
 }
 
 /**
- * Most recent alerts, newest first — capped at 100 since this is a live
- * notification feed, not a full audit log.
+ * Fetches the newest 100 rows from `admin_alerts`, most recent first, for the
+ * admin panel's alert feed.
  */
 export async function getAlerts(): Promise<AdminAlert[]> {
   const { rows } = await db.query(
@@ -35,6 +31,10 @@ export async function getAlerts(): Promise<AdminAlert[]> {
   return rows;
 }
 
+/**
+ * Stamps `read_at` on the given `admin_alerts` row so it's treated as
+ * dismissed by the panel.
+ */
 export async function markAlertRead(id: number): Promise<void> {
   await db.query(`UPDATE admin_alerts SET read_at = NOW() WHERE id = $1`, [id]);
 }

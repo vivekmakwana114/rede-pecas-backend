@@ -9,17 +9,7 @@ let redisClient: any = null;
 let useMemoryFallback = false;
 const memoryCache = new Map<string, any[]>();
 
-const SESSION_TTL = 60 * 60 * 4; // 4 hours in seconds
-// Was 30 minutes ("matches the manual-collection wizard's own window") — but that
-// reasoning conflated two different things: the wizard's own 30-min abandonment
-// window (getActiveManualCollection in vehicle.model.ts, unaffected by this constant)
-// only starts once a customer is actively mid-wizard, answering make/model/year in
-// quick succession. This constant instead governs "how long do we remember that a
-// choice/retry prompt was shown at all" — e.g. a customer who taps "Try again" 48
-// minutes after receiving the prompt (entirely plausible — they had to go find their
-// document and take a clearer photo) was falling through with no handler and landing
-// on an unrelated stale order's fallback. Every other pending-choice/offer flag in
-// this file already uses the full SESSION_TTL; these three should too.
+const SESSION_TTL = 60 * 60 * 4;
 const VEHICLE_ID_CHOICE_TTL = SESSION_TTL;
 
 if (config.redis.url) {
@@ -30,7 +20,6 @@ if (config.redis.url) {
       useMemoryFallback = true;
     });
 
-    // Connect asynchronously
     redisClient.connect().then(() => {
       logger.info('Connected to Redis successfully for sessions');
     }).catch((err: any) => {
@@ -47,8 +36,8 @@ if (config.redis.url) {
 }
 
 /**
- * Persists search result options awaiting the customer's list tap or typed
- * numeric choice.
+ * Stores the product search-results list a customer was just shown, so a
+ * subsequent list-tap or typed digit can be resolved back to a specific product.
  */
 export async function savePendingOptions(phone: string, options: any[]): Promise<void> {
   const key = `options:${phone}`;
@@ -65,6 +54,10 @@ export async function savePendingOptions(phone: string, options: any[]): Promise
   }
 }
 
+/**
+ * Retrieves the pending product search-results list for a phone, if any is
+ * still cached.
+ */
 export async function getPendingOptions(phone: string): Promise<any[] | null> {
   const key = `options:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -80,6 +73,10 @@ export async function getPendingOptions(phone: string): Promise<any[] | null> {
   }
 }
 
+/**
+ * Removes the pending product search-results list for a phone once it's
+ * been resolved or superseded.
+ */
 export async function clearPendingOptions(phone: string): Promise<void> {
   const key = `options:${phone}`;
   memoryCache.delete(key);
@@ -95,10 +92,12 @@ export async function clearPendingOptions(phone: string): Promise<void> {
   }
 }
 
-// Tracks "have we heard from this number in the last 4h" — a plain presence marker,
-// touched on every incoming message regardless of which stage of the pipeline handles it.
 const activeSessions = new Map<string, number>();
 
+/**
+ * Reports whether a phone has no active session marker yet, i.e. this is
+ * effectively a fresh conversation.
+ */
 export async function isNewSession(phone: string): Promise<boolean> {
   const key = `active:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -116,6 +115,9 @@ export async function isNewSession(phone: string): Promise<boolean> {
   }
 }
 
+/**
+ * Marks a phone's conversation session as active for the standard TTL.
+ */
 export async function markSessionActive(phone: string): Promise<void> {
   const key = `active:${phone}`;
   activeSessions.set(key, Date.now() + SESSION_TTL * 1000);
@@ -131,12 +133,12 @@ export async function markSessionActive(phone: string): Promise<void> {
   }
 }
 
-// Tracks "has this customer actually been asked 'what part do you need?'" (via
-// onboardingComplete/collectionComplete/confirmedAskPart/sendAskPartPrompt). Free text
-// is only ever treated as a product search once this is set — it must never be the
-// first thing that answers a stray message.
 const partPromptSessions = new Map<string, number>();
 
+/**
+ * Reports whether the "what part do you need" prompt was already sent
+ * this session, gating whether free text may be treated as a product search.
+ */
 export async function wasPartPromptSent(phone: string): Promise<boolean> {
   const key = `partPrompt:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -154,6 +156,10 @@ export async function wasPartPromptSent(phone: string): Promise<boolean> {
   }
 }
 
+/**
+ * Marks that the "what part do you need" prompt has been sent for this
+ * phone's session.
+ */
 export async function markPartPromptSent(phone: string): Promise<void> {
   const key = `partPrompt:${phone}`;
   partPromptSessions.set(key, Date.now() + SESSION_TTL * 1000);
@@ -169,14 +175,12 @@ export async function markPartPromptSent(phone: string): Promise<void> {
   }
 }
 
-/**
- * Tracks the "which of your vehicles is this for?" picker shown when a customer with
- * 2+ vehicles is about to be invited to ask for a part — awaits their numeric reply,
- * same shape/lifecycle as `savePendingOptions` above but a separate key since a search
- * can also have its own pending options open at a different point in the flow.
- */
 const pendingVehicleChoiceCache = new Map<string, { id: number; make: string; model: string; year: string }[]>();
 
+/**
+ * Stores the list of vehicles a customer with 2+ vehicles is being asked
+ * to choose between before a product search proceeds.
+ */
 export async function savePendingVehicleChoice(
   phone: string,
   vehicles: { id: number; make: string; model: string; year: string }[]
@@ -195,6 +199,10 @@ export async function savePendingVehicleChoice(
   }
 }
 
+/**
+ * Retrieves the pending "which vehicle is this for?" choice list for a
+ * phone, if one is still awaiting a reply.
+ */
 export async function getPendingVehicleChoice(phone: string): Promise<{ id: number; make: string; model: string; year: string }[] | null> {
   const key = `vehicleChoice:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -210,6 +218,10 @@ export async function getPendingVehicleChoice(phone: string): Promise<{ id: numb
   }
 }
 
+/**
+ * Removes the pending "which vehicle is this for?" choice list for a
+ * phone once it's been resolved.
+ */
 export async function clearPendingVehicleChoice(phone: string): Promise<void> {
   const key = `vehicleChoice:${phone}`;
   pendingVehicleChoiceCache.delete(key);
@@ -225,12 +237,12 @@ export async function clearPendingVehicleChoice(phone: string): Promise<void> {
   }
 }
 
-// Which vehicle applies to the customer's current "ask for a part" invitation, once
-// resolved (either the only vehicle on file, or the customer's answer to the picker
-// above). ai.service.ts reads this instead of guessing when there's more than one
-// vehicle on file.
 const chosenVehicleSessions = new Map<string, { id: number; expiresAt: number }>();
 
+/**
+ * Records which of a customer's multiple vehicles they picked, so
+ * subsequent searches this session are scoped to it.
+ */
 export async function saveChosenVehicle(phone: string, vehicleId: number): Promise<void> {
   const key = `chosenVehicle:${phone}`;
   chosenVehicleSessions.set(key, { id: vehicleId, expiresAt: Date.now() + SESSION_TTL * 1000 });
@@ -246,6 +258,10 @@ export async function saveChosenVehicle(phone: string, vehicleId: number): Promi
   }
 }
 
+/**
+ * Retrieves the id of the vehicle a customer previously chose for
+ * searches this session, if any.
+ */
 export async function getChosenVehicle(phone: string): Promise<number | null> {
   const key = `chosenVehicle:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -263,15 +279,12 @@ export async function getChosenVehicle(phone: string): Promise<number | null> {
   }
 }
 
-// Tracks "the customer was just shown the VIN/photo/manual vehicle-ID choice"
-// (during onboarding, or via the 'add another vehicle' flow for a customer who
-// already has one) — needed so a photo they send next is routed to
-// processVehicleDocument, and a VIN/manual button tap to processVehicleIdOptionChoice,
-// even once they already have a confirmed vehicle on file (needsVehicleId would
-// otherwise be false and neither check would fire). 30-min TTL matches the
-// manual-collection wizard's own window rather than the full 4h session.
 const vehicleIdChoiceSessions = new Map<string, number>();
 
+/**
+ * Marks that the vehicle-ID entry option buttons (VIN/photo/manual) were
+ * just shown to this phone.
+ */
 export async function markVehicleIdChoiceShown(phone: string): Promise<void> {
   const key = `vehicleIdChoice:${phone}`;
   vehicleIdChoiceSessions.set(key, Date.now() + VEHICLE_ID_CHOICE_TTL * 1000);
@@ -287,6 +300,10 @@ export async function markVehicleIdChoiceShown(phone: string): Promise<void> {
   }
 }
 
+/**
+ * Reports whether the vehicle-ID entry option buttons were shown to this
+ * phone within the current session.
+ */
 export async function wasVehicleIdChoiceShown(phone: string): Promise<boolean> {
   const key = `vehicleIdChoice:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -305,11 +322,7 @@ export async function wasVehicleIdChoiceShown(phone: string): Promise<boolean> {
 }
 
 /**
- * Clears the vehicle-ID choice flag once identification concludes (vehicle
- * confirmed/rejected, or manual collection completes) — without this, the
- * flag only expired via its 30-min TTL, which let it linger stale after the
- * customer had already moved on (e.g. into a part search), a latent risk now
- * that whatsapp.controller.ts's stage 10 fallback also reads this flag.
+ * Clears the vehicle-ID entry option buttons' shown flag for this phone.
  */
 export async function clearVehicleIdChoiceShown(phone: string): Promise<void> {
   const key = `vehicleIdChoice:${phone}`;
@@ -326,22 +339,12 @@ export async function clearVehicleIdChoiceShown(phone: string): Promise<void> {
   }
 }
 
-/**
- * Tracks a pending "want me to notify you when this product is back in
- * stock?" offer awaiting the customer's yes/no reply. Uses a dedicated map
- * (not the options `memoryCache`) since a single offer object is a
- * different shape than the array-of-options it stores. `query` — the
- * customer's own raw search text, only set when this offer came from a free-
- * text search (searchAndRespond) — lets the confirmation echo back what they
- * actually typed instead of the specific resolved product's real name, which
- * can read as a mismatch when their query was vague (e.g. "brake pds"
- * matching "TRW Brake Pads"). Left unset for the other two callers
- * (declined-stock alternatives, restock re-offer), which already know the
- * exact product from a list tap rather than free text, so productName is the
- * right thing to echo there.
- */
 const waitlistOfferCache = new Map<string, { productId: number; productName: string; query?: string }>();
 
+/**
+ * Stores the out-of-stock product a customer was just offered to join
+ * the waitlist for, awaiting their yes/no reply.
+ */
 export async function savePendingWaitlistOffer(
   phone: string,
   offer: { productId: number; productName: string; query?: string }
@@ -360,6 +363,10 @@ export async function savePendingWaitlistOffer(
   }
 }
 
+/**
+ * Retrieves the pending waitlist offer for a phone, if one is still
+ * awaiting a reply.
+ */
 export async function getPendingWaitlistOffer(phone: string): Promise<{ productId: number; productName: string; query?: string } | null> {
   const key = `waitlist:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -375,6 +382,10 @@ export async function getPendingWaitlistOffer(phone: string): Promise<{ productI
   }
 }
 
+/**
+ * Removes the pending waitlist offer for a phone once the customer has
+ * replied.
+ */
 export async function clearPendingWaitlistOffer(phone: string): Promise<void> {
   const key = `waitlist:${phone}`;
   waitlistOfferCache.delete(key);
@@ -390,15 +401,12 @@ export async function clearPendingWaitlistOffer(phone: string): Promise<void> {
   }
 }
 
-/**
- * Tracks a pending "your waitlisted product is back in stock — order now?"
- * offer awaiting the customer's yes/no reply. Kept separate from
- * waitlistOfferCache above even though the shape is identical — that one
- * means "yes, notify me later"; this one means "yes, order right now" — and
- * a customer could plausibly have both pending for different products.
- */
 const restockOrderOfferCache = new Map<string, { productId: number; productName: string }>();
 
+/**
+ * Stores the restocked product a waitlisted customer was just offered to
+ * order, awaiting their yes/no reply.
+ */
 export async function savePendingRestockOrderOffer(
   phone: string,
   offer: { productId: number; productName: string }
@@ -417,6 +425,10 @@ export async function savePendingRestockOrderOffer(
   }
 }
 
+/**
+ * Retrieves the pending restock-order offer for a phone, if one is still
+ * awaiting a reply.
+ */
 export async function getPendingRestockOrderOffer(phone: string): Promise<{ productId: number; productName: string } | null> {
   const key = `restockOrder:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -432,6 +444,10 @@ export async function getPendingRestockOrderOffer(phone: string): Promise<{ prod
   }
 }
 
+/**
+ * Removes the pending restock-order offer for a phone once the customer
+ * has replied.
+ */
 export async function clearPendingRestockOrderOffer(phone: string): Promise<void> {
   const key = `restockOrder:${phone}`;
   restockOrderOfferCache.delete(key);
@@ -447,17 +463,6 @@ export async function clearPendingRestockOrderOffer(phone: string): Promise<void
   }
 }
 
-/**
- * Tracks a pending "here are the services related to your product — want to
- * add one?" list awaiting the customer's selection — same shape/lifecycle as
- * savePendingWaitlistOffer above, just a distinct offer payload/key since a
- * customer could in principle have both pending at slightly different points.
- * Carries the full selected product (not just its name) so the proforma can
- * be generated once the offer resolves, without a re-fetch. `services` is
- * the set of services matched by service_category (see
- * getMatchingServicesForProduct in product.model.ts) that were actually
- * offered — not the full match set, if that was ever capped.
- */
 export interface PendingServiceOffer {
   orderNumber: string;
   product: Product;
@@ -466,6 +471,10 @@ export interface PendingServiceOffer {
 
 const serviceOfferCache = new Map<string, PendingServiceOffer>();
 
+/**
+ * Stores the add-on services list offered alongside a newly ordered
+ * product, awaiting the customer's selection or skip.
+ */
 export async function savePendingServiceOffer(phone: string, offer: PendingServiceOffer): Promise<void> {
   const key = `serviceOffer:${phone}`;
   serviceOfferCache.set(key, offer);
@@ -481,6 +490,10 @@ export async function savePendingServiceOffer(phone: string, offer: PendingServi
   }
 }
 
+/**
+ * Retrieves the pending service-offer for a phone, if one is still
+ * awaiting a selection.
+ */
 export async function getPendingServiceOffer(phone: string): Promise<PendingServiceOffer | null> {
   const key = `serviceOffer:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -496,6 +509,10 @@ export async function getPendingServiceOffer(phone: string): Promise<PendingServ
   }
 }
 
+/**
+ * Removes the pending service-offer for a phone once the customer has
+ * made a selection.
+ */
 export async function clearPendingServiceOffer(phone: string): Promise<void> {
   const key = `serviceOffer:${phone}`;
   serviceOfferCache.delete(key);
@@ -511,11 +528,6 @@ export async function clearPendingServiceOffer(phone: string): Promise<void> {
   }
 }
 
-/**
- * Tracks a pending "the admin marked this order's stock unavailable — want
- * alternatives or the waitlist?" offer awaiting the customer's yes/no reply.
- * Same shape/lifecycle as savePendingWaitlistOffer above.
- */
 export interface PendingStockUnavailableOffer {
   orderNumber: string;
   productId: number;
@@ -524,6 +536,10 @@ export interface PendingStockUnavailableOffer {
 
 const stockUnavailableOfferCache = new Map<string, PendingStockUnavailableOffer>();
 
+/**
+ * Stores the order whose stock just turned out to be unavailable,
+ * awaiting the customer's choice between an alternative search or the waitlist.
+ */
 export async function savePendingStockUnavailableOffer(phone: string, offer: PendingStockUnavailableOffer): Promise<void> {
   const key = `stockUnavailable:${phone}`;
   stockUnavailableOfferCache.set(key, offer);
@@ -539,6 +555,10 @@ export async function savePendingStockUnavailableOffer(phone: string, offer: Pen
   }
 }
 
+/**
+ * Retrieves the pending stock-unavailable offer for a phone, if one is
+ * still awaiting a reply.
+ */
 export async function getPendingStockUnavailableOffer(phone: string): Promise<PendingStockUnavailableOffer | null> {
   const key = `stockUnavailable:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -554,6 +574,10 @@ export async function getPendingStockUnavailableOffer(phone: string): Promise<Pe
   }
 }
 
+/**
+ * Removes the pending stock-unavailable offer for a phone once the
+ * customer has replied.
+ */
 export async function clearPendingStockUnavailableOffer(phone: string): Promise<void> {
   const key = `stockUnavailable:${phone}`;
   stockUnavailableOfferCache.delete(key);
@@ -569,11 +593,12 @@ export async function clearPendingStockUnavailableOffer(phone: string): Promise<
   }
 }
 
-// Tracks "the customer was just shown the VIN-already-registered choice"
-// (Search for a part / Add different vehicle) — same shape/lifecycle as
-// vehicleIdChoiceSessions above, 30-min TTL.
 const vinDuplicateChoiceSessions = new Map<string, number>();
 
+/**
+ * Marks that the "this VIN is already registered" choice buttons were
+ * just shown to this phone.
+ */
 export async function markVinDuplicateChoiceShown(phone: string): Promise<void> {
   const key = `vinDuplicateChoice:${phone}`;
   vinDuplicateChoiceSessions.set(key, Date.now() + VEHICLE_ID_CHOICE_TTL * 1000);
@@ -589,6 +614,10 @@ export async function markVinDuplicateChoiceShown(phone: string): Promise<void> 
   }
 }
 
+/**
+ * Reports whether the "VIN already registered" choice buttons were shown
+ * to this phone within the current session.
+ */
 export async function wasVinDuplicateChoiceShown(phone: string): Promise<boolean> {
   const key = `vinDuplicateChoice:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -606,6 +635,10 @@ export async function wasVinDuplicateChoiceShown(phone: string): Promise<boolean
   }
 }
 
+/**
+ * Clears the "VIN already registered" choice buttons' shown flag for this
+ * phone.
+ */
 export async function clearVinDuplicateChoice(phone: string): Promise<void> {
   const key = `vinDuplicateChoice:${phone}`;
   vinDuplicateChoiceSessions.delete(key);
@@ -621,14 +654,12 @@ export async function clearVinDuplicateChoice(phone: string): Promise<void> {
   }
 }
 
-// Tracks "the customer was just shown the vehicle Sim/Não confirm buttons"
-// (right after a VIN decode or document scan succeeds) — same shape/lifecycle
-// as vehicleIdChoiceSessions above. Without this, processVehicleConfirmation
-// had no way to tell "no vehicle is actually pending confirmation" apart from
-// "the customer's reply just didn't match sim/não", so it could never safely
-// re-ask on a mismatch without risking hijacking unrelated messages.
 const vehicleConfirmSessions = new Map<string, number>();
 
+/**
+ * Marks that the vehicle Sim/Não confirmation buttons were just shown to
+ * this phone, gating the confirm-reply matcher.
+ */
 export async function markVehicleConfirmShown(phone: string): Promise<void> {
   const key = `vehicleConfirm:${phone}`;
   vehicleConfirmSessions.set(key, Date.now() + VEHICLE_ID_CHOICE_TTL * 1000);
@@ -644,6 +675,10 @@ export async function markVehicleConfirmShown(phone: string): Promise<void> {
   }
 }
 
+/**
+ * Reports whether the vehicle Sim/Não confirmation buttons were shown to
+ * this phone within the current session.
+ */
 export async function wasVehicleConfirmShown(phone: string): Promise<boolean> {
   const key = `vehicleConfirm:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -661,6 +696,10 @@ export async function wasVehicleConfirmShown(phone: string): Promise<boolean> {
   }
 }
 
+/**
+ * Clears the vehicle Sim/Não confirmation buttons' shown flag for this
+ * phone.
+ */
 export async function clearVehicleConfirmShown(phone: string): Promise<void> {
   const key = `vehicleConfirm:${phone}`;
   vehicleConfirmSessions.delete(key);
@@ -676,13 +715,12 @@ export async function clearVehicleConfirmShown(phone: string): Promise<void> {
   }
 }
 
-// Tracks "the customer was just shown the VIN-decode-failed retry/manual-entry
-// choice" (processVIN's NHTSA lookup came back empty) — stores the attempted
-// VIN (not just '1' like the boolean flags above) so it can still be threaded
-// into startManualCollection's attempted_vin column if the customer picks
-// manual, exactly like the old auto-fallback used to do unconditionally.
 const vinDecodeFailedSessions = new Map<string, { vin: string; expiresAt: number }>();
 
+/**
+ * Marks that the manual-entry fallback message was shown after a VIN
+ * decode failed, caching the attempted VIN alongside the flag.
+ */
 export async function markVinDecodeFailedShown(phone: string, attemptedVin: string): Promise<void> {
   const key = `vinDecodeFailed:${phone}`;
   vinDecodeFailedSessions.set(key, { vin: attemptedVin, expiresAt: Date.now() + VEHICLE_ID_CHOICE_TTL * 1000 });
@@ -698,6 +736,10 @@ export async function markVinDecodeFailedShown(phone: string, attemptedVin: stri
   }
 }
 
+/**
+ * Reports whether a VIN-decode-failed fallback message was shown to this
+ * phone within the current session.
+ */
 export async function wasVinDecodeFailedShown(phone: string): Promise<boolean> {
   const key = `vinDecodeFailed:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -715,11 +757,10 @@ export async function wasVinDecodeFailedShown(phone: string): Promise<boolean> {
   }
 }
 
-// Retrieves the attempted VIN stored by markVinDecodeFailedShown, for
-// processVinDecodeFailedChoice to thread into startManualCollection if the
-// customer picks manual entry. Returns null when nothing's pending (distinct
-// from wasVinDecodeFailedShown only in that callers here already know the
-// flag is set — this is the value-fetching counterpart, not another gate).
+/**
+ * Retrieves the VIN that failed to decode for this phone, if the
+ * decode-failed flag is still active.
+ */
 export async function getVinDecodeFailedVin(phone: string): Promise<string | null> {
   const key = `vinDecodeFailed:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -737,6 +778,9 @@ export async function getVinDecodeFailedVin(phone: string): Promise<string | nul
   }
 }
 
+/**
+ * Clears the VIN-decode-failed flag and cached VIN for this phone.
+ */
 export async function clearVinDecodeFailedChoice(phone: string): Promise<void> {
   const key = `vinDecodeFailed:${phone}`;
   vinDecodeFailedSessions.delete(key);
@@ -752,11 +796,12 @@ export async function clearVinDecodeFailedChoice(phone: string): Promise<void> {
   }
 }
 
-// Tracks "the customer was just shown the document-unreadable retry/manual-entry
-// choice" (processVehicleDocument's failure paths) — same shape/lifecycle as
-// vehicleIdChoiceSessions above, 30-min TTL.
 const documentRetryChoiceSessions = new Map<string, number>();
 
+/**
+ * Marks that the "try again" document-processing retry button was just
+ * shown to this phone.
+ */
 export async function markDocumentRetryChoiceShown(phone: string): Promise<void> {
   const key = `documentRetryChoice:${phone}`;
   documentRetryChoiceSessions.set(key, Date.now() + VEHICLE_ID_CHOICE_TTL * 1000);
@@ -772,6 +817,10 @@ export async function markDocumentRetryChoiceShown(phone: string): Promise<void>
   }
 }
 
+/**
+ * Reports whether the document-processing retry button was shown to this
+ * phone within the current session.
+ */
 export async function wasDocumentRetryChoiceShown(phone: string): Promise<boolean> {
   const key = `documentRetryChoice:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -789,6 +838,10 @@ export async function wasDocumentRetryChoiceShown(phone: string): Promise<boolea
   }
 }
 
+/**
+ * Clears the document-processing retry button's shown flag for this
+ * phone.
+ */
 export async function clearDocumentRetryChoice(phone: string): Promise<void> {
   const key = `documentRetryChoice:${phone}`;
   documentRetryChoiceSessions.delete(key);
@@ -804,19 +857,12 @@ export async function clearDocumentRetryChoice(phone: string): Promise<void> {
   }
 }
 
-/**
- * Tracks the customer's most recently detected conversation language —
- * refreshed on every inbound message whose text carries a recognizable PT/EN
- * signal (see detectMessageLocale in utils/greeting.ts), so a customer who
- * switches language mid-conversation gets answered in whatever they just
- * typed rather than a locale frozen at first contact. Deliberately
- * session-scoped (same SESSION_TTL as everything else here) instead of
- * durable — this used to be persisted forever on customers.locale, which
- * meant it was detected once and never re-evaluated; see resolveLocale in
- * customer.service.ts, the sole reader of this.
- */
 const localeSessions = new Map<string, { locale: 'pt' | 'en'; expiresAt: number }>();
 
+/**
+ * Caches the detected conversation locale for a phone, so subsequent
+ * customer-facing replies this session use the same language.
+ */
 export async function saveLocale(phone: string, locale: 'pt' | 'en'): Promise<void> {
   const key = `locale:${phone}`;
   localeSessions.set(key, { locale, expiresAt: Date.now() + SESSION_TTL * 1000 });
@@ -832,6 +878,10 @@ export async function saveLocale(phone: string, locale: 'pt' | 'en'): Promise<vo
   }
 }
 
+/**
+ * Retrieves the cached conversation locale for a phone, or null if none
+ * has been detected yet this session.
+ */
 export async function getLocale(phone: string): Promise<'pt' | 'en' | null> {
   const key = `locale:${phone}`;
   if (useMemoryFallback || !redisClient?.isOpen) {
@@ -849,15 +899,12 @@ export async function getLocale(phone: string): Promise<'pt' | 'en' | null> {
   }
 }
 
-/**
- * Generic per-phone string slot, backing the two conversation-context values
- * the humanization layer reads (see humanize.service.ts). Both are stored here
- * rather than threaded as parameters through the ~45 send call sites: every
- * sender already has the phone number in hand, so a session lookup keeps the
- * migration to reply.service.ts a one-line import change per file.
- */
 const stringSessions = new Map<string, { value: string; expiresAt: number }>();
 
+/**
+ * Generic helper that caches a string value under a key in both the
+ * in-memory map and Redis (when available), used by the simple string-valued session fields below.
+ */
 async function saveString(key: string, value: string): Promise<void> {
   stringSessions.set(key, { value, expiresAt: Date.now() + SESSION_TTL * 1000 });
 
@@ -872,6 +919,10 @@ async function saveString(key: string, value: string): Promise<void> {
   }
 }
 
+/**
+ * Generic helper that reads a cached string value by key, preferring
+ * Redis and falling back to the in-memory map.
+ */
 async function getString(key: string): Promise<string | null> {
   const readMemory = () => {
     const entry = stringSessions.get(key);
@@ -891,61 +942,59 @@ async function getString(key: string): Promise<string | null> {
 }
 
 /**
- * The customer's most recent inbound message text. Written once per message in
- * processMessageFlow, read by the humanization layer so a rewrite can react to
- * what the customer actually said rather than only to the canned string.
+ * Caches the customer's most recent inbound message text, used as
+ * context for the humanize layer's contextual rewrites.
  */
 export async function saveLastMessage(phone: string, text: string): Promise<void> {
   return saveString(`lastmsg:${phone}`, text);
 }
 
+/**
+ * Retrieves the customer's most recently cached inbound message text.
+ */
 export async function getLastMessage(phone: string): Promise<string | null> {
   return getString(`lastmsg:${phone}`);
 }
 
 /**
- * The customer's first name, cached at the get-or-create step so a contextual
- * rewrite doesn't cost a DB round-trip on every send.
+ * Caches a customer's first name, used as context for the humanize
+ * layer's contextual rewrites.
  */
 export async function saveCustomerName(phone: string, name: string): Promise<void> {
   return saveString(`custname:${phone}`, name);
 }
 
+/**
+ * Retrieves a customer's cached first name.
+ */
 export async function getCustomerName(phone: string): Promise<string | null> {
   return getString(`custname:${phone}`);
 }
 
 /**
- * The Meta message id (wamid) of the last interactive (button/list) message
- * actually sent to this phone. WhatsApp never disables an old button/list
- * message client-side, so a customer can tap one from earlier in the
- * conversation at any time — comparing an inbound reply's `context.id`
- * against this value is how whatsapp.controller.ts tells a live answer apart
- * from a stale tap on an already-superseded question. Written by every
- * customer-facing interactive send (reply.service.ts's sendReplyButtons/
- * sendReplyList, plus the handful of call sites that intentionally bypass it)
- * — never by admin-facing sends, which can have several valid prompts live
- * at once and aren't part of this single-threaded guard.
+ * Caches the WhatsApp message id of the most recent interactive prompt
+ * sent to a phone, if one was provided.
  */
 export async function saveActivePromptId(phone: string, messageId?: string | null): Promise<void> {
   if (!messageId) return;
   return saveString(`activePrompt:${phone}`, messageId);
 }
 
+/**
+ * Retrieves the cached message id of the most recent interactive prompt
+ * sent to a phone.
+ */
 export async function getActivePromptId(phone: string): Promise<string | null> {
   return getString(`activePrompt:${phone}`);
 }
 
-/**
- * Content-addressed cache of humanized message bodies. Keyed by a hash of the
- * source text (plus locale and, for contextual rewrites, the context), never by
- * phone — so the fixed prompts every customer sees cost exactly one Anthropic
- * call across the system's lifetime. TTL is deliberately longer than
- * SESSION_TTL: these entries aren't tied to any one conversation.
- */
-const HUMANIZE_CACHE_TTL = 60 * 60 * 24; // 24 hours
+const HUMANIZE_CACHE_TTL = 60 * 60 * 24;
 const humanizeCache = new Map<string, { value: string; expiresAt: number }>();
 
+/**
+ * Retrieves a previously cached Claude-humanized rewrite by its cache
+ * key, preferring Redis and falling back to the in-memory map.
+ */
 export async function getHumanized(key: string): Promise<string | null> {
   const readMemory = () => {
     const entry = humanizeCache.get(key);
@@ -964,6 +1013,10 @@ export async function getHumanized(key: string): Promise<string | null> {
   }
 }
 
+/**
+ * Caches a Claude-humanized rewrite under its cache key for 24 hours, so
+ * repeat inputs skip a fresh API call.
+ */
 export async function saveHumanized(key: string, value: string): Promise<void> {
   humanizeCache.set(key, { value, expiresAt: Date.now() + HUMANIZE_CACHE_TTL * 1000 });
 
@@ -978,27 +1031,22 @@ export async function saveHumanized(key: string, value: string): Promise<void> {
   }
 }
 
-/**
- * Server-side admin token blacklist. This JWT setup is otherwise fully
- * stateless (see adminAuth.service.ts) — an access/refresh token stays valid
- * until its own expiry regardless of anything happening server-side. Logging
- * out (POST /admin/logout, authMiddleware.ts) needs the token to actually stop
- * working immediately rather than silently remain valid until it naturally
- * expires, so the exact token is recorded here as revoked, TTL'd to exactly
- * its own remaining lifetime — never longer, since there's no reason to
- * remember a token past the point it would've stopped working anyway.
- * Keyed by a hash of the token rather than the raw string, same reasoning as
- * humanize.service.ts's cacheKey: no reason to let a live bearer token sit
- * around as a plain Redis key/value.
- */
 const revokedTokens = new Map<string, number>();
 
+/**
+ * Builds the cache key for a revoked-token blacklist entry, hashing the
+ * raw token so it's never stored in plain text.
+ */
 function revokedTokenKey(token: string): string {
   return `revokedToken:${createHash('sha1').update(token).digest('hex')}`;
 }
 
+/**
+ * Blacklists a JWT (access or refresh) for the remainder of its natural
+ * lifetime, so a logged-out token can no longer be used.
+ */
 export async function revokeToken(token: string, ttlSeconds: number): Promise<void> {
-  if (ttlSeconds <= 0) return; // already past its own expiry — nothing to blacklist
+  if (ttlSeconds <= 0) return;
   const key = revokedTokenKey(token);
   revokedTokens.set(key, Date.now() + ttlSeconds * 1000);
 
@@ -1013,6 +1061,9 @@ export async function revokeToken(token: string, ttlSeconds: number): Promise<vo
   }
 }
 
+/**
+ * Checks whether a JWT has been blacklisted via revokeToken.
+ */
 export async function isTokenRevoked(token: string): Promise<boolean> {
   const key = revokedTokenKey(token);
   if (useMemoryFallback || !redisClient?.isOpen) {

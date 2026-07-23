@@ -38,42 +38,18 @@ export interface Product {
   supplier_phone?: string;
 }
 
-/**
- * Builds an OR-of-terms tsquery from raw customer text: to_tsvector on the input
- * applies the same tokenizing/stemming/stopword-removal as the search_vector
- * column (config must match search_vector's — 'english' as of 2026-07-14, see
- * schema.sql; was 'portuguese' before catalog data switched to English), then
- * the resulting lexemes are joined with '|' instead of AND-ing them
- * (plainto_tsquery's default). AND-ing was the bug — a customer message always
- * carries filler words ("I need...", "para o meu...") that aren't in the
- * stopword list for whichever config is active, so plainto_tsquery required
- * the product to literally contain "need"/"para" etc. and matched nothing.
- * OR-ing means any one real keyword overlap (e.g. "oil"/"filter") is enough —
- * customers can phrase the request however they want.
- */
 const OR_TSQUERY = `to_tsquery('english', array_to_string(tsvector_to_array(to_tsvector('english', unaccent($1))), ' | '))`;
 
-// How many text-matching candidates to pull from the DB before the vehicle
-// hard-filter (applied in JS below) narrows them down to the top 3 actually
-// shown to the customer. Bounded rather than unlimited — the catalog is
-// still low hundreds of rows (see getAllProducts), so this comfortably
-// covers every text match without loading the whole table.
 const SEARCH_CANDIDATE_LIMIT = 50;
 
 /**
- * A product's vehicle_make/vehicle_model can be a single value, a
- * slash-joined compound ("Hyundai/Kia" — parts shared across a platform), or
- * a generic wildcard meaning "fits anything" ("Various", "Universal", or
- * "Aftermarket" — a non-OEM part with no single-vehicle restriction; see the
- * 2026-07-22 data-fix note near the products table in schema.sql for the
- * data-quality issue this specifically works around). Matches loosely
- * (case-insensitive, substring either direction) so minor wording
- * differences between the catalog and a decoded/manually-entered customer
- * vehicle don't produce false negatives.
+ * Checks whether a product's vehicle-restriction field (make/model, slash-
+ * separated for multiple options) is compatible with the customer's vehicle value, treating a missing product
+ * restriction, a missing customer value, or a universal/aftermarket option as always compatible.
  */
 function vehicleFieldMatches(productValue: string | null | undefined, customerValue: string | null | undefined): boolean {
-  if (!productValue) return true; // no restriction recorded — treat as compatible
-  if (!customerValue) return true; // nothing to compare against — don't exclude on missing customer data
+  if (!productValue) return true;
+  if (!customerValue) return true;
   const options = productValue.split('/').map((s) => s.trim().toLowerCase());
   if (options.some((o) => o === 'various' || o === 'universal' || o === 'aftermarket')) return true;
   const target = customerValue.trim().toLowerCase();
@@ -81,10 +57,8 @@ function vehicleFieldMatches(productValue: string | null | undefined, customerVa
 }
 
 /**
- * year_start/year_end define an inclusive compatibility range; either bound
- * (or both) can be null, meaning "no restriction" on that side. A customer
- * vehicle year that doesn't parse as a number (rare manual-entry/OCR case)
- * is treated the same as "unknown" — don't exclude on data we can't compare.
+ * Checks whether the customer's vehicle year falls within a product's
+ * year_start/year_end range, treating an unparseable or missing customer year as always compatible.
  */
 function vehicleYearMatches(yearStart: number | null | undefined, yearEnd: number | null | undefined, customerYear: string | null | undefined): boolean {
   const year = customerYear ? Number(customerYear) : NaN;
@@ -101,14 +75,9 @@ export interface SearchVehicle {
 }
 
 /**
- * Searches the inventory for products matching the customer's request by
- * name/brand/reference/synonyms (full-text), then — when a vehicle is given
- * — hard-filters to only the products actually compatible with it
- * (vehicle_make/vehicle_model/year_start/year_end), matched loosely (see
- * vehicleFieldMatches/vehicleYearMatches) so generic catalog values
- * ("Various", compound makes) don't produce spurious mismatches. Without a
- * vehicle, falls back to the pre-2026-07 purely text-based behavior. Limits
- * result to top 3 cheapest compatible products.
+ * Runs a full-text search against `products.search_vector` for in-stock, active
+ * items matching `part`, then filters the top candidates down to those compatible with the customer's vehicle
+ * (make/model/year) and returns the cheapest, highest-rated-supplier 3 results.
  */
 export async function searchProductsInInventory({
   part,
@@ -116,12 +85,7 @@ export async function searchProductsInInventory({
   excludeProductId,
 }: {
   part: string;
-  // The customer's registered vehicle — when given, results are hard-filtered
-  // to compatible products only (see vehicleFieldMatches/vehicleYearMatches).
   vehicle?: SearchVehicle | null;
-  // Excludes a specific product from results — used when re-searching for
-  // alternatives after the admin marked that exact product unavailable, so
-  // it can't show back up as one of its own "alternatives".
   excludeProductId?: number;
 }): Promise<Product[]> {
   const { rows } = await db.query(
@@ -170,9 +134,8 @@ export async function searchProductsInInventory({
 }
 
 /**
- * Registers a customer's request to be notified when a product is restocked
- * (idempotent — ON CONFLICT DO NOTHING on the (product_id, customer_phone)
- * unique pair, so a repeat opt-in is a no-op rather than a duplicate row).
+ * Inserts a `waitlist_requests` row linking a customer to an out-of-stock
+ * product, so they can be notified on restock. No-ops if already waitlisted for that product.
  */
 export async function addToProductWaitlist(productId: number, phone: string): Promise<void> {
   await db.query(
@@ -184,13 +147,8 @@ export async function addToProductWaitlist(productId: number, phone: string): Pr
 }
 
 /**
- * Fetches every product (active and inactive), joined with its supplier —
- * backs the admin panel's inventory grid (GET /admin/products). Includes
- * inactive rows (unlike the customer-facing search/lookup functions above)
- * so the admin can find and reactivate a deactivated product — see
- * updateProduct's `active` field and getProductByIdAnyStatus below. Newest
- * first, matching the other admin list endpoints' default ordering (e.g.
- * orders).
+ * Returns every `products` row (any active status) joined with its supplier's
+ * name/rating/province/phone, newest-updated first, for the admin product list.
  */
 export async function getAllProducts(): Promise<Product[]> {
   const { rows } = await db.query(
@@ -234,9 +192,8 @@ export async function getAllProducts(): Promise<Product[]> {
 }
 
 /**
- * Fetches a single active product by id, joined with its supplier — used both
- * to build the restock-notification message (price/supplier) and to actually
- * create the order once the customer taps "Order now".
+ * Looks up a single active `products` row by id, joined with supplier details.
+ * Returns null for inactive or missing products.
  */
 export async function getProductById(id: number): Promise<Product | null> {
   const { rows } = await db.query(
@@ -281,11 +238,8 @@ export async function getProductById(id: number): Promise<Product | null> {
 }
 
 /**
- * Same lookup as getProductById, but without the active filter — used by
- * the admin panel (GET/PATCH /admin/products/:id) so a deactivated product
- * can still be viewed and re-activated (via updateProduct's `active`
- * field), unlike every customer-facing caller of getProductById above,
- * which must never resolve an inactive product.
+ * Looks up a single `products` row by id regardless of active status, joined
+ * with supplier details — used by the admin edit/view endpoints.
  */
 export async function getProductByIdAnyStatus(id: number): Promise<Product | null> {
   const { rows } = await db.query(
@@ -330,10 +284,8 @@ export async function getProductByIdAnyStatus(id: number): Promise<Product | nul
 }
 
 /**
- * Finds the services relevant to a given product, via the shared
- * service_category join key (see db/schema.sql products/services tables).
- * Returns an empty array if the product doesn't exist or has no
- * service_category set.
+ * Looks up a product's `service_category` and returns the matching active
+ * services for it, used to offer a related service alongside a product search result.
  */
 export async function getMatchingServicesForProduct(productId: number): Promise<Service[]> {
   const { rows } = await db.query('SELECT service_category FROM products WHERE id = $1', [productId]);
@@ -342,10 +294,8 @@ export async function getMatchingServicesForProduct(productId: number): Promise<
 }
 
 /**
- * Admin edits to a product's catalog/stock fields — backs PATCH
- * /admin/products/:id. supplier_id is intentionally not editable here:
- * reassigning it would change the row's UNIQUE (supplier_id, reference)
- * identity, which is out of scope for a simple field edit.
+ * Dynamically updates whichever `Product` fields are present in `fields` on
+ * the `products` row for the given id, stamping `updated_at`. No-ops if `fields` is empty.
  */
 export async function updateProduct(id: number, fields: Partial<Product>): Promise<void> {
   const keys = Object.keys(fields);
@@ -363,13 +313,8 @@ export async function updateProduct(id: number, fields: Partial<Product>): Promi
 export type HardDeleteResult = 'deleted' | 'not_found' | 'still_active';
 
 /**
- * Permanently removes a product — backs DELETE /admin/products/:id. Only
- * allowed once the product is already inactive (deactivate it first via
- * PATCH .../:id { active: false }, see updateProduct) — a two-step delete so
- * an admin can't accidentally wipe a product still live in the customer-facing
- * catalog. Doesn't catch the foreign-key violation a still-referenced product
- * (an existing order or waitlist_requests row) would throw on the DELETE
- * itself — see deleteProductHandler for that.
+ * Permanently deletes a `products` row by id, refusing to do so while the
+ * product is still active. Returns 'not_found'/'still_active' instead of deleting when the row doesn't qualify.
  */
 export async function hardDeleteProduct(id: number): Promise<HardDeleteResult> {
   const { rows } = await db.query('SELECT active FROM products WHERE id = $1', [id]);
@@ -381,11 +326,8 @@ export async function hardDeleteProduct(id: number): Promise<HardDeleteResult> {
 }
 
 /**
- * Finds an out-of-stock product matching the requested part, so a waitlist
- * opt-in has somewhere to attach the customer's phone. Not vehicle-aware —
- * a part with no product row at all (never stocked) can't be waitlisted
- * under this design; the common case (a stocked product hitting zero) is
- * fully covered.
+ * Full-text searches `products` for an active, out-of-stock (quantity = 0)
+ * item matching `part`, used to check whether a "no stock" search should offer a restock waitlist instead of nothing.
  */
 export async function findZeroQuantityProductMatch({
   part,

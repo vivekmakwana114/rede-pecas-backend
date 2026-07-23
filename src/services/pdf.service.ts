@@ -10,12 +10,17 @@ import { getMessages, DEFAULT_LOCALE } from '../i18n/messages.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Helper for dates
+/**
+ * Formats a Date as a DD/MM/YYYY string for display on generated PDFs.
+ */
 function formatDate(date: Date): string {
   const d = new Date(date);
   return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
 }
 
+/**
+ * Returns a new Date offset by the given number of days from the input date.
+ */
 function addDays(date: Date, days: number): Date {
   const d = new Date(date);
   d.setDate(d.getDate() + days);
@@ -23,11 +28,9 @@ function addDays(date: Date, days: number): Date {
 }
 
 /**
- * Generates an A4 PDF Proforma invoice for the customer. When `service` is
- * given, it's rendered as its own table row (own reference-less line, own
- * price) below the product, and the total box sums both.
- * Document text follows `locale` (the customer's own detected locale, not
- * the fixed MESSAGE_LOCALE) — pass the caller's resolved customer locale.
+ * Renders a locale-aware proforma invoice PDF for an order (part line item,
+ * optional service line item, totals, and payment instructions) to a temp
+ * file and resolves with its path once the write stream finishes.
  */
 export async function generateProformaPDF(
   orderNumber: string,
@@ -38,7 +41,6 @@ export async function generateProformaPDF(
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
-    // Use system temp dir or local temp dir
     const tempDir = path.join(__dirname, '../../temp');
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
@@ -49,7 +51,6 @@ export async function generateProformaPDF(
 
     const pc = getMessages(locale).pdf.proforma;
 
-    // Header
     doc.fontSize(22).fillColor('#1A3A5C').font('Helvetica-Bold').text(pc.companyName, 50, 50);
     doc.fontSize(10).fillColor('#555555').font('Helvetica')
       .text(pc.tagline, 50, 78)
@@ -65,13 +66,11 @@ export async function generateProformaPDF(
 
     doc.moveTo(50, 145).lineTo(545, 145).strokeColor('#2E6DA4').lineWidth(2).stroke();
 
-    // Client Info
     doc.fontSize(11).fillColor('#1A3A5C').font('Helvetica-Bold').text(pc.clientHeader, 50, 160);
     doc.fontSize(10).fillColor('#333333').font('Helvetica')
       .text(pc.whatsappLabel(phone), 50, 178)
       .text(pc.clientDataNote, 50, 193);
 
-    // Table Header
     const tY = 240;
     const ROW_HEIGHT = 36;
     doc.rect(50, tY, 495, 28).fillColor('#1A3A5C').fill();
@@ -82,7 +81,6 @@ export async function generateProformaPDF(
       .text(pc.tableUnitPrice, 420, tY + 9, { width: 80, align: 'right' })
       .text(pc.tableTotal, 480, tY + 9, { width: 60, align: 'right' });
 
-    // Table Rows — the product, then the accepted service (if any)
     const lineItems = [
       { description: item.name, reference: item.reference, price: item.price, supplierNote: pc.supplierLabel(item.supplier || 'Rede Peças') },
       ...(service ? [{ description: service.name, reference: '—', price: service.price, supplierNote: null as string | null }] : []),
@@ -107,14 +105,12 @@ export async function generateProformaPDF(
 
     const total = lineItems.reduce((sum, line) => sum + line.price, 0);
 
-    // Total Area
     const totalY = tY + 28 + tableBodyHeight + 36;
     doc.rect(350, totalY, 195, 28).fillColor('#1A3A5C').fill();
     doc.fontSize(12).fillColor('#FFFFFF').font('Helvetica-Bold')
       .text(pc.totalDue, 360, totalY + 8)
       .text(formatPrice(total), 480, totalY + 8, { width: 60, align: 'right' });
 
-    // Payment Instructions
     const payY = totalY + 60;
     doc.fontSize(11).fillColor('#1A3A5C').font('Helvetica-Bold')
       .text(pc.paymentInstructionsHeader, 50, payY);
@@ -125,11 +121,9 @@ export async function generateProformaPDF(
       .text(pc.referenceLine(orderNumber), 60, payY + 60)
       .text(pc.afterPaymentLine, 60, payY + 76);
 
-    // Terms Note
     doc.fontSize(9).fillColor('#777777').font('Helvetica')
       .text(pc.termsNote, 50, payY + 120, { width: 495 });
 
-    // Footer
     doc.moveTo(50, 760).lineTo(545, 760).strokeColor('#2E6DA4').lineWidth(1).stroke();
     doc.fontSize(8).fillColor('#999999')
       .text(pc.footer, 50, 768, { align: 'center', width: 495 });
@@ -141,7 +135,8 @@ export async function generateProformaPDF(
 }
 
 /**
- * Sends the generated proforma PDF to the customer via Meta WhatsApp Business API.
+ * Uploads a generated proforma PDF to the WhatsApp Cloud API and sends it
+ * to the customer as a document message with a locale-aware caption.
  */
 export async function sendProformaWhatsApp(
   phone: string,
@@ -153,12 +148,10 @@ export async function sendProformaWhatsApp(
   const token = config.whatsapp.token;
 
   try {
-    // 1. Upload the PDF file as media to WhatsApp
     const fileBuffer = fs.readFileSync(pdfPath);
     const formData = new FormData();
     formData.append('messaging_product', 'whatsapp');
     formData.append('type', 'application/pdf');
-    // We construct a Blob out of the file buffer to send it correctly in FormData
     formData.append('file', new Blob([fileBuffer], { type: 'application/pdf' }), `${orderNumber}.pdf`);
 
     const uploadRes = await fetch(`${API_URL}/media`, {
@@ -175,9 +168,6 @@ export async function sendProformaWhatsApp(
 
     const { id: mediaId } = await uploadRes.json() as any;
 
-    // 2. Send the actual PDF document (stockConfirmedIntro, sent just before this
-    // call in product.service.ts, already covers the "confirmed, invoice attached"
-    // text — a separate confirmation message here would just repeat it)
     await fetch(`${API_URL}/messages`, {
       method: 'POST',
       headers: {
@@ -204,7 +194,8 @@ export async function sendProformaWhatsApp(
 }
 
 /**
- * Sends the finalized official tax invoice PDF via WhatsApp.
+ * Uploads a generated final invoice PDF to the WhatsApp Cloud API and
+ * sends the customer a locale-aware notification text followed by the invoice document.
  */
 export async function sendFinalInvoiceWhatsApp(
   phone: string,
@@ -235,7 +226,6 @@ export async function sendFinalInvoiceWhatsApp(
 
     const { id: mediaId } = await uploadRes.json() as any;
 
-    // Send text notification
     await fetch(`${API_URL}/messages`, {
       method: 'POST',
       headers: {
@@ -252,7 +242,6 @@ export async function sendFinalInvoiceWhatsApp(
       }),
     });
 
-    // Send PDF document
     await fetch(`${API_URL}/messages`, {
       method: 'POST',
       headers: {
@@ -279,7 +268,9 @@ export async function sendFinalInvoiceWhatsApp(
 }
 
 /**
- * Generates the final tax invoice PDF (Rede Peças' own format, no external ERP).
+ * Renders a locale-aware final invoice PDF for an approved order (part
+ * and optional service line items, total paid) to a temp file and resolves
+ * with its path once the write stream finishes.
  */
 export async function generateInvoicePDF(order: any, locale: 'pt' | 'en' = DEFAULT_LOCALE): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -294,7 +285,6 @@ export async function generateInvoicePDF(order: any, locale: 'pt' | 'en' = DEFAU
 
     const mc = getMessages(locale).pdf.invoice;
 
-    // Header
     doc.fontSize(22).fillColor('#2E7D32').font('Helvetica-Bold').text(mc.headerTitle, 50, 50);
     doc.fontSize(10).fillColor('#555555').font('Helvetica')
       .text(mc.tagline, 50, 78)
@@ -308,13 +298,11 @@ export async function generateInvoicePDF(order: any, locale: 'pt' | 'en' = DEFAU
 
     doc.moveTo(50, 145).lineTo(545, 145).strokeColor('#2E7D32').lineWidth(2).stroke();
 
-    // Client
     doc.fontSize(11).fillColor('#2E7D32').font('Helvetica-Bold').text(mc.clientHeader, 50, 160);
     doc.fontSize(10).fillColor('#333333').font('Helvetica')
       .text(mc.nameLine, 50, 178)
       .text(mc.whatsappLabel(order.customer_phone), 50, 193);
 
-    // Table
     const tY = 240;
     doc.rect(50, tY, 495, 28).fillColor('#2E7D32').fill();
     doc.fontSize(10).fillColor('#FFFFFF').font('Helvetica-Bold')
@@ -343,14 +331,12 @@ export async function generateInvoicePDF(order: any, locale: 'pt' | 'en' = DEFAU
 
     const total = lineItems.reduce((sum, line) => sum + line.price, 0);
 
-    // Total
     const totalY = tY + 28 + lineItems.length * ROW_HEIGHT + 36;
     doc.rect(350, totalY, 195, 28).fillColor('#2E7D32').fill();
     doc.fontSize(12).fillColor('#FFFFFF').font('Helvetica-Bold')
       .text(mc.totalPaid, 360, totalY + 8)
       .text(formatPrice(total), 480, totalY + 8, { width: 60, align: 'right' });
 
-    // AGT Stamp
     doc.fontSize(8).fillColor('#555555').font('Helvetica-Oblique')
       .text(mc.agtStamp, 50, totalY + 120);
 

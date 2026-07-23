@@ -21,12 +21,8 @@ import { downloadWhatsAppMedia } from '../services/whatsapp.service.js';
 import { sendReply } from '../services/reply.service.js';
 
 /**
- * Returns pending approvals, approved/rejected logs, and orders awaiting
- * stock-with-supplier confirmation to the dashboard/queues. `pending` is
- * always the first key in `data` so the admin panel sees the newest
- * actionable orders first. `?range=today|all` (default 'all') scopes the
- * approved/rejected logs — pending/stockConfirmation are always "all
- * currently open", never date-scoped.
+ * Backs `GET /v1/admin/orders` — fetches pending, approved, rejected, and
+ * stock-confirmation order lists in parallel and returns them as separate buckets.
  */
 export const getOrders = catchAsync(async (req: Request, res: Response) => {
   const range = (req.query.range as 'today' | 'all') || 'all';
@@ -47,11 +43,8 @@ export const getOrders = catchAsync(async (req: Request, res: Response) => {
 });
 
 /**
- * Admin's stock-with-supplier decision. `available: true` confirms stock —
- * generates and sends the proforma, then kicks off the payment-method flow
- * with the customer. `available: false` declines availability — no payment
- * was ever taken; notifies the customer and offers a fresh search for
- * alternatives or the waitlist.
+ * Backs `POST /v1/admin/orders/:number/confirm/stock` — either finalizes the
+ * order when stock is confirmed available, or marks it stock-unavailable and offers the customer an alternative.
  */
 export const confirmOrderStockHandler = catchAsync(async (req: Request, res: Response) => {
   const { number } = req.params;
@@ -73,16 +66,15 @@ export const confirmOrderStockHandler = catchAsync(async (req: Request, res: Res
 });
 
 /**
- * Admin's approve/reject decision on a customer order. `approved: true`
- * generates the tax invoice and triggers supplier dispatch notifications.
- * `approved: false` alerts the customer about proof validation failure.
+ * Backs `POST /v1/admin/orders/:number/review` — approves the order (via
+ * `approveOrder`) or rejects it, updating `orders.status` and notifying the customer over WhatsApp on rejection.
  */
 export const reviewOrderHandler = catchAsync(async (req: Request, res: Response) => {
   const { number } = req.params;
   const { approved } = req.body;
 
   if (approved) {
-    const result = await approveOrder(number, 999); // Mock employee ID '999' or 'admin'
+    const result = await approveOrder(number, 999);
 
     res.status(200).json({
       success: true,
@@ -96,7 +88,6 @@ export const reviewOrderHandler = catchAsync(async (req: Request, res: Response)
 
   await updateOrderStatus(number, 'rejected');
 
-  // Notify customer about rejection via WhatsApp, in their own detected locale
   const order = await getOrderByNumber(number);
   if (order) {
     const messages = await resolveMessages(order.customer_phone);
@@ -113,9 +104,8 @@ export const reviewOrderHandler = catchAsync(async (req: Request, res: Response)
 });
 
 /**
- * Time-bucketed revenue/order-count series for the dashboard's Revenue and
- * Orders charts — one point per hour (daily), day (monthly), or month
- * (yearly). See getOrderAnalytics in order.model.ts for the bucketing rules.
+ * Backs the admin order-analytics endpoint — returns bucketed revenue/status
+ * counts for the requested period (daily/monthly/yearly) for dashboard charting.
  */
 export const getOrderAnalyticsHandler = catchAsync(async (req: Request, res: Response) => {
   const period = req.query.period as AnalyticsPeriod;
@@ -131,9 +121,8 @@ export const getOrderAnalyticsHandler = catchAsync(async (req: Request, res: Res
 });
 
 /**
- * All-time order totals (not scoped to today) for the dashboard's stat
- * cards — see getOrderStats in order.model.ts for why this is a separate
- * query from the today-scoped /orders queues.
+ * Backs the admin order-stats endpoint — returns overall totals (order count,
+ * approved/rejected counts, approved revenue) across all orders.
  */
 export const getOrderStatsHandler = catchAsync(async (req: Request, res: Response) => {
   const stats = await getOrderStats();
@@ -148,13 +137,8 @@ export const getOrderStatsHandler = catchAsync(async (req: Request, res: Respons
 });
 
 /**
- * Details of a single order, joined with product/supplier — the admin
- * panel's individual order view. created_at/approved_at/updated_at are
- * rendered as `dd/mm/yyyy HH:mm` here (unlike the list queues above, whose
- * raw timestamps the admin panel still parses for chronological sorting —
- * see adapters.ts) since this is a single read-only record with nothing left
- * to sort; the admin panel displays whatever the backend sends verbatim,
- * with no client-side reformatting.
+ * Backs the admin single-order endpoint — looks up one order by its number,
+ * 404ing if not found, and returns it with its timestamp fields formatted.
  */
 export const getOrderHandler = catchAsync(async (req: Request, res: Response) => {
   const { number } = req.params;
@@ -176,14 +160,8 @@ export const getOrderHandler = catchAsync(async (req: Request, res: Response) =>
 });
 
 /**
- * Removes an order from the admin panel's Approved grid — purely a display
- * concern (sets admin_hidden), not a real cancellation: it never touches
- * `status`, never notifies the customer, and doesn't affect their actual
- * order in any way (see hideApprovedOrder). Only allowed once an order is
- * already 'approved' — a still-pending order can't be hidden this way (there
- * is no real cancel-the-customer's-order action in this system at all; a
- * pending order can only be approved or rejected through the normal review
- * flow).
+ * Backs the admin order-removal endpoint — hides an approved order from the
+ * admin grid (`orders.admin_hidden`), rejecting the request if the order isn't approved or doesn't exist.
  */
 export const deleteOrderHandler = catchAsync(async (req: Request, res: Response) => {
   const { number } = req.params;
@@ -204,14 +182,8 @@ export const deleteOrderHandler = catchAsync(async (req: Request, res: Response)
 });
 
 /**
- * Streams the customer's uploaded payment-proof photo/PDF straight from
- * Meta's WhatsApp Cloud API so the admin panel can render it for review —
- * nothing is stored on our own infrastructure, only Meta's media_id
- * (savePaymentProof in order.model.ts), so this re-downloads the bytes fresh
- * on every call via the same downloadWhatsAppMedia used during proof
- * validation (payment.service.ts). This is a deliberate second exception to
- * the standard JSON envelope (the first being the WhatsApp webhook routes)
- * since binary bytes can't usefully be wrapped in JSON.
+ * Backs `GET /v1/admin/orders/:number/payment/proof` — streams the customer's
+ * uploaded payment-proof photo/PDF straight from Meta's Graph API as raw bytes, one of the two non-JSON-envelope responses in this API.
  */
 export const getPaymentProofHandler = catchAsync(async (req: Request, res: Response) => {
   const { number } = req.params;

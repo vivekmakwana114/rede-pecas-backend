@@ -13,12 +13,11 @@ import { formatPrice } from '../utils/helpers.js';
 import { t, getMessages } from '../i18n/messages.js';
 import { resolveMessages, resolveLocale } from './customer.service.js';
 
-// Display names and instruction texts come from src/i18n/messages.ts (customer-facing);
-// ids are English because they are persisted in orders.payment_method. A function
-// rather than a module-level constant so it can be built per-customer-locale — it used
-// to be built once at import time off the fixed `t`, which meant every customer saw
-// payment method names/instructions in whatever the process-wide MESSAGE_LOCALE was,
-// regardless of their own detected locale.
+/**
+ * Builds the locale-aware catalog of available payment methods (bank
+ * transfer, bank deposit, Multicaixa Express, mobile POS), each with its
+ * display name, instructions text, and whether it requires a proof upload.
+ */
 export function getPaymentMethods(locale: 'pt' | 'en') {
   const messages = getMessages(locale);
   return {
@@ -61,7 +60,8 @@ export function getPaymentMethods(locale: 'pt' | 'en') {
 }
 
 /**
- * Initiates the payment selection process via WhatsApp buttons.
+ * Sends the customer the payment-method choice buttons for an order and
+ * moves the order into the awaiting_payment_method state.
  */
 export async function askPaymentMethod(phone: string, orderNumber: string, amount: number): Promise<void> {
   const messages = await resolveMessages(phone);
@@ -76,9 +76,8 @@ export async function askPaymentMethod(phone: string, orderNumber: string, amoun
 }
 
 /**
- * Fetches the customer's most recent order still awaiting a payment-method
- * input, if any — used by the message pipeline to route a reply to
- * `processMethodChoice`/`processMethodSubtype` instead of the AI agent.
+ * Fetches the customer's most recent order still waiting on a payment
+ * method or bank-subtype choice, if any.
  */
 export async function getPendingPaymentOrder(phone: string) {
   return getLatestOrderByStatus(phone, [
@@ -88,7 +87,9 @@ export async function getPendingPaymentOrder(phone: string) {
 }
 
 /**
- * Processes the customer's response to the payment method list.
+ * Interprets the customer's reply to the payment-method prompt, routing
+ * bank methods into the bank-subtype sub-choice and confirming Multicaixa
+ * Express/Mobile POS directly, or re-asking if the reply is unrecognized.
  */
 export async function processMethodChoice(phone: string, customerReply: string): Promise<boolean> {
   const locale = await resolveLocale(phone);
@@ -118,10 +119,6 @@ export async function processMethodChoice(phone: string, customerReply: string):
     await confirmMethodAndSendInstructions(phone, number, amount, paymentMethods.MULTICAIXA_EXPRESS);
     return true;
   } else if (reply.includes('tpa') || reply.includes('terminal') || reply.includes('mobile') || reply.includes('pos') || reply === '3') {
-    // Mobile POS is a single, direct method — no sub-menu. It used to open an
-    // "TPA (cartão) or Dinheiro" follow-up here, which was redundant (the
-    // customer already tapped "Mobile POS (TPA)") and offered a cash-on-delivery
-    // option the top-level buttons never mentioned.
     await confirmMethodAndSendInstructions(phone, number, amount, paymentMethods.MOBILE_POS);
     return true;
   } else {
@@ -131,10 +128,9 @@ export async function processMethodChoice(phone: string, customerReply: string):
 }
 
 /**
- * Processes the bank transfer-vs-deposit sub-choice (Mobile POS/Multicaixa no
- * longer have a subtype step — see processMethodChoice). Unlike the old
- * version, an unrecognized reply doesn't guess a default — it re-asks the
- * same two buttons instead of silently picking bank transfer for the customer.
+ * Interprets the customer's reply to the bank-subtype prompt (transfer vs
+ * deposit) and confirms the chosen method, re-showing the subtype buttons if
+ * the reply doesn't match either option.
  */
 export async function processMethodSubtype(phone: string, reply: string): Promise<boolean> {
   const locale = await resolveLocale(phone);
@@ -170,7 +166,9 @@ export async function processMethodSubtype(phone: string, reply: string): Promis
 }
 
 /**
- * Saves selected payment mode and prints corresponding transactional payment steps.
+ * Records the chosen payment method on the order, moves it to
+ * awaiting-proof or awaiting-agent-confirmation depending on the method, sends
+ * the payment instructions, and notifies staff if no proof upload is required.
  */
 export async function confirmMethodAndSendInstructions(
   phone: string,
@@ -198,11 +196,9 @@ export async function confirmMethodAndSendInstructions(
 }
 
 /**
- * Saves uploaded customer receipts and flags system admins. Both photos and
- * PDFs are examined by Claude Vision (extractPaymentProofData) before a proof
- * ever reaches the admin queue — neither media type bypasses validation. An
- * invalid result asks the customer to re-upload instead of advancing the
- * order status or creating an admin alert.
+ * Downloads a customer's uploaded payment-proof media, validates it via
+ * Claude Vision, and either bounces it back for a retry or marks the order
+ * payment_proof_received, alerts the admin panel, and pushes it to admins for approval.
  */
 export async function processPaymentProof(
   phone: string,
@@ -225,9 +221,6 @@ export async function processPaymentProof(
   const { number, unit_price, service_price, payment_method } = rows[0];
   const amount = Number(unit_price) + Number(service_price || 0);
 
-  // Marks the order as mid-verification so the admin panel can show a
-  // "Verifying…" state instead of leaving it looking untouched while Claude
-  // processes the proof — reverted below if the proof turns out invalid.
   await updateOrderStatus(number, 'awaiting_proof_verification');
 
   const fileBase64 = await downloadWhatsAppMedia(mediaId);
@@ -236,13 +229,6 @@ export async function processPaymentProof(
     try {
       extracted = await extractPaymentProofData(fileBase64, mediaType);
     } catch (error: any) {
-      // extractPaymentProofData re-throws on an actual API failure (timeout, rate
-      // limit, outage) rather than returning null — without this catch, that left
-      // the order stuck in 'awaiting_proof_verification' forever and the customer
-      // with no reply at all, unlike processVehicleDocument's equivalent Vision
-      // call, which already falls back to a messages.ts string on this same
-      // failure. Treated the same as an unreadable proof: revert the status and
-      // ask for a resend, rather than leaving both sides hanging.
       logger.error(`[PAYMENT] Vision error validating proof for order ${number} from ${phone}: ${error.message}`);
     }
   }
@@ -287,16 +273,8 @@ export async function processPaymentProof(
 }
 
 /**
- * Forwards the customer's just-validated payment-proof photo/PDF to every
- * admin's own WhatsApp number as an interactive message — the proof as the
- * header, order/amount/customer details as the body, and Approve/Reject
- * buttons attached directly so an admin can act from WhatsApp itself instead
- * of switching to the panel (see processAdminPaymentReply). In addition to
- * the admin_alerts row created by the caller, since the panel-only alert feed
- * means nobody gets pinged until they happen to check it. Reuses the mediaId
- * Meta already issued for the incoming proof instead of re-uploading the
- * downloaded bytes. Best-effort per admin — one failed send must not block
- * the rest or fail the payment-proof flow itself.
+ * Pushes an interactive WhatsApp message to every admin with the payment
+ * proof as the header image/document and Approve/Reject buttons attached.
  */
 async function notifyAdminsPaymentProofReceived(
   orderNumber: string,
@@ -326,16 +304,9 @@ async function notifyAdminsPaymentProofReceived(
 }
 
 /**
- * Handles a reply from a number in admin_users to the payment-proof-received
- * message above — the WhatsApp-native equivalent of the admin panel's
- * POST /orders/:number/review (order.controller.ts's reviewOrderHandler),
- * so either surface reaches the same approve/reject outcome. Button-only,
- * same reasoning as processAdminStockReply in product.service.ts: the order
- * number is decoded straight from the button's reply id
- * (admin_approve_payment_${orderNumber} / admin_reject_payment_${orderNumber}),
- * never from free text. Re-checks the order's current status before acting
- * so a double-tap — or the admin panel and a WhatsApp tap racing each other —
- * is a safe no-op on the second attempt, not a duplicate invoice/rejection.
+ * Handles an admin's tap on the Approve/Reject payment buttons sent over
+ * WhatsApp, approving or rejecting the matching order and confirming back to
+ * the admin, or telling them if the order was already handled.
  */
 export async function processAdminPaymentReply(adminPhone: string, buttonReplyId: string | null): Promise<void> {
   const match = buttonReplyId?.match(/^admin_(approve|reject)_payment_(.+)$/);
@@ -369,7 +340,8 @@ export async function processAdminPaymentReply(adminPhone: string, buttonReplyId
 }
 
 /**
- * Triggers backend transactional pipelines for validating invoice releases.
+ * Marks an order approved, generates and sends the final invoice PDF to
+ * the customer in their locale, and notifies the supplier to deliver.
  */
 export async function approveOrder(orderNumber: string, employeeId: number): Promise<any> {
   const { rows } = await db.query(
@@ -383,7 +355,6 @@ export async function approveOrder(orderNumber: string, employeeId: number): Pro
   if (!rows.length) throw new Error(`Order ${orderNumber} not found`);
   const order = rows[0];
 
-  // Fetch full details (joins part and supplier)
   const details = await getOrderByNumber(orderNumber);
   const fullOrder = details ? { ...order, ...details } : order;
 
@@ -391,20 +362,18 @@ export async function approveOrder(orderNumber: string, employeeId: number): Pro
   const firstName = customer?.name?.split(' ')[0] || 'Cliente';
   const locale = await resolveLocale(order.customer_phone);
 
-  // Generate tax invoice PDF
   const invoicePDF = await generateInvoicePDF(fullOrder, locale);
 
-  // Send the final PDF invoice to the customer
   await sendFinalInvoiceWhatsApp(order.customer_phone, invoicePDF, orderNumber, firstName, locale);
 
-  // Notify the supplier to prepare delivery
   await notifySupplierDelivery(fullOrder);
 
   return { success: true, orderNumber };
 }
 
 /**
- * Confirms non-banking payment choices and bypasses receipt checks.
+ * Records an in-person payment method on an order and immediately runs it
+ * through the same approval flow as a verified proof.
  */
 export async function confirmInPersonPayment(orderNumber: string, employeeId: number, method: string): Promise<void> {
   await db.query(
@@ -419,13 +388,8 @@ export async function confirmInPersonPayment(orderNumber: string, employeeId: nu
 }
 
 /**
- * Alerts staff about a physical payment request (Mobile POS — the only
- * requiresProof:false method left, see getPaymentMethods) so they can arrange
- * it: records it in the admin alerts feed, and also pushes the details
- * straight to every admin's own WhatsApp number — the alerts feed alone means
- * nobody gets pinged until they happen to check the panel, and this needs a
- * terminal taken to the customer promptly. Best-effort per admin — one failed
- * send must not block the rest.
+ * Creates an in-panel alert and pushes a plain WhatsApp message to every
+ * admin when a customer chooses an in-person payment method requiring staff confirmation.
  */
 async function notifyAgentInPersonPayment(
   orderNumber: string,
@@ -463,7 +427,8 @@ async function notifyAgentInPersonPayment(
 }
 
 /**
- * Dispatches a delivery checklist alert to the supplier.
+ * Sends the assigned supplier a WhatsApp delivery notice for an approved
+ * order, silently skipping if the order has no supplier phone on file.
  */
 async function notifySupplierDelivery(order: any): Promise<void> {
   const supplierPhone = await getSupplierPhoneById(order.supplier_id);
@@ -475,7 +440,6 @@ async function notifySupplierDelivery(order: any): Promise<void> {
       t.payment.supplierDeliveryNotice(order.product_name, order.reference, order.quantity, order.number)
     );
   } catch (error: any) {
-    // Delivery notification must not fail the approval flow
     logger.error(`Error notifying supplier for delivery: ${error.message}`);
   }
 }

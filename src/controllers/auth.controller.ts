@@ -4,7 +4,8 @@ import { AuthenticatedRequest } from '../middlewares/auth.js';
 import * as adminAuthService from '../services/adminAuth.service.js';
 
 /**
- * Authenticates an admin account and issues an access + refresh token pair.
+ * Backs `POST /v1/admin/login` — verifies an admin's email/password and returns
+ * a fresh access token plus a 30-day refresh token alongside the admin's profile.
  */
 export const login = catchAsync(async (req: Request, res: Response) => {
   const { email, password } = req.body;
@@ -22,7 +23,8 @@ export const login = catchAsync(async (req: Request, res: Response) => {
 });
 
 /**
- * Exchanges a refresh token for a new access token.
+ * Backs `POST /v1/admin/refresh` — exchanges a valid refresh token for a new
+ * access token, without rotating or revoking the refresh token itself.
  */
 export const refresh = catchAsync(async (req: Request, res: Response) => {
   const { refreshToken } = req.body;
@@ -39,9 +41,8 @@ export const refresh = catchAsync(async (req: Request, res: Response) => {
 });
 
 /**
- * Logs out the authenticated admin by revoking their current access token
- * server-side (and the refresh token too, if the client sends one) — see
- * adminAuthService.logout.
+ * Backs the admin logout endpoint — invalidates the current access token and
+ * the supplied refresh token so neither can be used again.
  */
 export const logout = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
   const { refreshToken } = req.body;
@@ -57,7 +58,8 @@ export const logout = catchAsync(async (req: AuthenticatedRequest, res: Response
 });
 
 /**
- * Returns the authenticated admin's own profile.
+ * Backs `GET /v1/admin/profile` — returns the authenticated admin's own profile
+ * from `admin_users`, identified by the JWT payload's `id`.
  */
 export const getProfile = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
   const admin = await adminAuthService.getProfile(req.user.id);
@@ -72,7 +74,8 @@ export const getProfile = catchAsync(async (req: AuthenticatedRequest, res: Resp
 });
 
 /**
- * Updates the authenticated admin's name and/or email.
+ * Backs `PATCH /v1/admin/profile` — updates the authenticated admin's name and/or
+ * email in `admin_users` and returns the updated profile.
  */
 export const changeProfile = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
   const { name, email } = req.body;
@@ -88,7 +91,8 @@ export const changeProfile = catchAsync(async (req: AuthenticatedRequest, res: R
 });
 
 /**
- * Changes the authenticated admin's password (requires the current password).
+ * Backs `POST /v1/admin/change/password` — verifies the admin's current password
+ * and, if it matches, updates `admin_users.password_hash` to the new one.
  */
 export const changePassword = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
   const { currentPassword, newPassword } = req.body;
@@ -104,9 +108,8 @@ export const changePassword = catchAsync(async (req: AuthenticatedRequest, res: 
 });
 
 /**
- * Sends a 6-digit password-reset code to the admin's own WhatsApp number. Always
- * responds the same way regardless of whether the phone matched an account,
- * so this endpoint can't be used to enumerate admin phone numbers.
+ * Backs `POST /v1/admin/forgot/password` — looks up the admin by phone and, if
+ * found, sends a 6-digit reset code over WhatsApp; always responds success to avoid leaking which phones are registered.
  */
 export const forgotPassword = catchAsync(async (req: Request, res: Response) => {
   const { phone } = req.body;
@@ -122,7 +125,8 @@ export const forgotPassword = catchAsync(async (req: Request, res: Response) => 
 });
 
 /**
- * Completes a password reset using the code sent by forgotPassword.
+ * Backs `POST /v1/admin/reset/password` — validates the WhatsApp-delivered reset
+ * code for the given phone and, if it's correct and unexpired, sets the new password.
  */
 export const resetPassword = catchAsync(async (req: Request, res: Response) => {
   const { phone, code, newPassword } = req.body;

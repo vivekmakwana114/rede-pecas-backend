@@ -1,11 +1,3 @@
-/**
- * Central dictionary of every customer/staff-facing string (WhatsApp messages,
- * generated PDF text, the conversational agent's system prompt). Portuguese
- * (Angola) is the production language — see CLAUDE.md "Language split". The
- * customer conversation picks between the two variants per message (see
- * detectMessageLocale/resolveMessages); admin-facing strings (the fixed `t`
- * export below) are pinned to the English variant.
- */
 
 interface PaymentMethodCopy {
   name: string;
@@ -14,20 +6,7 @@ interface PaymentMethodCopy {
 
 interface Messages {
   common: {
-    // Shared "didn't catch that" nudge, sent right before re-showing whichever
-    // buttons were already on screen — used by every strictly button-driven
-    // choice (vehicle-ID picker, document retry, VIN-duplicate, vehicle confirm,
-    // bank subtype) so an unrecognized reply re-asks instead of silently
-    // branching into an unrelated flow. Deliberately not offer-specific (the
-    // waitlist/service/stock/restock Sim-Não offers still fall through as before).
     notUnderstood: () => string;
-    // Sent instead of processing an interactive reply whose context.id doesn't
-    // match the last interactive message we actually sent this phone — i.e. a
-    // tap on an old button/list message from earlier in the conversation,
-    // already answered or superseded by a newer question (see the stale-reply
-    // guard in whatsapp.controller.ts). Deliberately generic for the same
-    // reason notUnderstood() is: it has to make sense regardless of which old
-    // question was tapped.
     alreadyAnswered: () => string;
   };
   onboarding: {
@@ -229,12 +208,22 @@ interface Messages {
 }
 
 const pt: Messages = {
+  /**
+   * Generic fallback replies used across button/choice flows when the
+   * customer's response doesn't match an expected option, or repeats one
+   * already handled.
+   */
   common: {
     notUnderstood: () =>
       `🤔 Não percebi essa resposta. Escolhe uma das opções abaixo:`,
     alreadyAnswered: () =>
       `🤔 Essa já foi respondida! Vê a última mensagem para continuares.`,
   },
+  /**
+   * Customer profile registration flow — welcome/greeting, name/NIF/address
+   * collection prompts, and the hand-off into vehicle identification once
+   * the profile is complete.
+   */
   onboarding: {
     welcome: () =>
       `Olá! Bem-vindo à Rede Peças, o teu marketplace automóvel angolano!\n\n` +
@@ -272,6 +261,11 @@ const pt: Messages = {
       `${vehicleSummary}\n\n` +
       `Como posso ajudar-te hoje? Diz-me que peça precisas e vou já procurar no nosso stock. 👇`,
   },
+  /**
+   * Manual vehicle-entry wizard — the make/model/year/engine-number step
+   * machine used when VIN decode and document photo both fail or aren't
+   * available.
+   */
   manual: {
     askModel: (make) =>
       `✅ *${make}*\n\nAgora diz-me o *modelo* do veículo.\n\n` +
@@ -295,6 +289,11 @@ const pt: Messages = {
       `Qual é a *marca* do veículo?\n\nExemplo: _Toyota, Mercedes, Volvo..._`,
     engineLabel: (engineNumber) => `🔧 Motor: *${engineNumber}*`,
   },
+  /**
+   * VIN-based vehicle identification — prompt for the chassis number,
+   * NHTSA decode failure/retry handling, and confirm/already-registered
+   * responses once a vehicle is decoded.
+   */
   vin: {
     askVinPrompt: () =>
       `🔢 Perfeito! Envia o número de chassi (VIN) — 17 caracteres, encontras ` +
@@ -318,6 +317,11 @@ const pt: Messages = {
       `Queres procurar uma peça para este carro, ou adicionar uma viatura diferente?`,
     alreadyRegisteredButtons: ['🔍 Procurar peça', '➕ Carro diferente'],
   },
+  /**
+   * Vehicle-document photo identification (Claude Vision extraction) —
+   * prompts, download/processing errors, and the resulting
+   * make/model confirmation.
+   */
   document: {
     askPhotoPrompt: () =>
       `📄 Perfeito! Tira uma foto nítida do documento do veículo (livrete/Título) e envia aqui.\n\n` +
@@ -349,6 +353,11 @@ const pt: Messages = {
     chassisLabel: (vin) => `Chassi: ${vin}`,
     retryButtons: ['🔄 Tentar novamente', '✍️ Manual'],
   },
+  /**
+   * Vehicle confirmation and multi-vehicle selection — the Sim/Não
+   * confirm step, the "add another vehicle" flow, and the "which
+   * vehicle is this for?" picker for customers with 2+ vehicles on file.
+   */
   vehicleConfirm: {
     confirmedAskPart: (make, model, year, greetingName) =>
       greetingName
@@ -369,6 +378,11 @@ const pt: Messages = {
     vehicleChoiceNotFound: () =>
       `Não percebi. Responde só com o número do veículo. 👆`,
   },
+  /**
+   * Product search and stock/order lifecycle messages — search results,
+   * waitlist/restock notifications, related-service upsell, and
+   * supplier stock-confirmation outcomes.
+   */
   agent: {
     checkingStock: () => `Um momento, estou a verificar o nosso stock para ti...`,
     noStockFound: () =>
@@ -428,12 +442,21 @@ const pt: Messages = {
       `Boas notícias, ${name}! 🙌 Encontrei ${count} opção(ões) de *${part}* para o teu *${make} ${model} ${year}*. Escolhe uma abaixo 👇`,
     searchListButton: () => 'Ver opções',
   },
+  /**
+   * Order-level customer notices, currently just the payment-rejection
+   * message sent when a submitted proof couldn't be confirmed.
+   */
   order: {
     rejected: (orderNumber) =>
       `Infelizmente não conseguimos confirmar o teu pagamento para o pedido ${orderNumber}. 😔\n\n` +
       `Isto pode acontecer se o comprovativo estava pouco nítido ou a referência de pagamento estava em falta.\n\n` +
       `Se achas que isto é um erro, responde aqui e um dos nossos colaboradores vai ajudar-te a resolver isso já. 👇`,
   },
+  /**
+   * Payment flow — per-method instructions (bank transfer/deposit,
+   * Multicaixa Express, mobile POS), method-selection prompts, proof
+   * receipt/invalid handling, and the supplier delivery notice.
+   */
   payment: {
     methods: {
       bankTransfer: {
@@ -505,6 +528,10 @@ const pt: Messages = {
       `A equipa da Rede Peças entrará em contacto para coordenar a recolha.\n` +
       `Obrigado pela parceria! 🙏`,
   },
+  /**
+   * Static and templated text for the generated PDFs (proforma and final
+   * invoice) plus the WhatsApp captions/notifications sent alongside them.
+   */
   pdf: {
     proforma: {
       companyName: 'REDE PEÇAS',
@@ -566,11 +593,20 @@ const pt: Messages = {
       agtStamp: 'Processado por computador. Emitido de acordo com as regras de facturação da AGT Angola.',
     },
   },
+  /**
+   * Admin panel password-reset code, delivered to the admin's own
+   * WhatsApp number.
+   */
   adminAuth: {
     resetCode: (code) =>
       `🔐 Código de recuperação de senha do painel Rede Peças: *${code}*\n\n` +
       `Válido por 10 minutos. Se não pediste isto, ignora esta mensagem.`,
   },
+  /**
+   * Admin-facing WhatsApp push notifications and their reply
+   * acknowledgments — stock confirmation, in-person payment requests,
+   * and payment-proof approval/rejection.
+   */
   admin: {
     stockConfirmationNeeded: (orderNumber, productName, reference, supplier, amount, customerName, customerPhone) =>
       `🔔 *CONFIRMAÇÃO DE STOCK NECESSÁRIA*\n\n` +
@@ -618,12 +654,22 @@ const pt: Messages = {
 };
 
 const en: Messages = {
+  /**
+   * Generic fallback replies used across button/choice flows when the
+   * customer's response doesn't match an expected option, or repeats one
+   * already handled.
+   */
   common: {
     notUnderstood: () =>
       `🤔 I didn't quite catch that. Please choose one of the options below:`,
     alreadyAnswered: () =>
       `🤔 Already answered that one! Check my latest message to continue.`,
   },
+  /**
+   * Customer profile registration flow — welcome/greeting, name/NIF/address
+   * collection prompts, and the hand-off into vehicle identification once
+   * the profile is complete.
+   */
   onboarding: {
     welcome: () =>
       `Hi! Welcome to Rede Peças, your Angolan automotive marketplace!\n\n` +
@@ -662,6 +708,11 @@ const en: Messages = {
       `What part do you need today?\n\n` +
       `Just tell me naturally — I'll handle the rest. 👇`,
   },
+  /**
+   * Manual vehicle-entry wizard — the make/model/year/engine-number step
+   * machine used when VIN decode and document photo both fail or aren't
+   * available.
+   */
   manual: {
     askModel: (make) =>
       `✅ *${make}*\n\nNow tell me the *model* of the vehicle.\n\n` +
@@ -685,6 +736,11 @@ const en: Messages = {
       `What's the *make* of the vehicle?\n\nExample: _Toyota, Mercedes, Volvo..._`,
     engineLabel: (engineNumber) => `🔧 Engine: *${engineNumber}*`,
   },
+  /**
+   * VIN-based vehicle identification — prompt for the chassis number,
+   * NHTSA decode failure/retry handling, and confirm/already-registered
+   * responses once a vehicle is decoded.
+   */
   vin: {
     askVinPrompt: () =>
       `🔢 Great! Send me the chassis number (VIN) — 17 characters, found on the ` +
@@ -709,6 +765,11 @@ const en: Messages = {
       `Would you like to search for a part for this car, or add a different vehicle?`,
     alreadyRegisteredButtons: ['🔍 Find a part', '➕ Different car'],
   },
+  /**
+   * Vehicle-document photo identification (Claude Vision extraction) —
+   * prompts, download/processing errors, and the resulting
+   * make/model confirmation.
+   */
   document: {
     askPhotoPrompt: () =>
       `Perfect! Take a clear photo of your vehicle registration document (livrete or Vehicle Certificate) and send it here. 📄\n\n` +
@@ -740,6 +801,11 @@ const en: Messages = {
     chassisLabel: (vin) => `Chassis: ${vin}`,
     retryButtons: ['🔄 Try again', '✍️ Manual entry'],
   },
+  /**
+   * Vehicle confirmation and multi-vehicle selection — the Yes/No
+   * confirm step, the "add another vehicle" flow, and the "which
+   * vehicle is this for?" picker for customers with 2+ vehicles on file.
+   */
   vehicleConfirm: {
     confirmedAskPart: (make, model, year, greetingName) =>
       greetingName
@@ -760,6 +826,11 @@ const en: Messages = {
     vehicleChoiceNotFound: () =>
       `I didn't get that. Reply with just the vehicle's number. 👆`,
   },
+  /**
+   * Product search and stock/order lifecycle messages — search results,
+   * waitlist/restock notifications, related-service upsell, and
+   * supplier stock-confirmation outcomes.
+   */
   agent: {
     checkingStock: () => `On it! Checking our suppliers' stock for you... ⏳`,
     noStockFound: () =>
@@ -819,12 +890,21 @@ const en: Messages = {
       `Good news, ${name}! 🙌 I found ${count} option(s) for *${part}* for your *${make} ${model} ${year}*. Which one works best for you? 👇`,
     searchListButton: () => 'View options',
   },
+  /**
+   * Order-level customer notices, currently just the payment-rejection
+   * message sent when a submitted proof couldn't be confirmed.
+   */
   order: {
     rejected: (orderNumber) =>
       `Unfortunately we weren't able to confirm your payment for order ${orderNumber}. 😔\n\n` +
       `This can happen if the proof was unclear or the payment reference was missing.\n\n` +
       `If you think this is a mistake, just reply here and one of our team members will help you sort it out right away. 👇`,
   },
+  /**
+   * Payment flow — per-method instructions (bank transfer/deposit,
+   * Multicaixa Express, mobile POS), method-selection prompts, proof
+   * receipt/invalid handling, and the supplier delivery notice.
+   */
   payment: {
     methods: {
       bankTransfer: {
@@ -896,6 +976,10 @@ const en: Messages = {
       `The Rede Peças team will contact you to arrange pickup.\n` +
       `Thanks for the partnership! 🙏`,
   },
+  /**
+   * Static and templated text for the generated PDFs (proforma and final
+   * invoice) plus the WhatsApp captions/notifications sent alongside them.
+   */
   pdf: {
     proforma: {
       companyName: 'REDE PEÇAS',
@@ -957,11 +1041,20 @@ const en: Messages = {
       agtStamp: 'Computer-processed. Issued in accordance with AGT Angola billing rules.',
     },
   },
+  /**
+   * Admin panel password-reset code, delivered to the admin's own
+   * WhatsApp number.
+   */
   adminAuth: {
     resetCode: (code) =>
       `🔐 Rede Peças admin panel password reset code: *${code}*\n\n` +
       `Valid for 10 minutes. If you didn't request this, ignore this message.`,
   },
+  /**
+   * Admin-facing WhatsApp push notifications and their reply
+   * acknowledgments — stock confirmation, in-person payment requests,
+   * and payment-proof approval/rejection.
+   */
   admin: {
     stockConfirmationNeeded: (orderNumber, productName, reference, supplier, amount, customerName, customerPhone) =>
       `🔔 *STOCK CONFIRMATION NEEDED*\n\n` +
@@ -1008,32 +1101,18 @@ const en: Messages = {
   },
 };
 
-// Admin-facing messages (stock-confirmation pushes, payment approve/reject
-// acks, password-reset codes, t.admin.*/t.adminAuth.*) and the supplier
-// delivery notice are not part of the customer conversation, so they don't
-// follow per-message locale detection — pinned to English, independent of
-// any env var (previously governed by a MESSAGE_LOCALE env var; removed
-// 2026-07-17 along with the whole "one process-wide default" concept).
+/**
+ * Fixed, locale-independent message set used for paths that are
+ * deliberately not customer-locale-aware (admin panel/admin-push
+ * messages and the supplier delivery notice).
+ */
 export const t: Messages = en;
 
-/**
- * Fallback locale for a customer conversation when no language signal has
- * been detected yet in this session — e.g. the very first message isn't a
- * recognizable PT/EN word or phrase (see detectMessageLocale in
- * utils/greeting.ts). Hardcoded rather than sourced from an env var:
- * customer locale is now detected fresh per message and cached per-session
- * (session.service.ts's saveLocale/getLocale), never stored durably or
- * pinned to a single process-wide default the way MESSAGE_LOCALE used to.
- */
 export const DEFAULT_LOCALE: 'pt' | 'en' = 'pt';
 
 /**
- * Per-customer message resolver — used by every customer-facing send via the
- * customer's own detected locale (see resolveMessages/resolveLocale in
- * customer.service.ts), instead of the fixed `t` above. `t` itself is
- * untouched and keeps backing the paths that intentionally stay on a single
- * fixed language: the admin-panel/admin-push messages (t.admin.*,
- * t.adminAuth.*), which aren't part of "greeting the bot".
+ * Resolves the message set for a given customer-facing locale, falling
+ * back to Portuguese for any value other than 'en'.
  */
 export function getMessages(locale: 'pt' | 'en'): Messages {
   return locale === 'en' ? en : pt;

@@ -12,9 +12,8 @@ import {
 } from '../models/customer.model.js';
 
 /**
- * Renders first_contact_at/last_contact_at/registered_at as `dd/mm/yyyy HH:mm`
- * (Africa/Luanda) before they leave the API — the admin panel displays
- * whatever the backend sends verbatim, with no client-side reformatting.
+ * Formats a customer record's timestamp fields for API output, leaving the rest
+ * of the fields (including its embedded order stats and vehicle list) untouched.
  */
 function serializeCustomer(customer: CustomerWithStats) {
   return {
@@ -26,10 +25,8 @@ function serializeCustomer(customer: CustomerWithStats) {
 }
 
 /**
- * Lists active customers for the admin panel, newest-contact-first.
- * Supports pagination (page/limit) and a free-text search (q) over
- * name/phone/nif — unlike the product catalog, the customer table grows
- * with every WhatsApp contact, so it's paginated from the start.
+ * Backs the admin customer list endpoint — returns a paginated, optionally
+ * name/phone/NIF-filtered page of active customers from `customers`, each with order stats and vehicles attached.
  */
 export const getCustomersHandler = catchAsync(async (req: Request, res: Response) => {
   const page = req.query.page ? Number(req.query.page) : 1;
@@ -47,6 +44,10 @@ export const getCustomersHandler = catchAsync(async (req: Request, res: Response
   });
 });
 
+/**
+ * Backs the admin single-customer endpoint — looks up one active customer by
+ * phone and returns it, or 404s if no such active customer exists.
+ */
 export const getCustomerHandler = catchAsync(async (req: Request, res: Response) => {
   const { phone } = req.params;
   const customer = await getActiveCustomerByPhone(phone);
@@ -62,9 +63,8 @@ export const getCustomerHandler = catchAsync(async (req: Request, res: Response)
 });
 
 /**
- * Admin edits to the CRM fields only — name/nif/address/email. Registration
- * status, contact metadata and vehicles are owned by the WhatsApp flow and
- * are not admin-editable here.
+ * Backs the admin customer-update endpoint — applies whichever of name/nif/address/email
+ * were supplied to the `customers` row for that phone, then returns the refreshed record.
  */
 export const updateCustomerHandler = catchAsync(async (req: Request, res: Response) => {
   const { phone } = req.params;
@@ -91,8 +91,8 @@ export const updateCustomerHandler = catchAsync(async (req: Request, res: Respon
 });
 
 /**
- * Soft-deletes the customer (active = false) — see deactivateCustomer for
- * why this isn't a hard DELETE.
+ * Backs the admin customer-delete endpoint — soft-deletes a customer by flipping
+ * `customers.active` to false for that phone, 404ing if it was already inactive or missing.
  */
 export const deleteCustomerHandler = catchAsync(async (req: Request, res: Response) => {
   const { phone } = req.params;

@@ -16,10 +16,7 @@ import { adminValidation } from '../../validations/index.js';
 const router = express.Router();
 
 router.get('/orders', authMiddleware, validate(adminValidation.orderListQuery), getOrders);
-// Must come before /orders/:number — otherwise Express would match
-// "analytics" as the :number param and this route would never be reached.
 router.get('/orders/analytics', authMiddleware, validate(adminValidation.orderAnalyticsQuery), getOrderAnalyticsHandler);
-// Must also come before /orders/:number for the same reason as /orders/analytics above.
 router.get('/orders/stats', authMiddleware, getOrderStatsHandler);
 router.get('/orders/:number', authMiddleware, validate(adminValidation.orderNumberParams), getOrderHandler);
 router.delete('/orders/:number', authMiddleware, validate(adminValidation.orderNumberParams), deleteOrderHandler);

@@ -21,13 +21,7 @@ export const serviceUpdate: ValidationSchema = {
       available_at_home: Joi.boolean(),
       base_travel_fee: Joi.number().min(0).allow(null),
       logistics_fee_notes: Joi.string().allow('', null),
-      // Reversible active/inactive toggle — see updateServiceHandler/getServiceById.
-      // Permanent removal (DELETE /admin/services/:id) is gated on this being
-      // false first — see hardDeleteService.
       active: Joi.boolean(),
-      // Provider's own fields — edited from a service's own panel, same
-      // pattern as productUpdate's supplier fields (no dedicated provider
-      // management screen exists yet).
       providerName: Joi.string(),
       providerAddress: Joi.string().allow('', null),
       providerProvince: Joi.string().allow('', null),

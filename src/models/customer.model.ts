@@ -15,7 +15,8 @@ export interface Customer {
 }
 
 /**
- * Retrieves a customer by phone number and updates their last contact date & total contact count.
+ * Fetches the `customers` row for a phone, then bumps `last_contact_at` and
+ * increments `contact_count` on it — called whenever an inbound WhatsApp message arrives from a known customer.
  */
 export async function getAndUpdateCustomer(phone: string): Promise<Customer | null> {
   const { rows } = await db.query(
@@ -24,7 +25,6 @@ export async function getAndUpdateCustomer(phone: string): Promise<Customer | nu
   );
   if (!rows.length) return null;
 
-  // Update last contact timestamp and increment contact count
   await db.query(
     `UPDATE customers
      SET last_contact_at = NOW(),
@@ -37,7 +37,8 @@ export async function getAndUpdateCustomer(phone: string): Promise<Customer | nu
 }
 
 /**
- * Retrieves a customer by phone number without updating metadata.
+ * Plain lookup of the `customers` row for a phone, with no side effects
+ * (unlike `getAndUpdateCustomer`).
  */
 export async function getCustomerByPhone(phone: string): Promise<Customer | null> {
   const { rows } = await db.query(
@@ -48,7 +49,8 @@ export async function getCustomerByPhone(phone: string): Promise<Customer | null
 }
 
 /**
- * Creates a pre-registration entry for a new customer.
+ * Inserts a new `customers` row for a first-time phone with the given starting
+ * registration status, doing nothing if the phone already has a row.
  */
 export async function createCustomerPreRegistration(phone: string, registrationStatus: string): Promise<void> {
   await db.query(
@@ -60,7 +62,8 @@ export async function createCustomerPreRegistration(phone: string, registrationS
 }
 
 /**
- * Updates columns for a customer record.
+ * Dynamically updates whichever `Customer` fields are present in `fields` on
+ * the `customers` row for the given phone. No-ops if `fields` is empty.
  */
 export async function updateCustomer(phone: string, fields: Partial<Customer>): Promise<void> {
   const keys = Object.keys(fields);
@@ -90,23 +93,10 @@ export interface CustomerVehicleSummary {
 
 export interface CustomerWithStats extends Customer {
   orders_count: number;
-  // Sum of unit_price + service_price for this customer's approved orders
-  // only — matches the order-total convention used everywhere else a price
-  // is shown (OrderInfo.price, getOrderAnalytics, getOrderStats.
-  // approvedRevenue): pending/rejected/cancelled orders never resulted in an
-  // actual payment, so they don't count as money spent.
   total_spent: string;
-  // Only confirmed vehicles (vehicles.status NULL/'complete') — an
-  // in-progress manual-entry wizard row isn't a real vehicle yet. See the
-  // VEHICLES comment in db/schema.sql.
   vehicles: CustomerVehicleSummary[];
 }
 
-// Appended to the customers SELECT in getAllCustomers/getActiveCustomerByPhone
-// to attach each customer's order stats and confirmed vehicles without
-// fanning out customer rows (a plain JOIN against orders/vehicles would
-// duplicate the customer row per matching order/vehicle) — each LATERAL
-// subquery pre-aggregates to exactly one row per customer before joining.
 const CUSTOMER_STATS_JOIN = `
   LEFT JOIN LATERAL (
     SELECT
@@ -127,11 +117,9 @@ const CUSTOMER_STATS_JOIN = `
 const CUSTOMER_STATS_COLUMNS = `c.*, order_stats.orders_count, order_stats.total_spent, COALESCE(vehicle_stats.vehicles, '[]'::json) AS vehicles`;
 
 /**
- * Lists active customers for the admin panel, newest-contact-first, with
- * optional pagination and a free-text search over name/phone/nif. Excludes
- * soft-deleted rows (see deactivateCustomer) — unlike getAllProducts/
- * getAllServices, which deliberately keep listing inactive rows so they stay
- * reachable to reactivate; customers have no such toggle-back UI today.
+ * Returns a paginated page of active `customers` rows (optionally filtered by
+ * name/phone/NIF via `q`), each joined with its order stats and confirmed vehicles from `orders`/`vehicles`,
+ * plus the total matching row count.
  */
 export async function getAllCustomers({ page, limit, q }: CustomerListParams): Promise<{ customers: CustomerWithStats[]; total: number }> {
   const offset = (page - 1) * limit;
@@ -162,9 +150,8 @@ export async function getAllCustomers({ page, limit, q }: CustomerListParams): P
 }
 
 /**
- * Fetches a single active customer by phone, excluding soft-deleted rows —
- * used by the admin "view individual customer" endpoint, matching the
- * active-only convention getProductById uses for products.
+ * Looks up one active `customers` row by phone, joined with its order stats
+ * and confirmed vehicles the same way `getAllCustomers` does.
  */
 export async function getActiveCustomerByPhone(phone: string): Promise<CustomerWithStats | null> {
   const { rows } = await db.query(
@@ -178,11 +165,8 @@ export async function getActiveCustomerByPhone(phone: string): Promise<CustomerW
 }
 
 /**
- * Soft-deletes a customer (active = false) instead of a hard DELETE — vehicles.phone
- * has a non-cascading FK to customers.phone, and orders.customer_phone must keep
- * pointing at real history, so a hard delete would either violate the FK or orphan
- * order records. Mirrors the active-flag deactivation pattern used for products/suppliers.
- * Returns false if there was no active customer at that phone to delete.
+ * Soft-deletes a customer by flipping `customers.active` to false for the given
+ * phone. Returns whether a row was actually changed (false if already inactive or missing).
  */
 export async function deactivateCustomer(phone: string): Promise<boolean> {
   const { rowCount } = await db.query(

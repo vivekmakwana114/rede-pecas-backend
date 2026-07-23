@@ -10,9 +10,8 @@ export interface ValidationSchema {
 }
 
 /**
- * Joi's raw messages quote the field's camelCase/snake_case key verbatim
- * (`"newPassword" is required`) — turns that into a readable label
- * (`New Password is required`) instead of exposing Joi's own phrasing.
+ * Converts a raw field name (camelCase or snake_case) into a human-readable
+ * label, e.g. "newPassword" becomes "New password".
  */
 function humanizeField(field: string): string {
   const spaced = field
@@ -21,6 +20,10 @@ function humanizeField(field: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
+/**
+ * Rewrites a raw Joi error message so its leading quoted field name is
+ * humanized and whitespace is normalized.
+ */
 function humanizeMessage(raw: string): string {
   return raw
     .replace(/^"([^"]+)"/, (_match, field) => humanizeField(field))
@@ -28,6 +31,11 @@ function humanizeMessage(raw: string): string {
     .trim();
 }
 
+/**
+ * Builds an Express middleware that validates a request's params/query/body
+ * against the given Joi schema, applying the validated values back onto the
+ * request or forwarding a humanized ApiError on failure.
+ */
 export const validate = (schema: ValidationSchema) => (req: Request, res: Response, next: NextFunction) => {
   const validSchema = pick(schema, ['params', 'query', 'body']);
   const object = pick(req, Object.keys(validSchema));

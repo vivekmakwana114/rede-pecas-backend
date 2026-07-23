@@ -26,10 +26,18 @@ export interface AdminProfile {
   phone: string;
 }
 
+/**
+ * Maps a raw admin_users DB row down to the public profile shape
+ * (id, name, email, phone) returned to API callers.
+ */
 function toProfile(admin: AdminUser): AdminProfile {
   return { id: admin.id, name: admin.name, email: admin.email, phone: admin.phone };
 }
 
+/**
+ * Signs a short-lived JWT access token for an admin, embedding
+ * their id, email and a fixed 'admin' role claim.
+ */
 function signAccessToken(admin: AdminUser): string {
   return jwt.sign(
     { id: admin.id, email: admin.email, role: 'admin' },
@@ -38,9 +46,10 @@ function signAccessToken(admin: AdminUser): string {
   );
 }
 
-// `type: 'refresh'` marks this as only usable at POST /admin/refresh — authMiddleware
-// rejects it on every other protected route so a leaked refresh token can't be used
-// directly as a bearer token.
+/**
+ * Signs a long-lived JWT refresh token for an admin, marked with
+ * type: 'refresh' so authMiddleware can reject it as a bearer token elsewhere.
+ */
 function signRefreshToken(admin: AdminUser): string {
   return jwt.sign(
     { id: admin.id, email: admin.email, role: 'admin', type: 'refresh' },
@@ -49,6 +58,10 @@ function signRefreshToken(admin: AdminUser): string {
   );
 }
 
+/**
+ * Authenticates an admin by email/password and, on success, issues a
+ * fresh access token and refresh token pair alongside their profile.
+ */
 export async function login(
   email: string,
   password: string
@@ -66,12 +79,8 @@ export async function login(
 }
 
 /**
- * Exchanges a refresh token for a new access token. Stateless (no DB-tracked
- * session) — the refresh token stays valid until its own expiry regardless of
- * password changes, EXCEPT when it's been explicitly revoked by logout (see
- * the isTokenRevoked check below) — without that check, POST /admin/logout
- * blacklisting a refresh token was a no-op in practice, since this endpoint
- * (unlike every authMiddleware-protected route) never consulted the blacklist.
+ * Verifies a refresh token (signature, type, and revocation status) and
+ * exchanges it for a brand-new access token, without rotating the refresh token itself.
  */
 export async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; admin: AdminProfile }> {
   let decoded: any;
@@ -96,15 +105,8 @@ export async function refreshAccessToken(refreshToken: string): Promise<{ access
 }
 
 /**
- * Blacklists the admin's current access token server-side (session.service.ts's
- * revokeToken), TTL'd to exactly that token's own remaining lifetime — so it
- * stops working immediately instead of silently staying valid until it expires
- * naturally, which is otherwise this stateless-JWT setup's default behavior.
- * Also revokes the refresh token when the client sends one along, since it
- * could otherwise still be exchanged for a fresh access token after "logout".
- * An invalid/garbled/already-expired refreshToken is ignored rather than
- * failing the whole request — the access token (the one actually authenticating
- * this call) is always valid at this point, so logout should always succeed.
+ * Logs an admin out by revoking their access token, and their refresh
+ * token too if one was supplied, so neither can be reused afterward.
  */
 export async function logout(token: string, tokenExp: number, refreshToken?: string): Promise<void> {
   const nowSeconds = Math.floor(Date.now() / 1000);
@@ -117,17 +119,25 @@ export async function logout(token: string, tokenExp: number, refreshToken?: str
         await revokeToken(refreshToken, decoded.exp - nowSeconds);
       }
     } catch {
-      // Not our problem at logout time — see doc comment above.
+      // no-op
     }
   }
 }
 
+/**
+ * Looks up an admin by id and returns their public profile, throwing
+ * a 404 ApiError if the account no longer exists.
+ */
 export async function getProfile(adminId: number): Promise<AdminProfile> {
   const admin = await getAdminById(adminId);
   if (!admin) throw new ApiError(404, 'Admin account not found.');
   return toProfile(admin);
 }
 
+/**
+ * Updates an admin's editable profile fields (name and/or email), rejecting
+ * an email change if it's already taken by a different admin account.
+ */
 export async function changeProfile(
   adminId: number,
   fields: { name?: string; email?: string }
@@ -150,6 +160,10 @@ export async function changeProfile(
   return getProfile(adminId);
 }
 
+/**
+ * Changes an admin's password after verifying their current password,
+ * rejecting the change if the new password is identical to the old one.
+ */
 export async function changePassword(
   adminId: number,
   currentPassword: string,
@@ -171,11 +185,8 @@ export async function changePassword(
 }
 
 /**
- * Sends a 6-digit reset code to the admin's own WhatsApp number — identified by
- * that same phone (no email/SMTP service exists in this project, and the OTP
- * itself is the identity check, so there's no separate "which account" lookup).
- * Always resolves the same way regardless of whether the phone matched an
- * account, so this endpoint can't be used to enumerate admin phone numbers.
+ * Starts the password-reset flow for an admin identified by phone number:
+ * generates a 6-digit code, stores its hash with a TTL, and sends it over WhatsApp.
  */
 export async function forgotPassword(phone: string): Promise<void> {
   const admin = await getAdminByPhone(phone);
@@ -187,21 +198,19 @@ export async function forgotPassword(phone: string): Promise<void> {
 
   await setResetCode(admin.id, codeHash, expiresAt);
 
-  // Admin phone numbers are entered by hand (unlike customer numbers, which arrive
-  // pre-formatted as plain digits straight from the WhatsApp webhook) and the Cloud
-  // API's `to` field rejects punctuation — strip everything but digits.
   const sendTo = admin.phone.replace(/\D/g, '');
 
   try {
     await sendWhatsAppMessage(sendTo, t.adminAuth.resetCode(code));
   } catch (error: any) {
-    // Must not throw — a delivery failure (bad number, WhatsApp API hiccup) would
-    // otherwise surface differently than the "unknown phone" case above and leak
-    // which numbers have accounts. Logged so it's still visible to staff.
     logger.error(`Failed to send admin password-reset code to ${sendTo}`, error);
   }
 }
 
+/**
+ * Completes the password-reset flow: validates the code sent via WhatsApp
+ * against its stored hash and expiry, then sets the new password.
+ */
 export async function resetPassword(phone: string, code: string, newPassword: string): Promise<void> {
   const admin = await getAdminByPhone(phone);
   if (!admin || !admin.reset_code_hash || !admin.reset_code_expires_at) {

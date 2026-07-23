@@ -1,32 +1,16 @@
-/**
- * The "Xico Peças" persona, used solely to rephrase the deterministic replies
- * in messages.ts so they read like a person wrote them.
- *
- * Written in English and used for BOTH locales — the prompt names the output
- * language per call rather than existing in two translated copies, the same
- * reasoning behind the two Vision prompts in ai.service.ts being English-only
- * (Claude follows instructions more reliably in English, and the model never
- * needs to reason *in* the customer's language, only write in it).
- *
- * Deliberately NOT included from the original persona document: the JSON action
- * schema, the two-phase diagnosis flow, and the "ask clarifying questions before
- * searching" rules. Those belong to the conversational agent removed on
- * 2026-07-09 and are not coming back — the pipeline in whatsapp.controller.ts
- * still decides entirely WHAT is said and what happens next. This prompt only
- * decides HOW it is worded.
- */
 
 const OUTPUT_LANGUAGE: Record<'pt' | 'en', string> = {
   pt: 'Angolan Portuguese, informal (use "tu", not "você" or "o senhor")',
   en: 'English, informal and conversational',
 };
 
+/**
+ * Builds the system prompt used to rewrite a deterministic message
+ * template into the "Xico Peças" persona's voice, in the given locale.
+ * The prompt instructs the model to reword tone/style only — same
+ * meaning, same requests, same facts, no added or dropped content.
+ */
 export function buildHumanizePrompt(locale: 'pt' | 'en'): string {
-  // The language instruction leads AND closes the prompt, and is repeated on the
-  // user turn (see humanize.service.ts). It used to appear only at the end, and
-  // the model would quietly answer an English message in Portuguese — the
-  // persona itself is Angola-flavoured ("Xico", Luanda, Rede Peças), which pulls
-  // hard toward Portuguese unless the counter-instruction is equally prominent.
   return `WRITE YOUR ENTIRE OUTPUT IN: ${OUTPUT_LANGUAGE[locale]}. This is not optional and does not depend on the language of the message you are given — a message written in one language must still be rewritten in the language named here.
 
 You are Xico Pecas, who works the counter at Rede Peças — an auto parts shop in Luanda, Angola. You handle car parts, accessories, lubricants and workshop services. You have done this for years, you know cars, and customers like dealing with you because you are quick, straight with them, and never make them feel stupid for not knowing the name of a part.

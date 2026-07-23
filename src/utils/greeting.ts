@@ -1,17 +1,10 @@
-// Bare greetings (PT/EN) never get treated as a part search, even once the customer's
-// already been invited to state one this session — they must always get the
-// deterministic "what part do you need" prompt instead, so a stray "Hi"/"Hey" doesn't
-// get sent into a nonsensical inventory search. Split into EN/PT sub-patterns so a
-// single greeting word also tells us which language to reply in — see
-// detectGreetingLocale below, used once at first contact (customer.service.ts).
 export const GREETING_PATTERN_EN = /^(hi|hello|hey+|yo|good\s*(morning|afternoon|evening|day))\b/i;
 export const GREETING_PATTERN_PT = /^(oi|ol[aá]|e\s*a[ií]|bom\s*dia|boa\s*tarde|boa\s*noite|tudo\s*bem|como\s*est[aá]s?)\b/i;
 export const GREETING_PATTERN = new RegExp(`(${GREETING_PATTERN_EN.source})|(${GREETING_PATTERN_PT.source})`, 'i');
 
 /**
- * Detects English vs Portuguese from a greeting word. Returns null when the
- * text isn't a recognized greeting at all (e.g. a customer opens with a VIN
- * or a part name) — callers fall back to whatever locale otherwise applies.
+ * Checks whether the text opens with a recognizable English or Portuguese
+ * greeting word, returning the matched locale or null if neither matches.
  */
 export function detectGreetingLocale(text: string): 'en' | 'pt' | null {
   const trimmed = text.trim();
@@ -20,15 +13,6 @@ export function detectGreetingLocale(text: string): 'en' | 'pt' | null {
   return null;
 }
 
-// Common PT/EN function words and domain terms (auto parts, greetings,
-// yes/no, everyday connectors) used by detectMessageLocale below to score an
-// arbitrary message, not just a leading greeting. Deliberately a plain word
-// list rather than a real language-detection library or model — consistent
-// with the rest of this app's no-AI, deterministic pattern matching (see
-// CLAUDE.md "No conversational AI"). Ambiguous words that exist as common,
-// unrelated terms in both languages (e.g. "no" — English negative reply vs.
-// the Portuguese "em"+"o" contraction) are deliberately left out of both
-// lists so they can't cast a false vote either way.
 const PT_SIGNAL_WORDS = new Set([
   'oi', 'ola', 'olá', 'bom', 'boa', 'dia', 'tarde', 'noite', 'sim', 'nao', 'não',
   'obrigado', 'obrigada', 'favor', 'preciso', 'precisava', 'quero', 'queria', 'gostaria',
@@ -55,16 +39,9 @@ const EN_SIGNAL_WORDS = new Set([
 ]);
 
 /**
- * Detects English vs Portuguese from any free-text message, not just a
- * leading greeting — used on every inbound message with text (see
- * whatsapp.controller.ts) so a customer switching language mid-conversation
- * gets answered in whatever they just typed, instead of a locale detected
- * once and frozen. A recognized greeting word is trusted outright (most
- * specific signal); otherwise scores the message's words against the PT/EN
- * lists above and returns whichever side has strictly more hits. Returns
- * null on a tie (including 0-0, e.g. a VIN, a bare digit, or a product
- * reference with no recognizable words) — callers should keep whatever
- * locale was already in effect for that conversation rather than guessing.
+ * Detects the likely locale of a customer message: first via a leading
+ * greeting match, then by scoring the message's words against PT/EN signal
+ * word lists, returning null when the text is empty or the scores tie.
  */
 export function detectMessageLocale(text: string): 'en' | 'pt' | null {
   const trimmed = text.trim();

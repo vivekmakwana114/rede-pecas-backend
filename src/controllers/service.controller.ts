@@ -13,9 +13,8 @@ import {
 } from '../models/service.model.js';
 
 /**
- * Lists every service, active and inactive (joined with its provider), for
- * the admin panel's services grid — mirrors getProductsHandler. Inactive
- * services stay listed so deactivating one is reversible from the grid.
+ * Backs the admin service-list endpoint — returns every service row with its
+ * provider details joined in, newest-updated first.
  */
 export const getServicesHandler = catchAsync(async (req: Request, res: Response) => {
   const services = await getAllServices();
@@ -29,6 +28,10 @@ export const getServicesHandler = catchAsync(async (req: Request, res: Response)
   });
 });
 
+/**
+ * Backs the admin single-service endpoint — looks up one service by id,
+ * 404ing if it doesn't exist.
+ */
 export const getServiceHandler = catchAsync(async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   const service = await getServiceById(id);
@@ -44,9 +47,9 @@ export const getServiceHandler = catchAsync(async (req: Request, res: Response) 
 });
 
 /**
- * Admin edits to a service's own fields, plus its provider's contact/display
- * fields (name, address, province, phone) — mirrors updateProductHandler's
- * supplier-repoint pattern via resolveServiceProviderForEdit.
+ * Backs the admin service-update endpoint — applies whichever service fields
+ * were supplied to the `services` row, resolving/creating a new provider row via
+ * `resolveServiceProviderForEdit` when the provider details changed, then returns the refreshed service.
  */
 export const updateServiceHandler = catchAsync(async (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -109,9 +112,8 @@ export const updateServiceHandler = catchAsync(async (req: Request, res: Respons
 });
 
 /**
- * Permanently deletes the service — mirrors deleteProductHandler: only
- * allowed once it's already inactive (deactivate first via PATCH
- * /admin/services/:id { active: false }).
+ * Backs the admin service-delete endpoint — hard-deletes a `services` row,
+ * refusing (409) if it's still active, and 404ing if it doesn't exist.
  */
 export const deleteServiceHandler = catchAsync(async (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -132,8 +134,8 @@ export const deleteServiceHandler = catchAsync(async (req: Request, res: Respons
 });
 
 /**
- * Bulk imports spreadsheet rows mapped to provider items — mirrors
- * importProductsBatchHandler.
+ * Backs the admin services-batch-import endpoint — upserts a JSON array of
+ * service items into `services` (and `service_providers` as needed) via `importServicesBatch`.
  */
 export const importServicesBatchHandler = catchAsync(async (req: Request, res: Response) => {
   const { providerId, items } = req.body;
@@ -154,9 +156,8 @@ export const importServicesBatchHandler = catchAsync(async (req: Request, res: R
 });
 
 /**
- * Bulk imports services from a single uploaded CSV/XLSX file — mirrors
- * importProductsFileHandler. A row-level problem is skipped and reported in
- * `data.skipped` rather than rejecting the whole file.
+ * Backs the admin services-file-import endpoint — parses an uploaded services
+ * spreadsheet file and imports its rows, requiring the `file` field to be present.
  */
 export const importServicesFileHandler = catchAsync(async (req: Request, res: Response) => {
   if (!req.file) {
@@ -175,8 +176,8 @@ export const importServicesFileHandler = catchAsync(async (req: Request, res: Re
 });
 
 /**
- * Streams a blank XLSX with just the columns importServicesFromFile expects
- * — mirrors downloadInventoryTemplateHandler.
+ * Backs `GET /v1/admin/services/template` — generates and streams the blank
+ * services-import spreadsheet template (.xlsx) for staff to fill in.
  */
 export const downloadServicesTemplateHandler = catchAsync(async (req: Request, res: Response) => {
   const file = serviceService.generateServicesTemplateFile();

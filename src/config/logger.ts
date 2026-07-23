@@ -1,6 +1,10 @@
 import winston from 'winston';
 import { config } from './config.js';
 
+/**
+ * Winston format that replaces an Error's log payload with its stack trace,
+ * so logged errors include the full trace instead of just the message.
+ */
 const enumerateErrorFormat = winston.format((info) => {
   if (info instanceof Error) {
     Object.assign(info, { message: info.stack });
@@ -15,9 +19,6 @@ export const logger = winston.createLogger({
     config.env === 'development' ? winston.format.colorize() : winston.format.uncolorize(),
     winston.format.splat(),
     winston.format.printf(({ level, message, ...meta }) => {
-      // logger.error('some message', errorObj) merges errorObj's own keys into info
-      // rather than into `message` — without this, the actual error detail (e.g.
-      // Meta's OAuthException body) never reached the console, only "[error] some message".
       const extra = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
       return `[${level}] ${message}${extra}`;
     })

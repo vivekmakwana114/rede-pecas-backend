@@ -31,10 +31,8 @@ export interface ManualCollection {
 }
 
 /**
- * Retrieves every confirmed vehicle on file for this customer — permanent records,
- * no expiry (a real vehicle doesn't stop existing because the customer went quiet
- * on WhatsApp). A customer can have more than one — see "add another vehicle" in
- * the message pipeline.
+ * Returns all confirmed `vehicles` rows for a phone (status null or 'complete'),
+ * newest-updated first — the full set of vehicles a customer has on file.
  */
 export async function getCustomerVehicles(phone: string): Promise<VehicleSession[]> {
   const { rows } = await db.query(
@@ -48,10 +46,8 @@ export async function getCustomerVehicles(phone: string): Promise<VehicleSession
 }
 
 /**
- * The single most-recently-confirmed vehicle, for callers right after a save (VIN/
- * photo decode, manual-entry completion) where there's no ambiguity about which row
- * they mean. Not for search-time vehicle selection when the customer has several —
- * use `getCustomerVehicles` + a picker there instead.
+ * Returns the single most recently updated confirmed `vehicles` row for a
+ * phone, used e.g. to find the vehicle to delete when a customer rejects a just-confirmed vehicle.
  */
 export async function getMostRecentVehicle(phone: string): Promise<VehicleSession | null> {
   const { rows } = await db.query(
@@ -66,8 +62,8 @@ export async function getMostRecentVehicle(phone: string): Promise<VehicleSessio
 }
 
 /**
- * Fetches one specific confirmed vehicle by id (still scoped to the phone it
- * belongs to). No freshness window — see getCustomerVehicles.
+ * Looks up one confirmed `vehicles` row by id, scoped to the given phone so a
+ * customer can only resolve their own vehicles.
  */
 export async function getVehicleById(phone: string, id: number): Promise<VehicleSession | null> {
   const { rows } = await db.query(
@@ -80,18 +76,15 @@ export async function getVehicleById(phone: string, id: number): Promise<Vehicle
 }
 
 /**
- * Saves a customer's confirmed vehicle (via VIN decode, manual entry completion, or
- * document photo). When `id` is given, updates that specific in-progress wizard row
- * (transitioning it to 'complete'); otherwise inserts a brand-new row — a customer
- * can have several confirmed vehicles, so this never upserts by phone alone.
+ * Saves vehicle identification data to `vehicles`, marking it 'complete' —
+ * updates the given row in place (COALESCE-merging in whatever fields are provided) when an `id` is passed,
+ * otherwise always inserts a brand-new row so existing vehicles are never overwritten.
  */
 export async function saveVehicleSession(
   phone: string,
   data: Partial<VehicleSession>,
   id?: number
 ): Promise<void> {
-  // Non-functional/descriptive field, nothing branches on it — a document scan
-  // with neither a legible plate nor VIN falls back to 'manual', which is fine.
   const source = data.license_plate ? 'document' : (data.vin ? 'vin' : 'manual');
 
   const values = [
@@ -135,15 +128,16 @@ export async function saveVehicleSession(
 }
 
 /**
- * Deletes one specific vehicle row (a rejected identification attempt, or an
- * in-progress wizard row) — never all of a customer's vehicles.
+ * Deletes a single `vehicles` row by id, used when a customer rejects a
+ * just-confirmed vehicle.
  */
 export async function clearVehicleSession(id: number): Promise<void> {
   await db.query("DELETE FROM vehicles WHERE id = $1", [id]);
 }
 
 /**
- * Saves a decoded VIN response in the NHTSA cache.
+ * Caches a decoded VIN's make/model/year/etc into `nhtsa_vehicles`, keyed by
+ * uppercased VIN, so future lookups of the same VIN can skip the NHTSA API call.
  */
 export async function saveNhtsaVehicle(
   vin: string,
@@ -175,7 +169,8 @@ export async function saveNhtsaVehicle(
 }
 
 /**
- * Fetches a cached NHTSA VIN decode response.
+ * Looks up a previously cached VIN decode in `nhtsa_vehicles` by uppercased
+ * VIN, to avoid re-calling the NHTSA API for a VIN seen before.
  */
 export async function getNhtsaVehicle(vin: string): Promise<any | null> {
   const { rows } = await db.query(
@@ -186,10 +181,9 @@ export async function getNhtsaVehicle(vin: string): Promise<any | null> {
 }
 
 /**
- * Begins a manual vehicle details collection process — always a new row (a customer
- * can have other confirmed vehicles already; this never touches them). Returns the
- * new row's id, which callers thread through updateManualCollection/saveVehicleSession
- * to keep mutating this same in-progress row.
+ * Inserts a new in-progress `vehicles` row (source 'manual') to kick off the
+ * manual make/model/year/engine-number collection wizard, recording the failed VIN attempt if there was one.
+ * Returns the new row's id.
  */
 export async function startManualCollection(phone: string, status: string, attemptedVin: string | null = null): Promise<number> {
   const { rows } = await db.query(
@@ -202,9 +196,8 @@ export async function startManualCollection(phone: string, status: string, attem
 }
 
 /**
- * Returns the ongoing manual details collection process state, if any
- * (expires after 30 minutes of inactivity). At most one in-progress row per
- * phone is expected at a time — enforced by the message pipeline, not the DB.
+ * Finds the customer's in-progress manual vehicle-collection row (status set
+ * and not 'complete') started within the last 30 minutes, or null if there's no active wizard session.
  */
 export async function getActiveManualCollection(phone: string): Promise<ManualCollection | null> {
   const { rows } = await db.query(
@@ -220,7 +213,9 @@ export async function getActiveManualCollection(phone: string): Promise<ManualCo
 }
 
 /**
- * Updates manual collection state values for one specific in-progress row.
+ * Dynamically updates whichever `ManualCollection` fields are present in
+ * `fields` on the `vehicles` row for the given id, advancing the manual collection wizard step. No-ops if
+ * `fields` is empty.
  */
 export async function updateManualCollection(id: number, fields: Partial<ManualCollection>): Promise<void> {
   const keys = Object.keys(fields);
