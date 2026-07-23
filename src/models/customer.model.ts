@@ -90,9 +90,10 @@ export interface CustomerVehicleSummary {
 
 export interface CustomerWithStats extends Customer {
   orders_count: number;
-  // Sum of unit_price for this customer's approved orders only — matches the
-  // "Revenue (Approved)" convention used elsewhere (StatsGrid, order
-  // analytics): pending/rejected/cancelled orders never resulted in an
+  // Sum of unit_price + service_price for this customer's approved orders
+  // only — matches the order-total convention used everywhere else a price
+  // is shown (OrderInfo.price, getOrderAnalytics, getOrderStats.
+  // approvedRevenue): pending/rejected/cancelled orders never resulted in an
   // actual payment, so they don't count as money spent.
   total_spent: string;
   // Only confirmed vehicles (vehicles.status NULL/'complete') — an
@@ -110,7 +111,7 @@ const CUSTOMER_STATS_JOIN = `
   LEFT JOIN LATERAL (
     SELECT
       COUNT(*)::int AS orders_count,
-      COALESCE(SUM(unit_price) FILTER (WHERE status = 'approved'), 0) AS total_spent
+      COALESCE(SUM(unit_price + COALESCE(service_price, 0)) FILTER (WHERE status = 'approved'), 0) AS total_spent
     FROM orders o
     WHERE o.customer_phone = c.phone
   ) order_stats ON true
